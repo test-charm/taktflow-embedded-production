@@ -14,10 +14,19 @@
 
 # Master Plan: Zonal Vehicle Platform — ASIL D Portfolio
 
-**Status**: IN PROGRESS (Phases 0-17 DONE)
+**Status**: IN PROGRESS (Phases 0-17 DONE; Phase 18 Physical HIL PENDING)
 **Created**: 2026-02-20
-**Updated**: 2026-02-25
+**Updated**: 2026-07-06
 **Goal**: Hire-ready automotive functional safety + cloud + ML portfolio
+
+> **State snapshot (2026-07-06)**: 7-ECU SIL stack deployed and streaming on
+> the VPS (sil.taktflow-systems.com). VPS SIL suite last recorded 14/16
+> (2026-05-15); SIL-009 and SIL-017 root-caused and fixed on branch
+> `fix/open-issues-2026-07` — see
+> `docs/plans/plan-open-issues-closure-2026-07.md` for the full repo-health
+> restoration (unit-test layer, CI, MISRA, preflight audit). Phase 18
+> (physical HIL bench) remains the only open phase; its execution vehicle is
+> `docs/plans/plan-hil-mixed-bench.md`.
 
 ---
 

@@ -1,5 +1,10 @@
 # Taktflow Embedded Production
 
+[![CI](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/ci.yml/badge.svg)](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/ci.yml)
+[![Tests & Coverage](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/test.yml/badge.svg)](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/test.yml)
+[![Traceability](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/traceability.yml/badge.svg)](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/traceability.yml)
+[![MISRA C:2012](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/misra.yml/badge.svg)](https://github.com/Taktflow-Systems/taktflow-embedded-production/actions/workflows/misra.yml)
+
 **ISO 26262 ASIL D zonal vehicle platform** — 7 ECUs, AUTOSAR-like BSW, CAN 500 kbit/s, E2E protection, full xIL verification.
 
 > A personal portfolio project demonstrating automotive-grade embedded systems engineering: safety-critical firmware, automated code generation from AUTOSAR models, ASPICE-compliant process artifacts, and a complete V-model verification chain from unit tests through hardware-in-the-loop.
@@ -339,7 +344,7 @@ The project implements a complete **xIL (x-in-the-loop)** verification chain mat
   - Risk assessment
   - Compensating measures (e.g., code review, additional testing)
 
-Current status: **0 violations, CI green and blocking.**
+Current status: **0 violations** (local full run, 2026-07-06 — BSW + all 7 ECUs; the MISRA badge above reflects live CI status).
 
 ---
 
@@ -363,10 +368,13 @@ Current status: **0 violations, CI green and blocking.**
 
 ```bash
 # SIL simulation — all 7 ECUs in Docker
-docker compose -f docker/docker-compose.sil.yml up
+docker compose -f docker/docker-compose.dev.yml up
 
-# Build for POSIX (host testing)
-make -f firmware/platform/posix/Makefile.posix all
+# Build one ECU for POSIX (TARGET is required: bcm|icu|tcu|cvc|fzc|rzc|sc)
+make -f firmware/platform/posix/Makefile.posix all TARGET=cvc
+
+# Run that ECU's unit tests (Linux/container; needs gcc + make)
+make -f firmware/platform/posix/Makefile.posix test TARGET=cvc
 
 # Build for STM32 (physical ECU)
 make -f firmware/platform/stm32/Makefile.stm32 build
@@ -374,12 +382,12 @@ make -f firmware/platform/stm32/Makefile.stm32 build
 # Build for TMS570 (Safety Controller)
 make -f firmware/platform/tms570/Makefile.tms570 build
 
-# Run MISRA analysis
-cppcheck --project=compile_commands.json --addon=tools/misra/misra.json
+# Run MISRA analysis (cppcheck + MISRA addon)
+make -f firmware/platform/posix/Makefile.posix misra TARGET=cvc
 
 # Regenerate configs from DBC (full pipeline)
 python tools/arxml/dbc2arxml.py gateway/taktflow_vehicle.dbc arxml/
-python -m tools.arxmlgen
+python -m tools.arxmlgen --config project.yaml
 ```
 
 ---
