@@ -95,7 +95,7 @@ void Swc_RzcSensorFeeder_MainFunction(void)
     {
         static uint16 diag_cnt = 0u;
         if (diag_cnt < 5u || (diag_cnt % 1000u == 0u)) {
-            fprintf(stderr, "[VSENSOR] c=%u mc=%u mt=%u batt=%u\n",
+            (void)fprintf(stderr, "[VSENSOR] c=%u mc=%u mt=%u batt=%u\n",
                     (unsigned)diag_cnt,
                     (unsigned)motor_current,
                     (unsigned)motor_temp,

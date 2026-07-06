@@ -22,6 +22,11 @@
 
 #include "Std_Types.h"
 
+/* Debug counters for 0x200 Steering_Status tracing (bring-up diagnostics —
+ * volatile, permanent instrumentation, debugger/XCP visible) */
+extern volatile uint32 g_dbg_steer_com_send;
+extern volatile uint32 g_dbg_steer_rte_dispatch;
+
 /* ==================================================================
  * API Functions
  * ================================================================== */

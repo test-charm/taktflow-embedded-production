@@ -33,13 +33,18 @@
 
 /* ---- External Configuration ---- */
 
+/* cppcheck-suppress-begin misra-c2012-8.4 ; extern declarations of generated
+ * config objects (definitions live in generated cfg sources) — these are
+ * declarations, not definitions */
 extern const Rte_ConfigType  tcu_rte_config;
 extern const Com_ConfigType  tcu_com_config;
 extern const Dcm_ConfigType  tcu_dcm_config;
+/* cppcheck-suppress-end misra-c2012-8.4 */
 
 /* CanIf config — use GENERATED routing table from CanIf_Cfg_Tcu.c
  * DO NOT hand-write CAN ID routing here. All routing is generated from
  * DBC → ARXML → codegen. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const CanIf_ConfigType tcu_canif_config;
 #define canif_config tcu_canif_config
 
@@ -47,6 +52,7 @@ extern const CanIf_ConfigType tcu_canif_config;
  * DO NOT hand-write routing tables here. All routing is generated from
  * DBC → ARXML → codegen. The generated config routes UDS_Phys_Req_TCU
  * through CanTp for ISO-TP segmentation. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const PduR_ConfigType tcu_pdur_config;
 
 /** CanTp configuration — single channel for UDS diagnostics */

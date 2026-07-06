@@ -69,24 +69,36 @@
 
 #include "Det.h"
 
+/* ==================================================================
+ * Hardware Abstraction Interface (declared in Main_Hw.h, MISRA 8.5)
+ * ================================================================== */
+
+#include "Main_Hw.h"
+
 #ifdef USE_THREADX
 #include "tx_api.h"
+
+/* ThreadX timer callback prototypes — callbacks are registered by the
+ * platform layer (tx_stubs.c). Declared here so a compatible declaration
+ * is visible at the external definitions below (MISRA 8.4). */
+void Timer_1ms_Callback(ULONG arg);
+void Timer_10ms_Callback(ULONG arg);
+void Timer_100ms_Callback(ULONG arg);
+void Timer_5s_Callback(ULONG arg);
 #endif
 
 /* ==================================================================
  * External Configuration (defined in cfg/ files)
  * ================================================================== */
 
+/* cppcheck-suppress-begin misra-c2012-8.4 ; extern declarations of generated
+ * config objects (definitions live in generated cfg sources) — these are
+ * declarations, not definitions */
 extern const Rte_ConfigType  rzc_rte_config;
 extern const Com_ConfigType  rzc_com_config;
 extern const CanTp_ConfigType rzc_cantp_config;
 extern const Dcm_ConfigType  rzc_dcm_config;
-
-/* ==================================================================
- * Hardware Abstraction Interface (declared in Main_Hw.h, MISRA 8.5)
- * ================================================================== */
-
-#include "Main_Hw.h"
+/* cppcheck-suppress-end misra-c2012-8.4 */
 
 /* ==================================================================
  * Static Configuration Constants
@@ -100,10 +112,12 @@ static const Can_ConfigType can_config = {
 
 /* CanIf config — use GENERATED routing table from CanIf_Cfg_Rzc.c
  * DO NOT hand-write CAN ID routing here. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const CanIf_ConfigType rzc_canif_config;
 #define canif_config rzc_canif_config
 
 /* PduR config — use GENERATED routing table from PduR_Cfg_Rzc.c */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const PduR_ConfigType rzc_pdur_config;
 
 /** ADC group configuration — motor current, motor temp, battery voltage */

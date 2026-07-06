@@ -106,8 +106,12 @@ void Bcm_ComBridge_10ms(void)
  * External Configuration (defined in cfg/ files)
  * ================================================================== */
 
+/* cppcheck-suppress-begin misra-c2012-8.4 ; extern declarations of generated
+ * config objects (definitions live in generated cfg sources) — these are
+ * declarations, not definitions */
 extern const Rte_ConfigType  bcm_rte_config;
 extern const Com_ConfigType  bcm_com_config;
+/* cppcheck-suppress-end misra-c2012-8.4 */
 
 /* ==================================================================
  * Static Configuration Constants

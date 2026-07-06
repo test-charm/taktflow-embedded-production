@@ -261,7 +261,7 @@ void Swc_CvcCom_BridgeRxToRte(void)
     {
         static uint8 prev_mc = 0xFFu;
         if (motor_cutoff_val != prev_mc) {
-            fprintf(stderr, "[BRIDGE] mc=%u bf=%u sig=%u\n",
+            (void)fprintf(stderr, "[BRIDGE] mc=%u bf=%u sig=%u\n",
                     motor_cutoff_val, brake_fault_val,
                     (unsigned)CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE);
             prev_mc = motor_cutoff_val;
