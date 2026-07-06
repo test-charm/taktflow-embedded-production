@@ -5,10 +5,24 @@
  *
  * @verifies SSR-CVC-029, SSR-CVC-030, SSR-CVC-031, SSR-CVC-032, SSR-CVC-033, SSR-CVC-034, SSR-CVC-035, SWR-CVC-018, SWR-CVC-019, SWR-CVC-020, SWR-CVC-029, SWR-CVC-030
  *
- * Tests E-stop detection, debounce, latch behaviour, CAN broadcast,
- * DTC reporting, and fail-safe on read failure.
+ * Tests E-stop detection, debounce, latch behaviour, cyclic RTE broadcast
+ * refresh, cyclic DTC reporting, and fail-safe on read failure.
+ *
+ * NOTE (Phase 2 / April 2026 SIL-stability series): the broadcast path
+ * changed twice since the original harness was written:
+ *   - IfActive pattern: the old "4 broadcasts then stop" design was replaced
+ *     by a cyclic broadcast every 10ms cycle while latched, so recovering
+ *     nodes and late-joining testers always see the E-Stop state.
+ *   - Phase 2: E2E_Protect and Com/PduR TX moved out of the SWC into
+ *     Com_MainFunction_Tx. Swc_EStop now only refreshes the RTE signal
+ *     CVC_SIG_ESTOP_ACTIVE; Swc_CvcCom_TransmitSchedule bridges it to the
+ *     EStop_Broadcast Com signals (covered by test_Swc_CvcCom_asild.c).
+ *   - DTC is re-reported FAILED every cycle while latched so the DEM
+ *     3-cycle FAIL threshold saturates and the DTC reaches 0x500.
+ * This harness asserts exactly that surviving behavior.
  */
 #include "unity.h"
+#include <string.h>
 
 /* ====================================================================
  * Local type definitions (self-contained test — no BSW headers)
@@ -42,10 +56,11 @@ typedef uint8          boolean;
 #define E2E_H
 #define DEM_EVENT_STATUS_FAILED  1u
 
-/* Signal/DTC IDs (must match Cvc_Cfg.h) */
-#define CVC_SIG_ESTOP_ACTIVE      22u
-#define CVC_DTC_ESTOP_ACTIVATED   12u
-#define CVC_COM_TX_ESTOP           0u
+/* Signal/DTC IDs — generated values from Cvc_Cfg.h via Cvc_App.h aliases:
+ *   CVC_SIG_ESTOP_ACTIVE    -> CVC_SIG_ESTOP_BROADCAST_ACTIVE (68)
+ *   CVC_DTC_ESTOP_ACTIVATED -> CVC_DTC_ESTOP_FAULT            (7)  */
+#define CVC_SIG_ESTOP_ACTIVE      68u
+#define CVC_DTC_ESTOP_ACTIVATED    7u
 
 /* ====================================================================
  * Mock: IoHwAb_ReadEStop
@@ -63,9 +78,13 @@ Std_ReturnType IoHwAb_ReadEStop(uint8* State)
 }
 
 /* ====================================================================
- * Mock: Rte_Write
+ * Mock: Rte_Write — per-signal u32 store (mirrors repaired CvcCom /
+ * Heartbeat harness style) + last-write capture + call counter
  * ==================================================================== */
 
+#define MOCK_RTE_MAX_SIGNALS  256u   /* Covers generated IDs (estop = 68) */
+
+static uint32 mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint16 mock_rte_write_sig;
 static uint32 mock_rte_write_val;
 static uint8  mock_rte_write_count;
@@ -75,26 +94,32 @@ Std_ReturnType Rte_Write(uint16 SignalId, uint32 Data)
     mock_rte_write_sig = SignalId;
     mock_rte_write_val = Data;
     mock_rte_write_count++;
+    if (SignalId < MOCK_RTE_MAX_SIGNALS) {
+        mock_rte_signals[SignalId] = Data;
+    }
     return E_OK;
 }
 
 /* ====================================================================
- * Mock: Com_SendSignal
+ * Mock: Com_SendSignal — negative spy only.
+ * Phase 2 contract: Swc_EStop must NOT transmit directly; the RTE →
+ * Swc_CvcCom bridge owns the EStop_Broadcast Com signals.
  * ==================================================================== */
 
 static uint8 mock_com_send_count;
-static uint8 mock_com_send_sig_id;
 
 Std_ReturnType Com_SendSignal(uint8 SignalId, const void* SignalDataPtr)
 {
-    mock_com_send_sig_id = SignalId;
     mock_com_send_count++;
+    (void)SignalId;
     (void)SignalDataPtr;
     return E_OK;
 }
 
 /* ====================================================================
- * Mock: E2E_Protect
+ * Mock: E2E_Protect — negative spy only.
+ * Phase 2 contract: E2E protection is applied in Com_MainFunction_Tx,
+ * never in the SWC (covered by the Com unit tests).
  * ==================================================================== */
 
 static uint8 mock_e2e_protect_count;
@@ -139,11 +164,11 @@ void setUp(void)
 {
     mock_estop_state       = STD_LOW;
     mock_estop_read_result = E_OK;
+    (void)memset(mock_rte_signals, 0, sizeof(mock_rte_signals));
     mock_rte_write_sig     = 0u;
     mock_rte_write_val     = 0u;
     mock_rte_write_count   = 0u;
     mock_com_send_count    = 0u;
-    mock_com_send_sig_id   = 0xFFu;
     mock_e2e_protect_count = 0u;
     mock_dem_event_id      = 0xFFu;
     mock_dem_event_status  = 0xFFu;
@@ -196,6 +221,7 @@ void test_EStop_RTE_write_on_activation(void)
 
     TEST_ASSERT_EQUAL(CVC_SIG_ESTOP_ACTIVE, mock_rte_write_sig);
     TEST_ASSERT_EQUAL(TRUE, mock_rte_write_val);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_ESTOP_ACTIVE]);
 }
 
 /** @verifies SWR-CVC-018 */
@@ -208,7 +234,9 @@ void test_EStop_No_false_activation_when_low(void)
     Swc_EStop_MainFunction();
 
     TEST_ASSERT_EQUAL(FALSE, Swc_EStop_IsActive());
-    TEST_ASSERT_EQUAL(0u, mock_com_send_count);
+    /* Not latched — no RTE broadcast refresh, no direct TX */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_rte_write_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
 }
 
 /** @verifies SWR-CVC-018 */
@@ -222,37 +250,47 @@ void test_EStop_ReadFailure_failsafe_active(void)
 }
 
 /* ====================================================================
- * SWR-CVC-019: E-stop CAN broadcast
+ * SWR-CVC-019: E-stop CAN broadcast (via RTE → Swc_CvcCom → Com bridge)
  * ==================================================================== */
 
-/** @verifies SWR-CVC-019 */
+/** @verifies SWR-CVC-019
+ *  Broadcast path on activation: the SWC raises CVC_SIG_ESTOP_ACTIVE in
+ *  the RTE (edge write + first cyclic refresh in the same cycle);
+ *  Swc_CvcCom_TransmitSchedule bridges it onto the EStop_Broadcast
+ *  (0x001) Com signals. The SWC itself must not TX. */
 void test_EStop_Broadcast_on_activation(void)
 {
     mock_estop_state = STD_HIGH;
     Swc_EStop_MainFunction();
 
-    TEST_ASSERT_TRUE(mock_com_send_count >= 1u);
-    TEST_ASSERT_EQUAL(CVC_COM_TX_ESTOP, mock_com_send_sig_id);
+    /* Activation cycle: edge write + cyclic refresh = 2 RTE writes */
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_rte_write_count);
+    TEST_ASSERT_EQUAL(CVC_SIG_ESTOP_ACTIVE, mock_rte_write_sig);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_ESTOP_ACTIVE]);
+    /* Phase 2: no direct Com TX from the SWC */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
 }
 
-/** @verifies SWR-CVC-019 */
-void test_EStop_Repeat_broadcasts_total_4(void)
+/** @verifies SWR-CVC-019
+ *  IfActive pattern: while latched the RTE broadcast signal is refreshed
+ *  on EVERY 10ms cycle (replaces the pre-2026-03 "4 sends then stop"
+ *  design — see commit "E-Stop broadcast cyclic while latched"). */
+void test_EStop_Cyclic_broadcast_while_latched(void)
 {
     mock_estop_state = STD_HIGH;
 
-    /* Cycle 1: activation + first broadcast */
+    /* Cycle 1: activation — edge write + cyclic refresh */
     Swc_EStop_MainFunction();
-    /* Cycles 2-4: repeat broadcasts */
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_rte_write_count);
+
+    /* Cycles 2-4: one cyclic refresh per cycle */
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
 
-    TEST_ASSERT_EQUAL(4u, mock_com_send_count);
-
-    /* Cycle 5: no more broadcasts */
-    mock_com_send_count = 0u;
-    Swc_EStop_MainFunction();
-    TEST_ASSERT_EQUAL(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(5u, mock_rte_write_count);
+    TEST_ASSERT_EQUAL(CVC_SIG_ESTOP_ACTIVE, mock_rte_write_sig);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_write_val);
 }
 
 /* ====================================================================
@@ -350,74 +388,83 @@ void test_EStop_ReadFailure_after_low_activates(void)
 }
 
 /* ------------------------------------------------------------------
- * SWR-CVC-019: E2E protection applied on every broadcast
+ * SWR-CVC-019: Phase 2 — no direct E2E/Com calls from the SWC
  * ------------------------------------------------------------------ */
 
 /** @verifies SWR-CVC-019
- *  Equivalence class: VALID — E2E_Protect called for every CAN broadcast
- *  Boundary: exactly ESTOP_BROADCAST_COUNT (4) E2E protect calls */
-void test_EStop_E2E_protect_called_on_all_broadcasts(void)
+ *  Equivalence class: VALID — Phase 2 layering: E2E protection is applied
+ *  in Com_MainFunction_Tx, never in the SWC ("Remove PduR_Transmit/
+ *  E2E_Protect from all SWCs"). The SWC only refreshes the RTE signal. */
+void test_EStop_No_direct_e2e_or_com_calls(void)
 {
     mock_estop_state = STD_HIGH;
 
-    /* 4 cycles = 4 broadcasts (activation + 3 repeats) */
+    /* 4 latched cycles — old design E2E-protected 4 PDUs here */
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
 
-    TEST_ASSERT_EQUAL(4u, mock_e2e_protect_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_e2e_protect_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    /* ...while the RTE broadcast refresh ran on every cycle */
+    TEST_ASSERT_EQUAL_UINT8(5u, mock_rte_write_count);
 }
 
 /* ------------------------------------------------------------------
- * SWR-CVC-019: No broadcast after count exhausted
+ * SWR-CVC-019: Broadcast never stops while latched
  * ------------------------------------------------------------------ */
 
 /** @verifies SWR-CVC-019
- *  Equivalence class: VALID — broadcast stops after 4 transmissions
- *  Boundary: repeat_counter == ESTOP_BROADCAST_COUNT */
-void test_EStop_No_broadcast_after_count_exhausted(void)
+ *  Equivalence class: VALID — IfActive: broadcast refresh continues
+ *  indefinitely while latched (no repeat-counter exhaustion) */
+void test_EStop_Broadcast_never_stops_while_latched(void)
 {
     mock_estop_state = STD_HIGH;
 
-    /* Exhaust all 4 broadcasts */
+    /* 4 cycles — the pre-2026-03 design stopped broadcasting after these */
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
 
-    TEST_ASSERT_EQUAL(4u, mock_com_send_count);
-
-    /* 5th, 6th cycles — no more broadcasts */
-    mock_com_send_count = 0u;
+    /* Cycles 5-6: refresh must continue, one write per cycle */
+    mock_rte_write_count = 0u;
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
 
-    TEST_ASSERT_EQUAL(0u, mock_com_send_count);
-    /* But latch is still active */
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_rte_write_count);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_ESTOP_ACTIVE]);
+    /* And latch is still active */
     TEST_ASSERT_EQUAL(TRUE, Swc_EStop_IsActive());
 }
 
 /* ------------------------------------------------------------------
- * SWR-CVC-020: DTC only reported once (on first activation)
+ * SWR-CVC-020: DTC re-reported cyclically while latched
  * ------------------------------------------------------------------ */
 
 /** @verifies SWR-CVC-020
- *  Equivalence class: VALID — DTC reported exactly once
- *  Boundary: Dem_ReportErrorStatus called only on activation transition */
-void test_EStop_DTC_reported_only_once(void)
+ *  Equivalence class: VALID — DTC fired FAILED every cycle while latched:
+ *  DEM has a 3-cycle FAIL threshold before CONFIRMED + 0x500 broadcast,
+ *  so a single edge-report would never reach the gateway (see commit
+ *  "re-report DTC cyclically"). */
+void test_EStop_DTC_reported_cyclically_while_latched(void)
 {
     mock_estop_state = STD_HIGH;
 
+    /* Activation cycle: edge report + first cyclic re-report */
     Swc_EStop_MainFunction();
-    TEST_ASSERT_EQUAL(1u, mock_dem_report_count);
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_dem_report_count);
 
-    /* Subsequent cycles with latch active — DTC should not repeat */
+    /* Each latched cycle adds one re-report — DEM threshold (3)
+     * saturates within 3 cycles */
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
     Swc_EStop_MainFunction();
 
-    TEST_ASSERT_EQUAL(1u, mock_dem_report_count);
+    TEST_ASSERT_EQUAL_UINT8(5u, mock_dem_report_count);
+    TEST_ASSERT_EQUAL(CVC_DTC_ESTOP_ACTIVATED, mock_dem_event_id);
+    TEST_ASSERT_EQUAL(DEM_EVENT_STATUS_FAILED, mock_dem_event_status);
 }
 
 /* ------------------------------------------------------------------
@@ -434,12 +481,14 @@ void test_EStop_MainFunction_before_init_no_action(void)
     initialized = FALSE;
 
     mock_estop_state = STD_HIGH;
-    mock_com_send_count = 0u;
+    mock_rte_write_count  = 0u;
+    mock_dem_report_count = 0u;
     Swc_EStop_MainFunction();
 
     /* Should do nothing — not initialized */
     TEST_ASSERT_EQUAL(FALSE, Swc_EStop_IsActive());
-    TEST_ASSERT_EQUAL(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_rte_write_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_dem_report_count);
 
     /* Restore for tearDown */
     Swc_EStop_Init();
@@ -457,7 +506,7 @@ int main(void)
     RUN_TEST(test_EStop_Detection_after_debounce);
     RUN_TEST(test_EStop_Debounce_transient_no_activation);
     RUN_TEST(test_EStop_Broadcast_on_activation);
-    RUN_TEST(test_EStop_Repeat_broadcasts_total_4);
+    RUN_TEST(test_EStop_Cyclic_broadcast_while_latched);
     RUN_TEST(test_EStop_Latch_stays_active_after_release);
     RUN_TEST(test_EStop_DTC_reported_on_activation);
     RUN_TEST(test_EStop_RTE_write_on_activation);
@@ -468,9 +517,9 @@ int main(void)
     RUN_TEST(test_EStop_Debounce_exact_threshold_boundary);
     RUN_TEST(test_EStop_Consecutive_read_failures_stay_active);
     RUN_TEST(test_EStop_ReadFailure_after_low_activates);
-    RUN_TEST(test_EStop_E2E_protect_called_on_all_broadcasts);
-    RUN_TEST(test_EStop_No_broadcast_after_count_exhausted);
-    RUN_TEST(test_EStop_DTC_reported_only_once);
+    RUN_TEST(test_EStop_No_direct_e2e_or_com_calls);
+    RUN_TEST(test_EStop_Broadcast_never_stops_while_latched);
+    RUN_TEST(test_EStop_DTC_reported_cyclically_while_latched);
     RUN_TEST(test_EStop_MainFunction_before_init_no_action);
 
     return UNITY_END();

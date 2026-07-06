@@ -88,10 +88,16 @@ extern Std_ReturnType  Swc_Lidar_GetDistance(uint16* dist);
 
 /* ==================================================================
  * Mock: Uart_ReadRxData
+ *
+ * Models the UART RX circular buffer with sequential consumption:
+ * each call hands out the next unread bytes.  Required because the
+ * SWC's frame synchronization scans for the 0x59 0x59 header one
+ * byte at a time before reading the 7-byte frame remainder.
  * ================================================================== */
 
 static uint8          mock_uart_buf[UART_RX_BUF_SIZE];
-static uint8          mock_uart_available;
+static uint8          mock_uart_available;   /* total bytes loaded */
+static uint8          mock_uart_pos;         /* next unread byte index */
 static Std_ReturnType mock_uart_result;
 static uint8          mock_uart_read_count;
 
@@ -99,6 +105,7 @@ Std_ReturnType Uart_ReadRxData(uint8* Buffer, uint8 Length, uint8* BytesRead)
 {
     uint8 i;
     uint8 to_read;
+    uint8 remaining;
 
     mock_uart_read_count++;
 
@@ -111,12 +118,18 @@ Std_ReturnType Uart_ReadRxData(uint8* Buffer, uint8 Length, uint8* BytesRead)
         return mock_uart_result;
     }
 
-    to_read = (Length < mock_uart_available) ? Length : mock_uart_available;
-    for (i = 0u; i < to_read; i++) {
-        Buffer[i] = mock_uart_buf[i];
+    if (mock_uart_pos < mock_uart_available) {
+        remaining = (uint8)(mock_uart_available - mock_uart_pos);
+    } else {
+        remaining = 0u;
     }
+
+    to_read = (Length < remaining) ? Length : remaining;
+    for (i = 0u; i < to_read; i++) {
+        Buffer[i] = mock_uart_buf[mock_uart_pos + i];
+    }
+    mock_uart_pos = (uint8)(mock_uart_pos + to_read);
     *BytesRead = to_read;
-    mock_uart_available = 0u; /* consumed */
 
     return E_OK;
 }
@@ -209,6 +222,7 @@ static void build_tfmini_frame(uint16 dist_cm, uint16 strength)
     mock_uart_buf[8] = checksum;
 
     mock_uart_available = FZC_LIDAR_FRAME_SIZE;
+    mock_uart_pos       = 0u;
 }
 
 /* ==================================================================
@@ -223,6 +237,7 @@ void setUp(void)
 
     /* Reset UART mock */
     mock_uart_available   = 0u;
+    mock_uart_pos         = 0u;
     mock_uart_result      = E_OK;
     mock_uart_read_count  = 0u;
     for (i = 0u; i < UART_RX_BUF_SIZE; i++) {

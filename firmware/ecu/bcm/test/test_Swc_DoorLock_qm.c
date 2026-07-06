@@ -44,16 +44,17 @@ typedef uint8          boolean;
  * Signal IDs (must match Bcm_Cfg.h)
  * ==================================================================== */
 
-#define BCM_SIG_VEHICLE_SPEED       16u
-#define BCM_SIG_VEHICLE_STATE       17u
-#define BCM_SIG_BODY_CONTROL_CMD    18u
-#define BCM_SIG_DOOR_LOCK_STATE     24u
-
 /* ARXML-generated signal IDs used by Swc_DoorLock.c (mirrors Bcm_Cfg.h) */
 #define BCM_SIG_BODY_CONTROL_CMD_DOOR_LOCK_CMD      26u
 #define BCM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM       119u
-#define BCM_SIG_VEHICLE_STATE_VEHICLE_STATE        182u
+#define BCM_SIG_VEHICLE_STATE_MODE                 187u
 #define BCM_SIG_DOOR_LOCK_STATUS_FRONT_LEFT_LOCK    64u
+
+/* Short aliases used by test bodies — same IDs the SWC reads/writes */
+#define BCM_SIG_VEHICLE_SPEED       BCM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM
+#define BCM_SIG_VEHICLE_STATE       BCM_SIG_VEHICLE_STATE_MODE
+#define BCM_SIG_BODY_CONTROL_CMD    BCM_SIG_BODY_CONTROL_CMD_DOOR_LOCK_CMD
+#define BCM_SIG_DOOR_LOCK_STATE     BCM_SIG_DOOR_LOCK_STATUS_FRONT_LEFT_LOCK
 
 /* Vehicle state values */
 #define BCM_VSTATE_INIT             0u
@@ -70,7 +71,7 @@ typedef uint8          boolean;
  * Mock: Rte_Read — store values in array, return when SWC reads
  * ==================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  32u
+#define MOCK_RTE_MAX_SIGNALS  198u  /* = BCM_SIG_COUNT — covers all ARXML IDs */
 
 static uint32 mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 
@@ -177,14 +178,17 @@ void test_DoorLock_init_unlocked(void)
 /** @verifies SWR-BCM-009 */
 void test_DoorLock_manual_lock_command(void)
 {
-    /* Byte 1 bit 0 = lock. Body control cmd is uint32, byte 1 = bits 8-15 */
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = (1u << 8u);  /* Byte 1, bit 0 */
+    /* DOOR_LOCK_CMD is a DBC-decoded discrete signal: 0 = unlock, 1 = lock */
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 1u;  /* lock command */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 0u;
     mock_rte_signals[BCM_SIG_VEHICLE_STATE]    = BCM_VSTATE_READY;
 
     Swc_DoorLock_100ms();
 
     TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[BCM_SIG_DOOR_LOCK_STATE]);
+    /* Verify the SWC published on the ARXML Door_Lock_Status signal */
+    TEST_ASSERT_EQUAL_UINT16(BCM_SIG_DOOR_LOCK_STATUS_FRONT_LEFT_LOCK,
+                             mock_rte_write_sig);
 }
 
 /* ====================================================================
@@ -236,7 +240,7 @@ void test_DoorLock_not_init_does_nothing(void)
 {
     initialized = FALSE;
 
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = (1u << 8u);
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 1u;  /* lock command */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 20u;
     mock_rte_write_count = 0u;
 
@@ -354,7 +358,7 @@ void test_DoorLock_no_unlock_parked_to_parked(void)
 {
     /* Init sets prev_vehicle_state = INIT (parked) */
     /* Manual lock */
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = (1u << 8u);
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 1u;  /* lock command */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 0u;
     mock_rte_signals[BCM_SIG_VEHICLE_STATE]    = BCM_VSTATE_READY;
     Swc_DoorLock_100ms();
@@ -373,18 +377,18 @@ void test_DoorLock_no_unlock_parked_to_parked(void)
  * ==================================================================== */
 
 /** @verifies SWR-BCM-009
- *  Equivalence class: manual lock cmd — non-lock bits in byte 1 ignored
- *  Verify only bit 8 (byte 1 bit 0) triggers lock */
-void test_DoorLock_manual_lock_only_bit8_matters(void)
+ *  Equivalence class: manual lock cmd — DOOR_LOCK_CMD is a discrete decoded
+ *  signal (0 = unlock, 1 = lock); any non-zero value requests lock
+ *  (robustness against unexpected encodings from the DBC decode) */
+void test_DoorLock_manual_cmd_any_nonzero_locks(void)
 {
-    /* Set byte 1 high bits but NOT bit 0 of byte 1 */
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 0xFE00u; /* bits 9-15 set, bit 8 clear */
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 0xFE00u; /* non-zero, non-1 */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 0u;
     mock_rte_signals[BCM_SIG_VEHICLE_STATE]    = BCM_VSTATE_READY;
     Swc_DoorLock_100ms();
 
-    /* Should NOT lock — only bit 8 triggers manual lock */
-    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[BCM_SIG_DOOR_LOCK_STATE]);
+    /* Any non-zero DOOR_LOCK_CMD locks */
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[BCM_SIG_DOOR_LOCK_STATE]);
 }
 
 /** @verifies SWR-BCM-009
@@ -436,7 +440,7 @@ void test_DoorLock_fault_invalid_vehicle_state(void)
 void test_DoorLock_repeated_calls_without_init(void)
 {
     initialized = FALSE;
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = (1u << 8u);
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 1u;  /* lock command */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 50u;
     mock_rte_write_count = 0u;
 
@@ -490,7 +494,7 @@ int main(void)
     RUN_TEST(test_DoorLock_no_unlock_parked_to_parked);
 
     /* HARDENED: Manual/auto-lock interaction */
-    RUN_TEST(test_DoorLock_manual_lock_only_bit8_matters);
+    RUN_TEST(test_DoorLock_manual_cmd_any_nonzero_locks);
     RUN_TEST(test_DoorLock_auto_lock_overrides_no_manual);
 
     /* HARDENED: Fault injection */

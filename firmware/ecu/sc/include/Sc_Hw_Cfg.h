@@ -86,12 +86,17 @@
  * Bus Silence Monitoring
  * ================================================================== */
 
+/* Unit tests pre-define a strict value before including the source under
+ * test (Unity include-source pattern) — #ifndef guard honours it, same
+ * style as Sc_Cfg_Platform.h. */
+#ifndef SC_BUS_SILENCE_TICKS
 #ifdef PLATFORM_POSIX
 /* SIL: Docker containers may take 1-2s to start CAN TX — extend timeout */
 #define SC_BUS_SILENCE_TICKS        200u   /* 2000ms = SIL boot margin */
 #else
 #define SC_BUS_SILENCE_TICKS        20u    /* 200ms = real hardware timeout */
 #endif
+#endif /* SC_BUS_SILENCE_TICKS */
 
 /* ==================================================================
  * Plausibility Thresholds
@@ -182,11 +187,15 @@
  * E2E Failure Threshold
  * ================================================================== */
 
+/* Unit tests pre-define the strict target value before including the source
+ * under test (Unity include-source pattern) — #ifndef guard honours it. */
+#ifndef SC_E2E_MAX_CONSEC_FAIL
 #if defined(PLATFORM_POSIX) || defined(PLATFORM_HIL)
 #define SC_E2E_MAX_CONSEC_FAIL     100u    /* SIL/HIL: tolerate frame drops from Docker/gs_usb jitter */
 #else
 #define SC_E2E_MAX_CONSEC_FAIL      3u     /* Target: 3 consecutive E2E failures → relay kill */
 #endif
+#endif /* SC_E2E_MAX_CONSEC_FAIL */
 
 /* ==================================================================
  * Relay Readback

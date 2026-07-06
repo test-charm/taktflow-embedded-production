@@ -78,19 +78,4 @@ void Swc_RzcCom_Receive(void);
  */
 void Swc_RzcCom_TransmitSchedule(void);
 
-/**
- * @brief  E2E RX validation callback for CanIf
- *
- * Only E2E-checks PDUs with configured Data IDs (E-stop, Vehicle_State).
- * Virtual sensors bypass E2E.
- *
- * @param  PduId   Upper-layer PDU ID
- * @param  Data    Pointer to received data
- * @param  Length  Data length
- * @return E_OK to accept, E_NOT_OK to drop
- *
- * @safety_req SWR-RZC-020
- */
-Std_ReturnType Rzc_E2eRxCheck(uint8 PduId, const uint8* Data, uint8 Length);
-
 #endif /* SWC_RZC_COM_H */

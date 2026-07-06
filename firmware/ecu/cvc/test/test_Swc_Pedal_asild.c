@@ -40,6 +40,9 @@ typedef uint8           Std_ReturnType;
 #define CVC_SIG_PEDAL_FAULT       19u
 #define CVC_SIG_VEHICLE_STATE     20u
 #define CVC_SIG_TORQUE_REQUEST    21u
+/* Torque_Request.Direction — generated value from Cvc_Cfg.h.
+ * 1=Forward while torque is requested, 0=Neutral (motor-spin fix) */
+#define CVC_SIG_TORQUE_REQUEST_DIRECTION   167u
 
 /* Com Signal IDs used by Swc_Pedal.c (mirrors Cvc_Cfg.h) */
 #define CVC_COM_SIG_TORQUE_REQUEST_COMMAND_PCT    21u
@@ -129,7 +132,7 @@ Std_ReturnType IoHwAb_ReadPedalAngle(uint8 SensorId, uint16* Angle)
  * Mock: Rte_Write
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  32u
+#define MOCK_RTE_MAX_SIGNALS  256u   /* Covers generated IDs (Direction = 167) */
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint8   mock_rte_write_count;
@@ -206,7 +209,7 @@ static Swc_Pedal_ConfigType test_config;
 
 void setUp(void)
 {
-    uint8 i;
+    uint16 i;
 
     /* Reset IoHwAb mock */
     mock_iohwab_result_s0 = E_OK;
@@ -545,9 +548,10 @@ void test_Torque_mapping_mid_range(void)
     run_cycles(8192u, 8192u, 250u);
 
     uint32 torque = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
-    /* At ~500 position, torque should be around 500 (linear mapping) */
-    TEST_ASSERT_TRUE(torque >= 450u);
-    TEST_ASSERT_TRUE(torque <= 550u);
+    /* At ~500 position, internal torque ~500 (linear mapping); the RTE
+     * slot carries the scaled 0..100 percentage (Com TX alias) -> ~50 */
+    TEST_ASSERT_TRUE(torque >= 45u);
+    TEST_ASSERT_TRUE(torque <= 55u);
 }
 
 /** @verifies SWR-CVC-007 — Ramp limit: torque increase capped at 5 units/cycle */
@@ -581,9 +585,10 @@ void test_Mode_limit_run_max_1000(void)
     run_cycles(16383u, 16383u, 250u);
 
     uint32 torque = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
-    TEST_ASSERT_TRUE(torque <= 1000u);
-    /* Should reach close to 1000 at full pedal in RUN mode */
-    TEST_ASSERT_TRUE(torque >= 950u);
+    /* RTE slot is the scaled 0..100 percentage: 1000 internal -> 100 */
+    TEST_ASSERT_TRUE(torque <= 100u);
+    /* Should reach close to 100% at full pedal in RUN mode */
+    TEST_ASSERT_TRUE(torque >= 95u);
 }
 
 /** @verifies SWR-CVC-008 — Mode limit DEGRADED: max 750 (75%) */
@@ -593,9 +598,10 @@ void test_Mode_limit_degraded_max_750(void)
     run_cycles(16383u, 16383u, 250u);
 
     uint32 torque = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
-    TEST_ASSERT_TRUE(torque <= 750u);
-    /* Should reach close to 750 */
-    TEST_ASSERT_TRUE(torque >= 700u);
+    /* RTE slot is the scaled 0..100 percentage: 750 internal -> 75 */
+    TEST_ASSERT_TRUE(torque <= 75u);
+    /* Should reach close to 75% */
+    TEST_ASSERT_TRUE(torque >= 70u);
 }
 
 /** @verifies SWR-CVC-008 — Mode limit LIMP: max 300 (30%) */
@@ -605,9 +611,10 @@ void test_Mode_limit_limp_max_300(void)
     run_cycles(16383u, 16383u, 250u);
 
     uint32 torque = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
-    TEST_ASSERT_TRUE(torque <= 300u);
-    /* Should reach close to 300 */
-    TEST_ASSERT_TRUE(torque >= 250u);
+    /* RTE slot is the scaled 0..100 percentage: 300 internal -> 30 */
+    TEST_ASSERT_TRUE(torque <= 30u);
+    /* Should reach close to 30% */
+    TEST_ASSERT_TRUE(torque >= 25u);
 }
 
 /** @verifies SWR-CVC-008 — Torque zero in SAFE_STOP state */
@@ -657,6 +664,51 @@ void test_RTE_write_pedal_fault_each_cycle(void)
     /* Fault signal should be NO_FAULT when sensors are OK */
     uint32 fault = mock_rte_signals[CVC_SIG_PEDAL_FAULT];
     TEST_ASSERT_EQUAL_UINT32(CVC_PEDAL_NO_FAULT, fault);
+}
+
+/* ==================================================================
+ * SWR-CVC-002: Direction Signal (motor-spin fix — commit 7cd1c91)
+ * ================================================================== */
+
+/** @verifies SWR-CVC-002 — Direction = 1 (Forward) while torque is requested.
+ *  Without this write, downstream direction checks keep the motor disabled
+ *  even with a valid torque command. */
+void test_Direction_forward_when_torque_requested(void)
+{
+    /* Build up torque at mid pedal (90 cycles — below the stuck window) */
+    run_cycles(8192u, 8192u, 90u);
+
+    TEST_ASSERT_TRUE(mock_rte_signals[CVC_SIG_TORQUE_REQUEST] > 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u,
+        mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION]);
+}
+
+/** @verifies SWR-CVC-002 — Direction = 0 (Neutral) when pedal released */
+void test_Direction_neutral_when_no_torque(void)
+{
+    /* Build torque, then release — decrease is immediate (no ramp) */
+    run_cycles(8192u, 8192u, 90u);
+    run_cycles(0u, 0u, 1u);
+
+    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[CVC_SIG_TORQUE_REQUEST]);
+    TEST_ASSERT_EQUAL_UINT32(0u,
+        mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION]);
+}
+
+/** @verifies SWR-CVC-006 — Direction returns to Neutral when fault zeroes torque */
+void test_Direction_neutral_on_fault(void)
+{
+    /* Build torque first — direction must be Forward */
+    run_cycles(8192u, 8192u, 90u);
+    TEST_ASSERT_EQUAL_UINT32(1u,
+        mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION]);
+
+    /* Sensor failure zeroes torque immediately -> Neutral */
+    mock_iohwab_result_s0 = E_NOT_OK;
+    Swc_Pedal_MainFunction();
+
+    TEST_ASSERT_EQUAL_UINT32(0u,
+        mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION]);
 }
 
 /* ==================================================================
@@ -849,7 +901,7 @@ void test_Ramp_immediate_decrease_allowed(void)
     run_cycles(16383u, 16383u, 250u);
 
     uint32 torque_high = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
-    TEST_ASSERT_TRUE(torque_high >= 950u);
+    TEST_ASSERT_TRUE(torque_high >= 95u);   /* scaled 0..100 percentage */
 
     /* Suddenly release pedal to 0 — torque should drop immediately */
     run_cycles(0u, 0u, 1u);
@@ -915,6 +967,11 @@ int main(void)
     RUN_TEST(test_Both_sensors_max_position_1000);
     RUN_TEST(test_RTE_write_pedal_position_each_cycle);
     RUN_TEST(test_RTE_write_pedal_fault_each_cycle);
+
+    /* SWR-CVC-002/006: Direction signal (motor-spin fix) */
+    RUN_TEST(test_Direction_forward_when_torque_requested);
+    RUN_TEST(test_Direction_neutral_when_no_torque);
+    RUN_TEST(test_Direction_neutral_on_fault);
 
     /* SWR-CVC-003: Plausibility check */
     RUN_TEST(test_Plausibility_fail_debounce_2_cycles);

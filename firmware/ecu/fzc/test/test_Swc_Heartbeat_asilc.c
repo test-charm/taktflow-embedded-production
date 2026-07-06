@@ -6,10 +6,16 @@
  * @verifies SWR-FZC-021, SWR-FZC-022
  *
  * Tests heartbeat initialization, periodic 50ms transmission, alive counter
- * increment and wrap, ECU ID / fault mask / vehicle state inclusion in
- * heartbeat payload, CAN bus-off suppression, and safe behaviour on init.
+ * increment and wrap, ECU ID / fault mask / vehicle state publication into
+ * the FZC_Heartbeat TX signals, CAN bus-off suppression, and safe behaviour
+ * on init.
  *
- * Mocks: Rte_Read, Rte_Write, PduR_Transmit, Dem_ReportErrorStatus
+ * April 2026 SIL-stability series: heartbeat TX is signal-based — the SWC
+ * writes FZC_SIG_FZC_HEARTBEAT_* signals to the RTE and Com_MainFunction_Tx
+ * auto-pulls them into the 0x011 PDU (E2E protection applied in Com).
+ * PduR_Transmit / E2E_Protect / Dem are no longer called by this SWC.
+ *
+ * Mocks: Rte_Read, Rte_Write
  */
 #include "unity.h"
 
@@ -29,22 +35,18 @@ typedef uint8           Std_ReturnType;
 #define FALSE       0u
 #define NULL_PTR    ((void*)0)
 
-typedef uint16          PduIdType;
-
-typedef struct {
-    uint8* SduDataPtr;
-    uint8  SduLength;
-} PduInfoType;
-
 /* ==================================================================
- * Signal IDs (from Fzc_Cfg.h)
+ * Signal IDs (from Fzc_Cfg.h — verified against generated header)
  * ================================================================== */
 
-#define FZC_SIG_FAULT_MASK          30u
-#define FZC_SIG_VEHICLE_STATE       26u
-#define FZC_SIG_HEARTBEAT_ALIVE     34u
+#define FZC_SIG_FZC_HEARTBEAT_ECU_ID          76u
+#define FZC_SIG_FZC_HEARTBEAT_FAULT_STATUS    77u
+#define FZC_SIG_FZC_HEARTBEAT_OPERATING_MODE  78u
+#define FZC_SIG_VEHICLE_STATE                187u  /* alias: FZC_SIG_VEHICLE_STATE_MODE */
+#define FZC_SIG_HEARTBEAT_ALIVE              203u
+#define FZC_SIG_FAULT_MASK                   204u
+#define FZC_SIG_COUNT                        205u
 
-#define FZC_COM_TX_HEARTBEAT         0u
 #define FZC_ECU_ID                  0x02u
 
 #define FZC_RTE_PERIOD_MS           10u
@@ -54,8 +56,6 @@ typedef struct {
 /** Derived: cycles per heartbeat TX period (used in run_cycles) */
 #define FZC_HB_PERIOD_CYCLES  (FZC_HB_TX_PERIOD_MS / FZC_RTE_PERIOD_MS)
 
-#define FZC_DTC_CAN_BUS_OFF         12u
-
 /* Vehicle states */
 #define FZC_STATE_INIT               0u
 #define FZC_STATE_RUN                1u
@@ -64,31 +64,8 @@ typedef struct {
 #define FZC_STATE_SAFE_STOP          4u
 #define FZC_STATE_SHUTDOWN           5u
 
-/* Fault mask bits */
+/* Fault mask bits (from Fzc_App.h — bit 8, outside 8-bit payload range) */
 #define FZC_FAULT_CAN_BUS_OFF       0x0100u
-
-/* DEM event status */
-#define DEM_EVENT_STATUS_PASSED      0u
-#define DEM_EVENT_STATUS_FAILED      1u
-
-/* Heartbeat payload layout (byte offsets) — E2E-protected PDU
- * Bytes 0-1: E2E overhead (counter+dataid, CRC) — written by E2E_Protect
- * Byte 2:    ECU_ID
- * Byte 3:    [FaultStatus:4 | OperatingMode:4]
- */
-#define HB_BYTE_ECU_ID               2u
-#define HB_BYTE_STATE_FAULT          3u
-
-/* FZC_FAULT_CAN is defined in Fzc_Cfg.h (blocked by FZC_CFG_H guard below).
- * Replicate only what Swc_Heartbeat.c actually uses from that header. */
-#define FZC_FAULT_CAN               0x08u
-
-/* E2E config */
-#define FZC_E2E_HEARTBEAT_DATA_ID   0x03u
-
-/* E2E types needed by Swc_Heartbeat.c */
-typedef struct { uint8 DataId; uint8 MaxDeltaCounter; uint16 DataLength; } E2E_ConfigType;
-typedef struct { uint8 Counter; } E2E_StateType;
 
 /* Swc_Heartbeat API declarations */
 extern void Swc_Heartbeat_Init(void);
@@ -98,7 +75,7 @@ extern void Swc_Heartbeat_MainFunction(void);
  * Mock: Rte_Read
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  48u
+#define MOCK_RTE_MAX_SIGNALS  FZC_SIG_COUNT
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint32  mock_vehicle_state;
@@ -126,82 +103,26 @@ Std_ReturnType Rte_Read(uint16 SignalId, uint32* DataPtr)
 
 /* ==================================================================
  * Mock: Rte_Write
+ *
+ * Heartbeat TX is signal-based: one TX = OPERATING_MODE + FAULT_STATUS
+ * + HEARTBEAT_ALIVE writes.  The alive write happens exactly once per
+ * TX, so it is counted as the TX marker (mock_hb_tx_count).
  * ================================================================== */
 
 static uint8   mock_rte_write_count;
+static uint8   mock_hb_tx_count;
 
 Std_ReturnType Rte_Write(uint16 SignalId, uint32 Data)
 {
     mock_rte_write_count++;
+    if (SignalId == FZC_SIG_HEARTBEAT_ALIVE) {
+        mock_hb_tx_count++;
+    }
     if (SignalId < MOCK_RTE_MAX_SIGNALS) {
         mock_rte_signals[SignalId] = Data;
         return E_OK;
     }
     return E_NOT_OK;
-}
-
-/* ==================================================================
- * Mock: PduR_Transmit
- * ================================================================== */
-
-#define MOCK_COM_MAX_DATA  8u
-
-static uint8   mock_com_send_count;
-static uint8   mock_com_last_signal_id;
-static uint8   mock_com_last_data[MOCK_COM_MAX_DATA];
-
-Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
-{
-    uint8 i;
-    mock_com_send_count++;
-    mock_com_last_signal_id = (uint8)TxPduId;
-    if ((PduInfoPtr != NULL_PTR) && (PduInfoPtr->SduDataPtr != NULL_PTR)) {
-        for (i = 0u; i < MOCK_COM_MAX_DATA; i++) {
-            mock_com_last_data[i] = PduInfoPtr->SduDataPtr[i];
-        }
-    }
-    return E_OK;
-}
-
-/* ==================================================================
- * Mock: Dem_ReportErrorStatus
- * ================================================================== */
-
-#define MOCK_DEM_MAX_EVENTS  16u
-
-static uint8   mock_dem_last_event_id;
-static uint8   mock_dem_last_status;
-static uint8   mock_dem_call_count;
-static uint8   mock_dem_event_reported[MOCK_DEM_MAX_EVENTS];
-static uint8   mock_dem_event_status[MOCK_DEM_MAX_EVENTS];
-
-void Dem_ReportErrorStatus(uint8 EventId, uint8 EventStatus)
-{
-    mock_dem_call_count++;
-    mock_dem_last_event_id = EventId;
-    mock_dem_last_status   = EventStatus;
-    if (EventId < MOCK_DEM_MAX_EVENTS) {
-        mock_dem_event_reported[EventId] = 1u;
-        mock_dem_event_status[EventId]   = EventStatus;
-    }
-}
-
-/* ==================================================================
- * Mock: E2E_Protect
- * ================================================================== */
-
-static uint8 mock_e2e_protect_count;
-static const E2E_ConfigType* mock_e2e_config_ptr;
-
-Std_ReturnType E2E_Protect(const E2E_ConfigType* Config, E2E_StateType* State,
-                           uint8* DataPtr, uint16 Length)
-{
-    mock_e2e_protect_count++;
-    mock_e2e_config_ptr = Config;
-    (void)State;
-    (void)DataPtr;
-    (void)Length;
-    return E_OK;
 }
 
 /* ==================================================================
@@ -228,34 +149,15 @@ Std_ReturnType E2E_Protect(const E2E_ConfigType* Config, E2E_StateType* State,
 
 void setUp(void)
 {
-    uint8 i;
+    uint16 i;
 
     /* Reset RTE mock */
     mock_rte_write_count = 0u;
+    mock_hb_tx_count     = 0u;
     mock_vehicle_state   = FZC_STATE_RUN;
     mock_fault_mask      = 0u;
     for (i = 0u; i < MOCK_RTE_MAX_SIGNALS; i++) {
         mock_rte_signals[i] = 0u;
-    }
-
-    /* Reset COM mock */
-    mock_com_send_count     = 0u;
-    mock_com_last_signal_id = 0xFFu;
-    for (i = 0u; i < MOCK_COM_MAX_DATA; i++) {
-        mock_com_last_data[i] = 0u;
-    }
-
-    /* Reset E2E mock */
-    mock_e2e_protect_count = 0u;
-    mock_e2e_config_ptr    = NULL_PTR;
-
-    /* Reset DEM mock */
-    mock_dem_call_count    = 0u;
-    mock_dem_last_event_id = 0xFFu;
-    mock_dem_last_status   = 0xFFu;
-    for (i = 0u; i < MOCK_DEM_MAX_EVENTS; i++) {
-        mock_dem_event_reported[i] = 0u;
-        mock_dem_event_status[i]   = 0xFFu;
     }
 
     Swc_Heartbeat_Init();
@@ -264,7 +166,7 @@ void setUp(void)
 void tearDown(void) { }
 
 /* ==================================================================
- * Helper: run N main cycles (1ms per call assumed)
+ * Helper: run N main cycles (10ms per call)
  * ================================================================== */
 
 static void run_cycles(uint16 count)
@@ -287,20 +189,28 @@ void test_Init(void)
     Swc_Heartbeat_MainFunction();
 
     /* No crash = pass. Heartbeat should not yet be sent (period not elapsed). */
-    TEST_ASSERT_TRUE(mock_com_send_count == 0u);
+    TEST_ASSERT_TRUE(mock_hb_tx_count == 0u);
+}
+
+/** @verifies SWR-FZC-021 — Init writes ECU ID to the constant heartbeat signal */
+void test_Init_writes_ecu_id(void)
+{
+    /* Init (called in setUp) writes the constant ECU_ID field to the RTE —
+     * it is auto-pulled by Com TX, so no per-TX write is needed. */
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_ECU_ID,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_ECU_ID]);
 }
 
 /* ==================================================================
  * SWR-FZC-022: Heartbeat Transmission
  * ================================================================== */
 
-/** @verifies SWR-FZC-022 — Heartbeat sent every 50ms (50 calls at 1ms each) */
+/** @verifies SWR-FZC-022 — Heartbeat sent every 50ms (5 calls at 10ms each) */
 void test_HB_sends_at_50ms(void)
 {
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_TRUE(mock_com_send_count >= 1u);
-    TEST_ASSERT_EQUAL_UINT8(FZC_COM_TX_HEARTBEAT, mock_com_last_signal_id);
+    TEST_ASSERT_TRUE(mock_hb_tx_count >= 1u);
 }
 
 /** @verifies SWR-FZC-022 — Alive counter increments each TX */
@@ -339,12 +249,13 @@ void test_HB_alive_counter_wraps(void)
     TEST_ASSERT_EQUAL_UINT8(0u, alive_val);
 }
 
-/** @verifies SWR-FZC-022 — ECU ID 0x02 included in heartbeat data */
+/** @verifies SWR-FZC-022 — ECU ID 0x02 present in heartbeat TX signals */
 void test_HB_includes_ecu_id(void)
 {
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_EQUAL_UINT8(FZC_ECU_ID, mock_com_last_data[HB_BYTE_ECU_ID]);
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_ECU_ID,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_ECU_ID]);
 }
 
 /** @verifies SWR-FZC-022 — Fault bitmask from RTE included in heartbeat */
@@ -354,9 +265,9 @@ void test_HB_includes_fault_mask(void)
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    /* FaultStatus in byte 3 high nibble */
-    TEST_ASSERT_EQUAL_UINT8(0x05u,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    /* FaultStatus signal carries the low nibble of the fault mask */
+    TEST_ASSERT_EQUAL_UINT32(0x05u,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-FZC-022 — Vehicle state from RTE included in heartbeat */
@@ -366,9 +277,9 @@ void test_HB_includes_state(void)
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    /* OperatingMode in byte 3 low nibble */
-    TEST_ASSERT_EQUAL_UINT8((uint8)FZC_STATE_DEGRADED,
-                            mock_com_last_data[HB_BYTE_STATE_FAULT] & 0x0Fu);
+    /* OperatingMode signal carries the low nibble of the vehicle state */
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_STATE_DEGRADED,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_OPERATING_MODE]);
 }
 
 /** @verifies SWR-FZC-021 — No TX when CAN bus-off active */
@@ -380,16 +291,16 @@ void test_HB_suppressed_in_bus_off(void)
     run_cycles(FZC_HB_PERIOD_CYCLES * 3u);
 
     /* No heartbeat should have been sent */
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-022 — No send before 50ms period elapsed */
 void test_No_send_before_period(void)
 {
-    /* Run 49 cycles (< 50ms period) */
+    /* Run 4 cycles (< 5 cycles = 50ms period) */
     run_cycles(FZC_HB_PERIOD_CYCLES - 1u);
 
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-022 — Multiple heartbeats over time */
@@ -398,7 +309,7 @@ void test_Multiple_periods(void)
     /* Run for 5 periods = 250ms */
     run_cycles(FZC_HB_PERIOD_CYCLES * 5u);
 
-    TEST_ASSERT_EQUAL_UINT8(5u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(5u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-022 — Zero fault mask when no faults */
@@ -408,9 +319,9 @@ void test_Fault_mask_zero(void)
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    /* FaultStatus in byte 3 high nibble should be 0 */
-    TEST_ASSERT_EQUAL_UINT8(0u,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    /* FaultStatus signal should be 0 */
+    TEST_ASSERT_EQUAL_UINT32(0u,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-FZC-021 — MainFunction immediately after init is safe */
@@ -420,7 +331,7 @@ void test_MainFunction_safe_on_init(void)
      * and should not send (period not yet elapsed). */
     Swc_Heartbeat_MainFunction();
 
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_tx_count);
 }
 
 /* ==================================================================
@@ -441,27 +352,27 @@ void test_MainFunction_safe_on_init(void)
  *
  * Equivalence classes for fault mask:
  *   Valid:   0x00 (no faults), individual bits set
- *   Boundary: 0xFF (all faults set)
+ *   Boundary: 0x0F (all 4 payload fault bits set)
  * ------------------------------------------------------------------ */
 
 /** @verifies SWR-FZC-021
- *  Equivalence class: boundary — exactly 1 cycle before period (49 cycles = no TX) */
+ *  Equivalence class: boundary — exactly 1 cycle before period (4 cycles = no TX) */
 void test_Boundary_one_before_period(void)
 {
     run_cycles(FZC_HB_PERIOD_CYCLES - 1u);
 
     /* No heartbeat should have been sent */
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-021
- *  Equivalence class: boundary — exactly at period (50 cycles = 1 TX) */
+ *  Equivalence class: boundary — exactly at period (5 cycles = 1 TX) */
 void test_Boundary_exactly_at_period(void)
 {
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
     /* Exactly 1 heartbeat should have been sent */
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-022
@@ -489,16 +400,16 @@ void test_Boundary_alive_counter_at_max(void)
 }
 
 /** @verifies SWR-FZC-022
- *  Fault injection: all fault bits set (0xFF) in mask */
+ *  Fault injection: all payload fault bits set (0x0F) in mask */
 void test_FaultInj_all_fault_bits_set(void)
 {
     mock_fault_mask = 0x000Fu;  /* max 4-bit fault status */
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    /* FaultStatus in byte 3 high nibble = 0x0F */
-    TEST_ASSERT_EQUAL_UINT8(0x0Fu,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    /* FaultStatus signal = 0x0F */
+    TEST_ASSERT_EQUAL_UINT32(0x0Fu,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-FZC-022
@@ -509,13 +420,13 @@ void test_FaultInj_busoff_suppress_and_resume(void)
     mock_fault_mask = FZC_FAULT_CAN_BUS_OFF;
 
     run_cycles(FZC_HB_PERIOD_CYCLES * 2u);
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_tx_count);
 
     /* Clear bus-off */
     mock_fault_mask = 0u;
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
-    TEST_ASSERT_TRUE(mock_com_send_count >= 1u);
+    TEST_ASSERT_TRUE(mock_hb_tx_count >= 1u);
 }
 
 /** @verifies SWR-FZC-022
@@ -526,8 +437,8 @@ void test_Vehicle_state_safe_stop_in_heartbeat(void)
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_EQUAL_UINT8((uint8)FZC_STATE_SAFE_STOP,
-                            mock_com_last_data[HB_BYTE_STATE_FAULT] & 0x0Fu);
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_STATE_SAFE_STOP,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_OPERATING_MODE]);
 }
 
 /** @verifies SWR-FZC-021
@@ -536,12 +447,12 @@ void test_FaultInj_double_init_resets_alive(void)
 {
     /* Send a few heartbeats to advance alive counter */
     run_cycles(FZC_HB_PERIOD_CYCLES * 5u);
-    TEST_ASSERT_EQUAL_UINT8(5u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(5u, mock_hb_tx_count);
 
     /* Re-init */
     Swc_Heartbeat_Init();
 
-    mock_com_send_count = 0u;
+    mock_hb_tx_count = 0u;
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
     /* Alive counter should restart at 0 (sent via Rte_Write) */
@@ -558,16 +469,17 @@ void test_All_vehicle_states_heartbeat(void)
 
     for (i = 0u; i < 6u; i++) {
         Swc_Heartbeat_Init();
-        mock_com_send_count = 0u;
+        mock_hb_tx_count    = 0u;
         mock_vehicle_state  = (uint32)states[i];
         mock_fault_mask     = 0u;
 
         run_cycles(FZC_HB_PERIOD_CYCLES);
 
-        TEST_ASSERT_EQUAL_UINT8(1u, mock_com_send_count);
-        TEST_ASSERT_EQUAL_UINT8(states[i],
-                                mock_com_last_data[HB_BYTE_STATE_FAULT] & 0x0Fu);
-        TEST_ASSERT_EQUAL_UINT8(FZC_ECU_ID, mock_com_last_data[HB_BYTE_ECU_ID]);
+        TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_tx_count);
+        TEST_ASSERT_EQUAL_UINT32((uint32)states[i],
+                                 mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_OPERATING_MODE]);
+        TEST_ASSERT_EQUAL_UINT32((uint32)FZC_ECU_ID,
+                                 mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_ECU_ID]);
     }
 }
 
@@ -609,18 +521,18 @@ void test_HB_alive_rollover_sequence(void)
 }
 
 /** @verifies SWR-FZC-022
- *  Phase 6: Fault mask high byte encoding (0xAA00 → lo=0x00, hi=0xAA)
+ *  Phase 6: Fault mask nibble encoding (0x000A → FaultStatus = 0xA)
  *  Note: avoid 0xFF00 because bit 8 = FZC_FAULT_CAN_BUS_OFF suppresses TX */
 void test_HB_fault_mask_high_byte(void)
 {
-    /* Only lower 4 bits of fault_mask go into heartbeat FaultStatus nibble.
-     * High byte (0xAA00) doesn't fit — detailed faults go via 0x210/0x211. */
+    /* Only lower 4 bits of fault_mask go into heartbeat FaultStatus.
+     * High byte doesn't fit — detailed faults go via 0x210/0x211. */
     mock_fault_mask = 0x000Au;  /* 4-bit value: 0xA */
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_EQUAL_UINT8(0x0Au,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    TEST_ASSERT_EQUAL_UINT32(0x0Au,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-FZC-022
@@ -629,7 +541,7 @@ void test_HB_10_periods_accuracy(void)
 {
     run_cycles(FZC_HB_PERIOD_CYCLES * 10u);
 
-    TEST_ASSERT_EQUAL_UINT8(10u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(10u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-021
@@ -639,26 +551,27 @@ void test_HB_bus_off_timer_resets_on_clear(void)
     /* Set bus-off for 3 periods */
     mock_fault_mask = FZC_FAULT_CAN_BUS_OFF;
     run_cycles(FZC_HB_PERIOD_CYCLES * 3u);
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_tx_count);
 
     /* Clear bus-off, run 1 full period */
     mock_fault_mask = 0u;
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
     /* Should get exactly 1 TX after clear */
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_tx_count);
 }
 
 /** @verifies SWR-FZC-022
- *  Phase 6: Heartbeat in INIT state carries correct state byte */
+ *  Phase 6: Heartbeat in INIT state carries correct state signal */
 void test_HB_init_state_in_heartbeat(void)
 {
     mock_vehicle_state = FZC_STATE_INIT;
 
     run_cycles(FZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_EQUAL_UINT8((uint8)FZC_STATE_INIT,
-                            mock_com_last_data[HB_BYTE_STATE_FAULT] & 0x0Fu);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_tx_count);
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_STATE_INIT,
+                             mock_rte_signals[FZC_SIG_FZC_HEARTBEAT_OPERATING_MODE]);
 }
 
 /* ==================================================================
@@ -671,6 +584,7 @@ int main(void)
 
     /* SWR-FZC-021: Initialization */
     RUN_TEST(test_Init);
+    RUN_TEST(test_Init_writes_ecu_id);
 
     /* SWR-FZC-022: Heartbeat transmission */
     RUN_TEST(test_HB_sends_at_50ms);
@@ -710,4 +624,3 @@ int main(void)
 
     return UNITY_END();
 }
-

@@ -1,15 +1,25 @@
 /**
  * @file    test_Swc_CvcCom.c
- * @brief   Unit tests for Swc_CvcCom — E2E protect/check, RX routing, TX scheduling
+ * @brief   Unit tests for Swc_CvcCom — TX signal scheduling and RX-to-RTE bridge
  * @date    2026-02-24
  *
  * @verifies SSR-CVC-014, SSR-CVC-015, SSR-CVC-016, SWR-CVC-014, SWR-CVC-015, SWR-CVC-016, SWR-CVC-017
  *
- * Tests: E2E protect CRC correctness, alive counter increment, E2E check
- * valid message, CRC mismatch rejection, 3-failure safe default, receive
- * routing table, transmit schedule periods.
+ * Tests: heartbeat signal TX (ECU ID + operating mode), Vehicle_State
+ * signal packing (mode, fault mask, torque limit), state-gated safe-state
+ * actuation (max brake / center steer in SAFE_STOP+), E-stop broadcast
+ * bridging, Body_Control_Cmd refresh, torque forwarding, and the
+ * Com-shadow-to-RTE fault bridge (brake-fault source merge 0x210/0x201,
+ * heartbeat alive counters, SC relay, battery, steering, motor faults).
  *
- * Mocks: E2E_Protect, E2E_Check (BSW E2E module)
+ * NOTE (Phase 2 / April 2026 SIL-stability series): E2E protect/check and
+ * CAN-ID RX routing moved from this SWC into Com_MainFunction_Tx/Rx.
+ * Swc_CvcCom_E2eProtect/E2eCheck/Receive/GetRxStatus no longer exist —
+ * this harness covers the surviving API: Init, TransmitSchedule,
+ * BridgeRxToRte.
+ *
+ * Mocks: Com_SendSignal, Com_ReceiveSignal, Rte_Read, Rte_Write,
+ *        Swc_VehicleState_GetState
  */
 #include "unity.h"
 #include <string.h>
@@ -33,7 +43,16 @@ typedef uint8           Std_ReturnType;
 #define FALSE       0u
 #define NULL_PTR    ((void*)0)
 
-/* CVC config constants (mirrors Cvc_Cfg.h) needed by bridge/TX code */
+/* Prevent BSW headers from redefining types when Swc_CvcCom.c is included */
+#define PLATFORM_TYPES_H
+#define STD_TYPES_H
+#define SWC_CVCCOM_H
+#define CVC_CFG_H
+#define COM_H
+#define RTE_H
+#define SWC_VEHICLESTATE_H
+
+/* RTE signal IDs (mirrors Cvc_App.h aliases) needed by bridge/TX code */
 #define CVC_SIG_PEDAL_FAULT       19u
 #define CVC_SIG_VEHICLE_STATE     20u
 #define CVC_SIG_TORQUE_REQUEST    21u
@@ -47,11 +66,11 @@ typedef uint8           Std_ReturnType;
 #define CVC_SIG_SC_RELAY_KILL     31u
 #define CVC_SIG_BATTERY_STATUS    32u
 #define CVC_SIG_MOTOR_FAULT_RZC   33u
+/* Heartbeat alive counter RTE mirrors — generated values from Cvc_Cfg.h */
+#define CVC_SIG_FZC_HEARTBEAT_E_2_E_ALIVE_COUNTER    73u
+#define CVC_SIG_RZC_HEARTBEAT_E_2_E_ALIVE_COUNTER   130u
 #define CVC_COMM_OK                0u
 #define CVC_COMM_TIMEOUT           1u
-
-/* Com TX PDU IDs (mirrors Cvc_Cfg.h) */
-#define CVC_COM_TX_VEHICLE_STATE   2u
 
 /* Com Signal IDs used by Swc_CvcCom.c (must match Cvc_Cfg.h generated values) */
 #define CVC_COM_SIG_ESTOP_BROADCAST_ACTIVE                     3u
@@ -64,104 +83,29 @@ typedef uint8           Std_ReturnType;
 #define CVC_COM_SIG_TORQUE_REQUEST_COMMAND_PCT                21u
 #define CVC_COM_SIG_STEER_COMMAND_STEER_ANGLE_CMD             29u
 #define CVC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD             35u
+#define CVC_COM_SIG_BODY_CONTROL_CMD_HEADLIGHT_CMD            38u
+#define CVC_COM_SIG_BODY_CONTROL_CMD_TAIL_LIGHT_ON            39u
+#define CVC_COM_SIG_BODY_CONTROL_CMD_HAZARD_ACTIVE            40u
+#define CVC_COM_SIG_BODY_CONTROL_CMD_TURN_SIGNAL_CMD          41u
+#define CVC_COM_SIG_BODY_CONTROL_CMD_DOOR_LOCK_CMD            42u
+#define CVC_COM_SIG_FZC_HEARTBEAT_E_2_E_ALIVE_COUNTER         59u
+#define CVC_COM_SIG_RZC_HEARTBEAT_E_2_E_ALIVE_COUNTER         65u
 #define CVC_COM_SIG_SC_STATUS_RELAY_ENERGIZED                 76u
-#define CVC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS        89u
-#define CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE                   103u
-#define CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE            109u
-#define CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS          125u
-#define CVC_COM_SIG_BATTERY_STATUS_LEVEL                     144u
+#define CVC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS        97u
+#define CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS          106u
+#define CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE                   111u
+#define CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE            117u
+#define CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS          133u
+#define CVC_COM_SIG_BATTERY_STATUS_LEVEL                     152u
 
 /* ECU constants (mirrors Cvc_App.h) */
 #define CVC_ECU_ID_CVC                 0x01u
-#define CVC_SAFE_BRAKE_CMD             100u
 
 /* Vehicle state constants (mirrors Cvc_Cfg.h) */
 #define CVC_STATE_INIT        0u
 #define CVC_STATE_RUN         1u
 #define CVC_STATE_SAFE_STOP   4u
 #define CVC_STATE_SHUTDOWN    5u
-
-/* ==================================================================
- * ComStack Types (mirrors ComStack_Types.h / PduR.h)
- * ================================================================== */
-
-typedef uint16 PduIdType;
-typedef uint16 PduLengthType;
-
-typedef struct {
-    uint8          *SduDataPtr;
-    PduLengthType   SduLength;
-} PduInfoType;
-
-/* ==================================================================
- * E2E Types (mirrors BSW E2E.h)
- * ================================================================== */
-
-typedef enum {
-    E2E_STATUS_OK           = 0u,
-    E2E_STATUS_REPEATED     = 1u,
-    E2E_STATUS_WRONG_SEQ    = 2u,
-    E2E_STATUS_ERROR        = 3u,
-    E2E_STATUS_NO_NEW_DATA  = 4u
-} E2E_CheckStatusType;
-
-typedef struct {
-    uint8       DataId;
-    uint8       MaxDeltaCounter;
-    uint16      DataLength;
-} E2E_ConfigType;
-
-typedef struct {
-    uint8       Counter;
-} E2E_StateType;
-
-/* ==================================================================
- * CvcCom Constants (mirrors header)
- * ================================================================== */
-
-#define CVCCOM_MAX_TX_MSGS          8u
-#define CVCCOM_MAX_RX_MSGS          8u
-#define CVCCOM_E2E_FAIL_THRESHOLD   3u
-#define CVCCOM_PDU_SIZE             8u
-
-/* E2E Data IDs from Cvc_Cfg.h */
-#define CVC_E2E_ESTOP_DATA_ID       0x01u
-#define CVC_E2E_HEARTBEAT_DATA_ID   0x02u
-#define CVC_E2E_VEHSTATE_DATA_ID    0x05u
-#define CVC_E2E_TORQUE_DATA_ID      0x06u
-
-/* CvcCom TX schedule entry type (mirrors header) */
-typedef struct {
-    uint16  canId;
-    uint16  periodMs;
-    uint8   dataId;
-    uint8   dlc;
-} Swc_CvcCom_TxEntryType;
-
-/* CvcCom RX routing entry type (mirrors header) */
-typedef struct {
-    uint16  canId;
-    uint8   dataId;
-    uint8   dlc;
-} Swc_CvcCom_RxEntryType;
-
-/* CvcCom RX status type (mirrors header) */
-typedef struct {
-    uint8   failCount;
-    uint8   useSafeDefault;
-} Swc_CvcCom_RxStatusType;
-
-/* API declarations */
-extern void            Swc_CvcCom_Init(void);
-extern Std_ReturnType  Swc_CvcCom_E2eProtect(uint8 txIndex, uint8* payload,
-                                               uint8 length);
-extern Std_ReturnType  Swc_CvcCom_E2eCheck(uint8 rxIndex, const uint8* payload,
-                                             uint8 length);
-extern Std_ReturnType  Swc_CvcCom_Receive(uint16 canId, const uint8* payload,
-                                            uint8 length);
-extern void            Swc_CvcCom_TransmitSchedule(uint32 currentTimeMs);
-extern Std_ReturnType  Swc_CvcCom_GetRxStatus(uint8 rxIndex,
-                                                Swc_CvcCom_RxStatusType* status);
 
 /* ==================================================================
  * Mock: VehicleState
@@ -171,130 +115,85 @@ static uint8 mock_vehicle_state;
 uint8 Swc_VehicleState_GetState(void) { return mock_vehicle_state; }
 
 /* ==================================================================
- * Mock: CvcCom_Hw_InjectEstop (platform hw-file function)
+ * Mock: Com_SendSignal — per-signal u8 store (+ s16 for steer angle)
  * ================================================================== */
 
-void CvcCom_Hw_InjectEstop(uint8 Level)
-{
-    (void)Level;
-}
+#define MOCK_COM_TX_MAX_SIGNALS  64u
 
-/* ==================================================================
- * Mock: Com_SendSignal, Com_ReceiveSignal, Rte_Read, Rte_Write
- * ================================================================== */
-
-static uint32 mock_rte_signals[48];
-static uint8  mock_com_sent_u8[16];
-static sint16 mock_com_sent_s16[16];
+static uint8  mock_com_sent_u8[MOCK_COM_TX_MAX_SIGNALS];
+static sint16 mock_com_sent_steer_s16;
+static uint8  mock_com_send_count;
 
 Std_ReturnType Com_SendSignal(uint16 SignalId, const void* SignalDataPtr)
 {
-    if (SignalId < 16u)
+    mock_com_send_count++;
+    if (SignalDataPtr == NULL_PTR)
     {
-        mock_com_sent_u8[SignalId]  = *((const uint8*)SignalDataPtr);
-        mock_com_sent_s16[SignalId] = *((const sint16*)SignalDataPtr);
+        return E_NOT_OK;
+    }
+    if (SignalId == CVC_COM_SIG_STEER_COMMAND_STEER_ANGLE_CMD)
+    {
+        mock_com_sent_steer_s16 = *((const sint16*)SignalDataPtr);
+    }
+    if (SignalId < MOCK_COM_TX_MAX_SIGNALS)
+    {
+        mock_com_sent_u8[SignalId] = *((const uint8*)SignalDataPtr);
     }
     return E_OK;
 }
+
+/* ==================================================================
+ * Mock: Com_ReceiveSignal — controllable per-signal shadow store
+ * ================================================================== */
+
+#define MOCK_COM_RX_MAX_SIGNALS  256u
+
+static uint8 mock_com_rx_values[MOCK_COM_RX_MAX_SIGNALS];
 
 Std_ReturnType Com_ReceiveSignal(uint16 SignalId, void* SignalDataPtr)
 {
-    (void)SignalId;
-    (void)SignalDataPtr;
-    return E_OK;
-}
-
-void Com_Init(const void* ConfigPtr) { (void)ConfigPtr; }
-
-Std_ReturnType Rte_Write(uint8 SignalId, uint32 Value)
-{
-    if (SignalId < 48u) { mock_rte_signals[SignalId] = Value; }
-    return E_OK;
-}
-
-Std_ReturnType Rte_Read(uint8 SignalId, uint32* Value)
-{
-    if (SignalId < 48u && Value != NULL_PTR) { *Value = mock_rte_signals[SignalId]; }
-    return E_OK;
-}
-
-/* ==================================================================
- * Mock: E2E_Protect and E2E_Check
- * ================================================================== */
-
-static Std_ReturnType  mock_e2e_protect_result;
-static uint8           mock_e2e_protect_call_count;
-static E2E_StateType*  mock_e2e_protect_last_state;
-
-static E2E_CheckStatusType  mock_e2e_check_result;
-static uint8                mock_e2e_check_call_count;
-
-void E2E_Init(void)
-{
-    /* No-op for tests */
-}
-
-Std_ReturnType E2E_Protect(const E2E_ConfigType* Config,
-                            E2E_StateType* State,
-                            uint8* DataPtr,
-                            uint16 Length)
-{
-    mock_e2e_protect_call_count++;
-    mock_e2e_protect_last_state = State;
-
-    if (Config == NULL_PTR) { return E_NOT_OK; }
-    if (State == NULL_PTR) { return E_NOT_OK; }
-    if (DataPtr == NULL_PTR) { return E_NOT_OK; }
-
-    /* Simulate counter increment */
-    State->Counter = (uint8)((State->Counter + 1u) & 0x0Fu);
-
-    /* Write counter + data ID to byte 0 */
-    DataPtr[0] = (uint8)((State->Counter << 4u) | (Config->DataId & 0x0Fu));
-
-    /* Write a mock CRC to byte 1 */
-    DataPtr[1] = (uint8)(0xAAu ^ DataPtr[0]);
-
-    (void)Length;
-    return mock_e2e_protect_result;
-}
-
-E2E_CheckStatusType E2E_Check(const E2E_ConfigType* Config,
-                               E2E_StateType* State,
-                               const uint8* DataPtr,
-                               uint16 Length)
-{
-    mock_e2e_check_call_count++;
-
-    if (Config == NULL_PTR) { return E2E_STATUS_ERROR; }
-    if (State == NULL_PTR) { return E2E_STATUS_ERROR; }
-    if (DataPtr == NULL_PTR) { return E2E_STATUS_ERROR; }
-
-    (void)Length;
-    return mock_e2e_check_result;
-}
-
-/* ==================================================================
- * Mock: PduR_Transmit
- * ================================================================== */
-
-static uint8  mock_pdur_tx_call_count;
-static uint16 mock_pdur_tx_last_pdu_id;
-static uint8  mock_pdur_tx_last_data[8];
-static uint16 mock_pdur_tx_last_length;
-
-Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
-{
-    mock_pdur_tx_call_count++;
-    mock_pdur_tx_last_pdu_id = TxPduId;
-    if (PduInfoPtr != NULL_PTR && PduInfoPtr->SduDataPtr != NULL_PTR)
+    if (SignalDataPtr == NULL_PTR)
     {
-        mock_pdur_tx_last_length = PduInfoPtr->SduLength;
-        (void)memcpy(mock_pdur_tx_last_data, PduInfoPtr->SduDataPtr,
-                     (PduInfoPtr->SduLength <= 8u) ? PduInfoPtr->SduLength : 8u);
+        return E_NOT_OK;
+    }
+    if (SignalId < MOCK_COM_RX_MAX_SIGNALS)
+    {
+        *((uint8*)SignalDataPtr) = mock_com_rx_values[SignalId];
     }
     return E_OK;
 }
+
+/* ==================================================================
+ * Mock: Rte_Read, Rte_Write
+ * ================================================================== */
+
+#define MOCK_RTE_MAX_SIGNALS  256u   /* Covers generated IDs (alive ctr = 130) */
+
+static uint32 mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
+static uint8  mock_rte_write_count;
+
+Std_ReturnType Rte_Write(uint16 SignalId, uint32 Value)
+{
+    mock_rte_write_count++;
+    if (SignalId < MOCK_RTE_MAX_SIGNALS) { mock_rte_signals[SignalId] = Value; }
+    return E_OK;
+}
+
+Std_ReturnType Rte_Read(uint16 SignalId, uint32* Value)
+{
+    if ((SignalId < MOCK_RTE_MAX_SIGNALS) && (Value != NULL_PTR))
+    {
+        *Value = mock_rte_signals[SignalId];
+    }
+    return E_OK;
+}
+
+/* ==================================================================
+ * Source inclusion — link SWC under test directly into test binary
+ * (mid-file so tests can reach module statics, e.g. CvcCom_Initialized)
+ * ================================================================== */
+
+#include "../src/Swc_CvcCom.c"
 
 /* ==================================================================
  * Test Configuration
@@ -302,21 +201,13 @@ Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
 
 void setUp(void)
 {
-    mock_e2e_protect_result     = E_OK;
-    mock_e2e_protect_call_count = 0u;
-    mock_e2e_protect_last_state = NULL_PTR;
-    mock_e2e_check_result       = E2E_STATUS_OK;
-    mock_e2e_check_call_count   = 0u;
-
     mock_vehicle_state = CVC_STATE_RUN;
+    mock_com_send_count = 0u;
+    mock_com_sent_steer_s16 = 0x7FFF;
     (void)memset(mock_com_sent_u8, 0, sizeof(mock_com_sent_u8));
-    (void)memset(mock_com_sent_s16, 0, sizeof(mock_com_sent_s16));
+    (void)memset(mock_com_rx_values, 0, sizeof(mock_com_rx_values));
     (void)memset(mock_rte_signals, 0, sizeof(mock_rte_signals));
-
-    mock_pdur_tx_call_count = 0u;
-    mock_pdur_tx_last_pdu_id = 0xFFFFu;
-    mock_pdur_tx_last_length = 0u;
-    (void)memset(mock_pdur_tx_last_data, 0, sizeof(mock_pdur_tx_last_data));
+    mock_rte_write_count = 0u;
 
     Swc_CvcCom_Init();
 }
@@ -324,205 +215,78 @@ void setUp(void)
 void tearDown(void) { }
 
 /* ==================================================================
- * SWR-CVC-014: E2E Protect Tests
+ * SWR-CVC-017: TX Schedule — heartbeat + Vehicle_State signals
  * ================================================================== */
 
-/** @verifies SWR-CVC-014 — E2E protect writes CRC to payload */
-void test_CvcCom_e2e_protect_crc_correct(void)
+/** @verifies SWR-CVC-017 — Heartbeat signals carry ECU ID and current state */
+void test_TX_heartbeat_ecu_id_and_mode(void)
 {
-    uint8 payload[8] = { 0u, 0u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u };
-    Std_ReturnType ret;
+    mock_vehicle_state = CVC_STATE_RUN;
 
-    ret = Swc_CvcCom_E2eProtect(0u, payload, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_e2e_protect_call_count);
-
-    /* Byte 0 should have counter+dataId, byte 1 should have CRC */
-    TEST_ASSERT_TRUE(payload[0] != 0u);  /* Counter/DataID written */
-    TEST_ASSERT_TRUE(payload[1] != 0u);  /* CRC written */
-}
-
-/** @verifies SWR-CVC-014 — Alive counter increments on each protect call */
-void test_CvcCom_e2e_protect_alive_counter_increments(void)
-{
-    uint8 payload1[8] = {0};
-    uint8 payload2[8] = {0};
-    uint8 counter1;
-    uint8 counter2;
-
-    (void)Swc_CvcCom_E2eProtect(0u, payload1, 8u);
-    counter1 = (uint8)(payload1[0] >> 4u);
-
-    (void)Swc_CvcCom_E2eProtect(0u, payload2, 8u);
-    counter2 = (uint8)(payload2[0] >> 4u);
-
-    /* Counter should have incremented */
-    TEST_ASSERT_EQUAL_UINT8((uint8)((counter1 + 1u) & 0x0Fu), counter2);
-}
-
-/** @verifies SWR-CVC-014 — Invalid TX index returns E_NOT_OK */
-void test_CvcCom_e2e_protect_invalid_index(void)
-{
-    uint8 payload[8] = {0};
-    Std_ReturnType ret;
-
-    ret = Swc_CvcCom_E2eProtect(99u, payload, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, ret);
-}
-
-/* ==================================================================
- * SWR-CVC-015: E2E Check Tests
- * ================================================================== */
-
-/** @verifies SWR-CVC-015 — Valid E2E check returns E_OK */
-void test_CvcCom_e2e_check_valid_message(void)
-{
-    uint8 payload[8] = { 0x12u, 0xAAu, 0x33u, 0x44u, 0u, 0u, 0u, 0u };
-    Std_ReturnType ret;
-
-    mock_e2e_check_result = E2E_STATUS_OK;
-
-    ret = Swc_CvcCom_E2eCheck(0u, payload, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_e2e_check_call_count);
-}
-
-/** @verifies SWR-CVC-015 — CRC mismatch returns E_NOT_OK */
-void test_CvcCom_e2e_check_crc_mismatch_rejected(void)
-{
-    uint8 payload[8] = { 0x12u, 0xFFu, 0x33u, 0x44u, 0u, 0u, 0u, 0u };
-    Std_ReturnType ret;
-
-    mock_e2e_check_result = E2E_STATUS_ERROR;
-
-    ret = Swc_CvcCom_E2eCheck(0u, payload, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, ret);
-}
-
-/** @verifies SWR-CVC-015 — 3 consecutive E2E failures trigger safe default */
-void test_CvcCom_e2e_check_3_failures_safe_default(void)
-{
-    uint8 payload[8] = {0};
-    Swc_CvcCom_RxStatusType rxStatus;
-
-    mock_e2e_check_result = E2E_STATUS_ERROR;
-
-    /* Failure 1 */
-    (void)Swc_CvcCom_E2eCheck(0u, payload, 8u);
-    (void)Swc_CvcCom_GetRxStatus(0u, &rxStatus);
-    TEST_ASSERT_EQUAL_UINT8(1u, rxStatus.failCount);
-    TEST_ASSERT_EQUAL_UINT8(FALSE, rxStatus.useSafeDefault);
-
-    /* Failure 2 */
-    (void)Swc_CvcCom_E2eCheck(0u, payload, 8u);
-    (void)Swc_CvcCom_GetRxStatus(0u, &rxStatus);
-    TEST_ASSERT_EQUAL_UINT8(2u, rxStatus.failCount);
-    TEST_ASSERT_EQUAL_UINT8(FALSE, rxStatus.useSafeDefault);
-
-    /* Failure 3 — safe default triggers */
-    (void)Swc_CvcCom_E2eCheck(0u, payload, 8u);
-    (void)Swc_CvcCom_GetRxStatus(0u, &rxStatus);
-    TEST_ASSERT_EQUAL_UINT8(3u, rxStatus.failCount);
-    TEST_ASSERT_EQUAL_UINT8(TRUE, rxStatus.useSafeDefault);
-}
-
-/** @verifies SWR-CVC-015 — Valid message resets failure counter */
-void test_CvcCom_e2e_check_valid_resets_counter(void)
-{
-    uint8 payload[8] = {0};
-    Swc_CvcCom_RxStatusType rxStatus;
-
-    /* Two failures */
-    mock_e2e_check_result = E2E_STATUS_ERROR;
-    (void)Swc_CvcCom_E2eCheck(0u, payload, 8u);
-    (void)Swc_CvcCom_E2eCheck(0u, payload, 8u);
-
-    /* Then a success */
-    mock_e2e_check_result = E2E_STATUS_OK;
-    (void)Swc_CvcCom_E2eCheck(0u, payload, 8u);
-
-    (void)Swc_CvcCom_GetRxStatus(0u, &rxStatus);
-    TEST_ASSERT_EQUAL_UINT8(0u, rxStatus.failCount);
-    TEST_ASSERT_EQUAL_UINT8(FALSE, rxStatus.useSafeDefault);
-}
-
-/* ==================================================================
- * SWR-CVC-016: RX Routing Table Tests
- * ================================================================== */
-
-/** @verifies SWR-CVC-016 — Known CAN IDs are routed through E2E check */
-void test_CvcCom_receive_routing_table(void)
-{
-    uint8 payload[8] = {0};
-    Std_ReturnType ret;
-
-    mock_e2e_check_result = E2E_STATUS_OK;
-
-    /* FZC heartbeat (0x011) */
-    ret = Swc_CvcCom_Receive(0x011u, payload, 8u);
-    TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
-
-    /* RZC heartbeat (0x012) */
-    ret = Swc_CvcCom_Receive(0x012u, payload, 8u);
-    TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
-
-    /* Brake fault (0x210) */
-    ret = Swc_CvcCom_Receive(0x210u, payload, 8u);
-    TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
-
-    /* Motor current (0x301) */
-    ret = Swc_CvcCom_Receive(0x301u, payload, 8u);
-    TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
-
-    /* Unknown CAN ID */
-    ret = Swc_CvcCom_Receive(0x999u, payload, 8u);
-    TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, ret);
-}
-
-/** @verifies SWR-CVC-016 — Receive with NULL payload returns E_NOT_OK */
-void test_CvcCom_receive_null_payload_rejects(void)
-{
-    Std_ReturnType ret;
-
-    ret = Swc_CvcCom_Receive(0x011u, NULL_PTR, 8u);
-    TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, ret);
-}
-
-/* ==================================================================
- * SWR-CVC-017: TX Schedule Tests
- * ================================================================== */
-
-/** @verifies SWR-CVC-017 — Transmit schedule uses correct periods */
-void test_CvcCom_transmit_schedule_periods(void)
-{
-    /* Call transmit schedule at time 0 — all due */
     Swc_CvcCom_TransmitSchedule(0u);
 
-    /* Call at time 5ms — only 10ms period messages NOT yet due again */
-    Swc_CvcCom_TransmitSchedule(5u);
-
-    /* Call at time 10ms — 10ms period messages due again */
-    Swc_CvcCom_TransmitSchedule(10u);
-
-    /* Call at time 50ms — heartbeat (50ms) due again */
-    Swc_CvcCom_TransmitSchedule(50u);
-
-    /* No assertion crash = schedule logic doesn't panic with valid times */
-    TEST_ASSERT_TRUE(1u);
+    TEST_ASSERT_EQUAL_UINT8(CVC_ECU_ID_CVC,
+        mock_com_sent_u8[CVC_COM_SIG_CVC_HEARTBEAT_ECU_ID]);
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN,
+        mock_com_sent_u8[CVC_COM_SIG_CVC_HEARTBEAT_OPERATING_MODE]);
 }
 
-/** @verifies SWR-CVC-017 — Transmit schedule handles large time values */
-void test_CvcCom_transmit_schedule_large_time(void)
+/** @verifies SWR-CVC-017 — Vehicle_State mode + torque limit + torque forward */
+void test_TX_vehicle_state_mode_and_torque(void)
 {
-    /* Should not crash with large time values */
-    Swc_CvcCom_TransmitSchedule(0xFFFFFF00u);
-    Swc_CvcCom_TransmitSchedule(0xFFFFFFFFu);
+    mock_vehicle_state = CVC_STATE_RUN;
+    mock_rte_signals[CVC_SIG_TORQUE_REQUEST] = 50u;   /* 0..100 percent */
 
-    TEST_ASSERT_TRUE(1u);
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN,
+        mock_com_sent_u8[CVC_COM_SIG_VEHICLE_STATE_MODE]);
+    TEST_ASSERT_EQUAL_UINT8(50u,
+        mock_com_sent_u8[CVC_COM_SIG_VEHICLE_STATE_TORQUE_LIMIT]);
+    TEST_ASSERT_EQUAL_UINT8(50u,
+        mock_com_sent_u8[CVC_COM_SIG_TORQUE_REQUEST_COMMAND_PCT]);
+}
+
+/** @verifies SWR-CVC-017 — Torque above 100% is clamped before TX */
+void test_TX_torque_clamped_to_100(void)
+{
+    mock_rte_signals[CVC_SIG_TORQUE_REQUEST] = 250u;
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT8(100u,
+        mock_com_sent_u8[CVC_COM_SIG_VEHICLE_STATE_TORQUE_LIMIT]);
+    TEST_ASSERT_EQUAL_UINT8(100u,
+        mock_com_sent_u8[CVC_COM_SIG_TORQUE_REQUEST_COMMAND_PCT]);
+}
+
+/** @verifies SWR-CVC-017 — Fault mask composed from RTE fault signals:
+ *  bit0=estop, bit5=pedal (SC relay energized -> bit1 clear) */
+void test_TX_fault_mask_estop_and_pedal(void)
+{
+    mock_rte_signals[CVC_SIG_SC_RELAY_KILL] = 1u;   /* energized (OK)  */
+    mock_rte_signals[CVC_SIG_ESTOP_ACTIVE]  = 1u;   /* -> 0x01         */
+    mock_rte_signals[CVC_SIG_PEDAL_FAULT]   = 1u;   /* -> 0x20         */
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT32(0x21u, mock_rte_signals[CVC_SIG_FAULT_MASK]);
+    TEST_ASSERT_EQUAL_UINT8(0x21u,
+        mock_com_sent_u8[CVC_COM_SIG_VEHICLE_STATE_FAULT_MASK]);
+}
+
+/** @verifies SWR-CVC-017 — Fault mask: relay killed (0) sets bit1,
+ *  FZC comm timeout sets bit6 */
+void test_TX_fault_mask_relay_kill_and_can_timeout(void)
+{
+    mock_rte_signals[CVC_SIG_SC_RELAY_KILL]   = 0u;              /* -> 0x02 */
+    mock_rte_signals[CVC_SIG_FZC_COMM_STATUS] = CVC_COMM_TIMEOUT; /* -> 0x40 */
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT32(0x42u, mock_rte_signals[CVC_SIG_FAULT_MASK]);
+    TEST_ASSERT_EQUAL_UINT8(0x42u,
+        mock_com_sent_u8[CVC_COM_SIG_VEHICLE_STATE_FAULT_MASK]);
 }
 
 /* ==================================================================
@@ -532,25 +296,35 @@ void test_CvcCom_transmit_schedule_large_time(void)
 /** @verifies SWR-CVC-017 — TX sends brake=0 in RUN state */
 void test_TX_brake_zero_in_run_state(void)
 {
+    mock_com_sent_u8[CVC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD] = 0xAAu;
     mock_vehicle_state = CVC_STATE_RUN;
+
     Swc_CvcCom_TransmitSchedule(0u);
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_sent_u8[7]);
+
+    TEST_ASSERT_EQUAL_UINT8(0u,
+        mock_com_sent_u8[CVC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD]);
 }
 
 /** @verifies SWR-CVC-017 — TX sends brake=100 in SAFE_STOP state */
 void test_TX_brake_max_in_safe_stop(void)
 {
     mock_vehicle_state = CVC_STATE_SAFE_STOP;
+
     Swc_CvcCom_TransmitSchedule(0u);
-    TEST_ASSERT_EQUAL_UINT8(100u, mock_com_sent_u8[7]);
+
+    TEST_ASSERT_EQUAL_UINT8(CVC_SAFE_BRAKE_CMD,
+        mock_com_sent_u8[CVC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD]);
 }
 
 /** @verifies SWR-CVC-017 — TX sends brake=100 in SHUTDOWN state */
 void test_TX_brake_max_in_shutdown(void)
 {
     mock_vehicle_state = CVC_STATE_SHUTDOWN;
+
     Swc_CvcCom_TransmitSchedule(0u);
-    TEST_ASSERT_EQUAL_UINT8(100u, mock_com_sent_u8[7]);
+
+    TEST_ASSERT_EQUAL_UINT8(CVC_SAFE_BRAKE_CMD,
+        mock_com_sent_u8[CVC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD]);
 }
 
 /** @verifies SWR-CVC-017 — TX sends steer=center (0 deg) in SAFE_STOP state.
@@ -558,8 +332,171 @@ void test_TX_brake_max_in_shutdown(void)
 void test_TX_steer_center_in_safe_stop(void)
 {
     mock_vehicle_state = CVC_STATE_SAFE_STOP;
+
     Swc_CvcCom_TransmitSchedule(0u);
-    TEST_ASSERT_EQUAL_INT16(0, mock_com_sent_s16[6]);
+
+    TEST_ASSERT_EQUAL_INT16(0, mock_com_sent_steer_s16);
+}
+
+/* ==================================================================
+ * SWR-CVC-017: E-Stop broadcast + Body_Control_Cmd bridging
+ * ================================================================== */
+
+/** @verifies SWR-CVC-017 — E-stop RTE signal bridged to broadcast signals */
+void test_TX_estop_bridge_active(void)
+{
+    mock_rte_signals[CVC_SIG_ESTOP_ACTIVE] = 1u;
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT8(1u,
+        mock_com_sent_u8[CVC_COM_SIG_ESTOP_BROADCAST_ACTIVE]);
+    TEST_ASSERT_EQUAL_UINT8(1u,   /* CVC = source 1 */
+        mock_com_sent_u8[CVC_COM_SIG_ESTOP_BROADCAST_SOURCE]);
+}
+
+/** @verifies SWR-CVC-017 — E-stop inactive: broadcast signal refreshed to 0 */
+void test_TX_estop_bridge_inactive(void)
+{
+    mock_com_sent_u8[CVC_COM_SIG_ESTOP_BROADCAST_ACTIVE] = 0xAAu;
+    mock_rte_signals[CVC_SIG_ESTOP_ACTIVE] = 0u;
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT8(0u,
+        mock_com_sent_u8[CVC_COM_SIG_ESTOP_BROADCAST_ACTIVE]);
+}
+
+/** @verifies SWR-CVC-017 — Body_Control_Cmd signals refreshed every schedule
+ *  call (0x350 PERIODIC 100ms — Com handles timing, SWC keeps signals fresh) */
+void test_TX_body_control_signals_refreshed(void)
+{
+    mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_HEADLIGHT_CMD]   = 0xAAu;
+    mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_TAIL_LIGHT_ON]   = 0xAAu;
+    mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_HAZARD_ACTIVE]   = 0xAAu;
+    mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_TURN_SIGNAL_CMD] = 0xAAu;
+    mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_DOOR_LOCK_CMD]   = 0xAAu;
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    /* Body control state is all-off until RTE wiring lands (TODO:POST-BETA) */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_HEADLIGHT_CMD]);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_TAIL_LIGHT_ON]);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_HAZARD_ACTIVE]);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_TURN_SIGNAL_CMD]);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_sent_u8[CVC_COM_SIG_BODY_CONTROL_CMD_DOOR_LOCK_CMD]);
+}
+
+/** @verifies SWR-CVC-017 — Transmit schedule handles large time values
+ *  (timing moved to Com PERIODIC mode — argument must be ignored safely) */
+void test_CvcCom_transmit_schedule_large_time(void)
+{
+    Swc_CvcCom_TransmitSchedule(0xFFFFFF00u);
+    Swc_CvcCom_TransmitSchedule(0xFFFFFFFFu);
+
+    TEST_ASSERT_TRUE(1u);
+}
+
+/** @verifies SWR-CVC-017 — No TX before Init (fail-silent) */
+void test_TX_before_init_no_send(void)
+{
+    CvcCom_Initialized = FALSE;
+    mock_com_send_count = 0u;
+
+    Swc_CvcCom_TransmitSchedule(0u);
+
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+
+    /* Restore */
+    Swc_CvcCom_Init();
+}
+
+/* ==================================================================
+ * SWR-CVC-016: RX-to-RTE Bridge Tests
+ * ================================================================== */
+
+/** @verifies SWR-CVC-016 — Brake fault: 0x210 event frame takes precedence */
+void test_Bridge_brake_fault_prefers_event_frame(void)
+{
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE]          = 3u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;
+
+    Swc_CvcCom_BridgeRxToRte();
+
+    TEST_ASSERT_EQUAL_UINT32(3u, mock_rte_signals[CVC_SIG_BRAKE_FAULT]);
+}
+
+/** @verifies SWR-CVC-016 — Brake fault source merge: when the 0x210 event
+ *  shadow is 0 (never TXed in SIL), the 0x201 Brake_Status.BrakeFaultStatus
+ *  value must survive — not be overwritten to 0 every 10ms */
+void test_Bridge_brake_fault_falls_back_to_status(void)
+{
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE]          = 0u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 2u;
+
+    Swc_CvcCom_BridgeRxToRte();
+
+    TEST_ASSERT_EQUAL_UINT32(2u, mock_rte_signals[CVC_SIG_BRAKE_FAULT]);
+}
+
+/** @verifies SWR-CVC-016 — Fault shadows bridged to RTE for VehicleState */
+void test_Bridge_fault_signals_to_rte(void)
+{
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE]      = 1u;
+    mock_com_rx_values[CVC_COM_SIG_SC_STATUS_RELAY_ENERGIZED]          = 1u;
+    mock_com_rx_values[CVC_COM_SIG_BATTERY_STATUS_LEVEL]               = 3u;
+    mock_com_rx_values[CVC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS]    = 1u;
+
+    Swc_CvcCom_BridgeRxToRte();
+
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_MOTOR_CUTOFF]);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_SC_RELAY_KILL]);
+    TEST_ASSERT_EQUAL_UINT32(3u, mock_rte_signals[CVC_SIG_BATTERY_STATUS]);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_STEERING_FAULT]);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[CVC_SIG_MOTOR_FAULT_RZC]);
+}
+
+/** @verifies SWR-CVC-016 — Heartbeat alive counters bridged raw to RTE
+ *  (comm STATUS is owned by Swc_Heartbeat — only the counters move here) */
+void test_Bridge_heartbeat_alive_counters(void)
+{
+    mock_com_rx_values[CVC_COM_SIG_FZC_HEARTBEAT_E_2_E_ALIVE_COUNTER] = 7u;
+    mock_com_rx_values[CVC_COM_SIG_RZC_HEARTBEAT_E_2_E_ALIVE_COUNTER] = 9u;
+
+    Swc_CvcCom_BridgeRxToRte();
+
+    TEST_ASSERT_EQUAL_UINT32(7u,
+        mock_rte_signals[CVC_SIG_FZC_HEARTBEAT_E_2_E_ALIVE_COUNTER]);
+    TEST_ASSERT_EQUAL_UINT32(9u,
+        mock_rte_signals[CVC_SIG_RZC_HEARTBEAT_E_2_E_ALIVE_COUNTER]);
+}
+
+/** @verifies SWR-CVC-016 — Bridge must not write comm status signals:
+ *  heartbeat comm status is owned exclusively by Swc_Heartbeat */
+void test_Bridge_does_not_touch_comm_status(void)
+{
+    mock_rte_signals[CVC_SIG_FZC_COMM_STATUS] = 0xEEu;
+    mock_rte_signals[CVC_SIG_RZC_COMM_STATUS] = 0xEEu;
+
+    Swc_CvcCom_BridgeRxToRte();
+
+    TEST_ASSERT_EQUAL_UINT32(0xEEu, mock_rte_signals[CVC_SIG_FZC_COMM_STATUS]);
+    TEST_ASSERT_EQUAL_UINT32(0xEEu, mock_rte_signals[CVC_SIG_RZC_COMM_STATUS]);
+}
+
+/** @verifies SWR-CVC-016 — No bridge writes before Init (fail-silent) */
+void test_Bridge_before_init_no_writes(void)
+{
+    CvcCom_Initialized = FALSE;
+    mock_rte_write_count = 0u;
+
+    Swc_CvcCom_BridgeRxToRte();
+
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_rte_write_count);
+
+    /* Restore */
+    Swc_CvcCom_Init();
 }
 
 /* ==================================================================
@@ -570,48 +507,33 @@ int main(void)
 {
     UNITY_BEGIN();
 
-    /* SWR-CVC-014: E2E Protect */
-    RUN_TEST(test_CvcCom_e2e_protect_crc_correct);
-    RUN_TEST(test_CvcCom_e2e_protect_alive_counter_increments);
-    RUN_TEST(test_CvcCom_e2e_protect_invalid_index);
+    /* SWR-CVC-017: TX schedule — heartbeat + Vehicle_State */
+    RUN_TEST(test_TX_heartbeat_ecu_id_and_mode);
+    RUN_TEST(test_TX_vehicle_state_mode_and_torque);
+    RUN_TEST(test_TX_torque_clamped_to_100);
+    RUN_TEST(test_TX_fault_mask_estop_and_pedal);
+    RUN_TEST(test_TX_fault_mask_relay_kill_and_can_timeout);
 
-    /* SWR-CVC-015: E2E Check */
-    RUN_TEST(test_CvcCom_e2e_check_valid_message);
-    RUN_TEST(test_CvcCom_e2e_check_crc_mismatch_rejected);
-    RUN_TEST(test_CvcCom_e2e_check_3_failures_safe_default);
-    RUN_TEST(test_CvcCom_e2e_check_valid_resets_counter);
-
-    /* SWR-CVC-016: RX Routing */
-    RUN_TEST(test_CvcCom_receive_routing_table);
-    RUN_TEST(test_CvcCom_receive_null_payload_rejects);
-
-    /* SWR-CVC-017: TX Schedule */
-    RUN_TEST(test_CvcCom_transmit_schedule_periods);
-    RUN_TEST(test_CvcCom_transmit_schedule_large_time);
-
-    /* SWR-CVC-017: State-Gated TX */
+    /* SWR-CVC-017: State-gated TX (safe-state actuation) */
     RUN_TEST(test_TX_brake_zero_in_run_state);
     RUN_TEST(test_TX_brake_max_in_safe_stop);
     RUN_TEST(test_TX_brake_max_in_shutdown);
     RUN_TEST(test_TX_steer_center_in_safe_stop);
 
+    /* SWR-CVC-017: E-stop / body control bridging + robustness */
+    RUN_TEST(test_TX_estop_bridge_active);
+    RUN_TEST(test_TX_estop_bridge_inactive);
+    RUN_TEST(test_TX_body_control_signals_refreshed);
+    RUN_TEST(test_CvcCom_transmit_schedule_large_time);
+    RUN_TEST(test_TX_before_init_no_send);
+
+    /* SWR-CVC-016: RX-to-RTE bridge */
+    RUN_TEST(test_Bridge_brake_fault_prefers_event_frame);
+    RUN_TEST(test_Bridge_brake_fault_falls_back_to_status);
+    RUN_TEST(test_Bridge_fault_signals_to_rte);
+    RUN_TEST(test_Bridge_heartbeat_alive_counters);
+    RUN_TEST(test_Bridge_does_not_touch_comm_status);
+    RUN_TEST(test_Bridge_before_init_no_writes);
+
     return UNITY_END();
 }
-
-/* ==================================================================
- * Source inclusion — link SWC under test directly into test binary
- * ================================================================== */
-
-/* Prevent BSW headers from redefining types when Swc_CvcCom.c is included */
-#define PLATFORM_TYPES_H
-#define STD_TYPES_H
-#define SWC_CVCCOM_H
-#define CVC_CFG_H
-#define E2E_H
-#define COM_H
-#define RTE_H
-#define SWC_VEHICLESTATE_H
-#define PDUR_H
-#define COMSTACK_TYPES_H
-
-#include "../src/Swc_CvcCom.c"

@@ -6,11 +6,18 @@
  * @verifies SSR-FZC-018, SSR-FZC-019, SSR-FZC-020, SWR-FZC-018, SWR-FZC-019, SWR-FZC-020, SWR-FZC-026, SWR-FZC-027
  *
  * Tests E2E protection (CRC-8 0x1D + alive counter + Data ID) on TX,
- * E2E verification on RX with safe defaults (brake 100%, steering center),
- * CAN message reception routing (E-stop, vehicle state, brake, steering),
- * CAN message transmission scheduling (heartbeat 50ms, event-driven).
+ * E2E verification on RX, CAN monitor notification on the RX cycle,
+ * and signal-level CAN TX scheduling (heartbeat, steering/brake status,
+ * fault, motor cutoff and lidar signals pushed to Com shadow buffers).
  *
- * Mocks: Com_ReceiveSignal, Com_SendSignal, PduR_Transmit, Rte_Read, Rte_Write
+ * April 2026 SIL-stability series: RX signal bridging moved to Com RX
+ * auto-push (rxSignalConfig[].rteSignalId) and TX pacing moved to Com
+ * cycle-time config — Swc_FzcCom_Receive only notifies the CAN monitor,
+ * and Swc_FzcCom_TransmitSchedule pushes signal values via Com_SendSignal
+ * (no PduR_Transmit; E2E protection applied in Com_MainFunction_Tx).
+ *
+ * Mocks: Com_ReceiveSignal, Com_SendSignal, Rte_Read, Rte_Write,
+ *        Swc_FzcCanMonitor_NotifyRx
  */
 #include "unity.h"
 
@@ -31,97 +38,52 @@ typedef uint8           Std_ReturnType;
 #define FALSE       0u
 #define NULL_PTR    ((void*)0)
 
-typedef uint16          PduIdType;
-
-typedef struct {
-    uint8* SduDataPtr;
-    uint8  SduLength;
-} PduInfoType;
+/* Mirrors Com.h (blocked by COM_H guard below) */
+typedef uint8           Com_SignalIdType;
 
 /* ==================================================================
- * FZC Config Constants (from Fzc_Cfg.h)
+ * FZC Config Constants (from Fzc_Cfg.h — verified against generated header)
  * ================================================================== */
 
-#define FZC_SIG_STEER_CMD          16u
-#define FZC_SIG_STEER_ANGLE        17u
-#define FZC_SIG_STEER_FAULT        18u
-#define FZC_SIG_BRAKE_CMD          19u
-#define FZC_SIG_BRAKE_POS          20u
-#define FZC_SIG_BRAKE_FAULT        21u
-#define FZC_SIG_LIDAR_DIST         22u
-#define FZC_SIG_LIDAR_SIGNAL       23u
-#define FZC_SIG_LIDAR_ZONE         24u
-#define FZC_SIG_LIDAR_FAULT        25u
-#define FZC_SIG_VEHICLE_STATE      26u
-#define FZC_SIG_ESTOP_ACTIVE       27u
-#define FZC_SIG_BUZZER_PATTERN     28u
-#define FZC_SIG_MOTOR_CUTOFF       29u
-#define FZC_SIG_FAULT_MASK         30u
-#define FZC_SIG_STEER_PWM_DISABLE  31u
-#define FZC_SIG_BRAKE_PWM_DISABLE  32u
-#define FZC_SIG_SELF_TEST_RESULT   33u
-#define FZC_SIG_HEARTBEAT_ALIVE    34u
-#define FZC_SIG_SAFETY_STATUS      35u
-#define FZC_SIG_COUNT              36u
+/* RTE signal IDs (generated aliases → DBC-derived signal IDs) */
+#define FZC_SIG_BRAKE_CMD           31u  /* FZC_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD */
+#define FZC_SIG_BRAKE_FAULT         44u  /* FZC_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS */
+#define FZC_SIG_BRAKE_POS           46u  /* FZC_SIG_BRAKE_STATUS_BRAKE_POSITION */
+#define FZC_SIG_ESTOP_ACTIVE        68u  /* FZC_SIG_ESTOP_BROADCAST_ACTIVE */
+#define FZC_SIG_LIDAR_ZONE          94u  /* FZC_SIG_LIDAR_DISTANCE_OBSTACLE_ZONE */
+#define FZC_SIG_LIDAR_DIST          95u  /* FZC_SIG_LIDAR_DISTANCE_RANGE_CM */
+#define FZC_SIG_LIDAR_SIGNAL        97u  /* FZC_SIG_LIDAR_DISTANCE_SIGNAL_STRENGTH */
+#define FZC_SIG_MOTOR_CUTOFF       115u  /* FZC_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE */
+#define FZC_SIG_STEER_ANGLE        153u  /* FZC_SIG_STEERING_STATUS_ACTUAL_ANGLE */
+#define FZC_SIG_STEER_FAULT        159u  /* FZC_SIG_STEERING_STATUS_STEER_FAULT_STATUS */
+#define FZC_SIG_VEHICLE_STATE      187u  /* FZC_SIG_VEHICLE_STATE_MODE */
+#define FZC_SIG_FAULT_MASK         204u
+#define FZC_SIG_COUNT              205u
 
-/* Com PDU IDs */
-#define FZC_COM_TX_HEARTBEAT       0u
-#define FZC_COM_TX_STEER_STATUS    1u
-#define FZC_COM_TX_BRAKE_STATUS    2u
-#define FZC_COM_TX_BRAKE_FAULT     3u
-#define FZC_COM_TX_MOTOR_CUTOFF    4u
-#define FZC_COM_TX_LIDAR           5u
+/* Com Signal IDs used by Swc_FzcCom.c (from Fzc_Cfg.h) */
+#define FZC_COM_SIG_FZC_HEARTBEAT_ECU_ID                 3u
+#define FZC_COM_SIG_FZC_HEARTBEAT_OPERATING_MODE         4u
+#define FZC_COM_SIG_FZC_HEARTBEAT_FAULT_STATUS           5u
+#define FZC_COM_SIG_STEERING_STATUS_ACTUAL_ANGLE         9u
+#define FZC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS  11u
+#define FZC_COM_SIG_BRAKE_STATUS_BRAKE_POSITION         17u
+#define FZC_COM_SIG_BRAKE_FAULT_FAULT_TYPE              25u
+#define FZC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE       31u
+#define FZC_COM_SIG_LIDAR_DISTANCE_RANGE_CM             36u
+#define FZC_COM_SIG_LIDAR_DISTANCE_SIGNAL_STRENGTH      37u
+#define FZC_COM_SIG_LIDAR_DISTANCE_OBSTACLE_ZONE        38u
+#define FZC_COM_SIG_COUNT                              188u
 
-#define FZC_COM_RX_ESTOP           0u
-#define FZC_COM_RX_VEHICLE_STATE   1u
-#define FZC_COM_RX_STEER_CMD       2u
-#define FZC_COM_RX_BRAKE_CMD       3u
+/* E2E Data IDs (from Fzc_Cfg.h) */
+#define FZC_E2E_HEARTBEAT_DATA_ID    0x03u
+#define FZC_E2E_BRAKE_CMD_DATA_ID    0x08u
 
-/* Com Signal IDs used by Swc_FzcCom.c (mirrors Fzc_Cfg.h) */
-#define FZC_COM_SIG_ESTOP_BROADCAST_ACTIVE         50u
-#define FZC_COM_SIG_VEHICLE_STATE_VEHICLE_STATE           89u
-#define FZC_COM_SIG_STEER_COMMAND_STEER_ANGLE_CMD        104u
-#define FZC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD        110u
-#define FZC_COM_SIG_STEERING_STATUS_ACTUAL_ANGLE           9u
-#define FZC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS    11u
-#define FZC_COM_SIG_BRAKE_STATUS_BRAKE_POSITION           17u
-
-/* E2E Data IDs */
-#define FZC_E2E_HEARTBEAT_DATA_ID    0x11u
-#define FZC_E2E_STEER_STATUS_DATA_ID 0x20u
-#define FZC_E2E_BRAKE_STATUS_DATA_ID 0x21u
-#define FZC_E2E_LIDAR_DATA_ID        0x22u
-#define FZC_E2E_ESTOP_DATA_ID        0x01u
-#define FZC_E2E_VEHSTATE_DATA_ID     0x10u
-#define FZC_E2E_STEER_CMD_DATA_ID    0x12u
-#define FZC_E2E_BRAKE_CMD_DATA_ID    0x13u
-
-/* Brake/vehicle constants */
+/* Application constants (from Fzc_App.h) */
 #define FZC_BRAKE_NO_FAULT          0u
 #define FZC_LIDAR_ZONE_CLEAR        0u
-#define FZC_LIDAR_ZONE_WARNING      1u
 #define FZC_LIDAR_ZONE_BRAKING      2u
-#define FZC_LIDAR_ZONE_EMERGENCY    3u
 #define FZC_ECU_ID                0x02u
 #define FZC_STATE_RUN               1u
-
-/* E2E types needed by Swc_FzcCom.c (shared BSW E2E) */
-typedef struct { uint8 DataId; uint8 MaxDeltaCounter; uint16 DataLength; } E2E_ConfigType;
-typedef struct { uint8 Counter; } E2E_StateType;
-
-/* ==================================================================
- * Mock: E2E_Protect (shared BSW E2E — called by TransmitSchedule)
- * ================================================================== */
-
-static uint8 mock_e2e_protect_count;
-
-Std_ReturnType E2E_Protect(const E2E_ConfigType* Config, E2E_StateType* State,
-                           uint8* DataPtr, uint16 Length)
-{
-    mock_e2e_protect_count++;
-    (void)Config; (void)State; (void)DataPtr; (void)Length;
-    return E_OK;
-}
 
 /* ==================================================================
  * Swc_FzcCom API declarations
@@ -137,7 +99,7 @@ extern void            Swc_FzcCom_TransmitSchedule(void);
  * Mock: Rte_Read / Rte_Write
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  64u
+#define MOCK_RTE_MAX_SIGNALS  FZC_SIG_COUNT
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint8   mock_rte_write_count;
@@ -165,92 +127,75 @@ Std_ReturnType Rte_Read(uint16 SignalId, uint32* DataPtr)
 }
 
 /* ==================================================================
- * Mock: Com_ReceiveSignal / Com_SendSignal
+ * Mock: Com_ReceiveSignal
  *
- * ReceiveSignal is signal-level: returns typed value from shadow buffer.
- * Signal types: 0=uint8, 1=uint16, 2=sint16 (matches Com_SignalTypeType).
+ * RX signal bridging moved to Com RX auto-push — Swc_FzcCom_Receive
+ * must NOT call Com_ReceiveSignal any more.  The mock only counts
+ * calls so the tests can assert the migration holds.
  * ================================================================== */
 
-#define MOCK_COM_MAX_SIGNALS  16u
-#define MOCK_COM_MAX_PDUS     16u
+static uint16  mock_com_rx_call_count;
 
-typedef struct {
-    sint32  value;        /* Stored as sint32 to hold any signal type */
-    uint8   available;
-    uint8   sig_type;     /* 0=uint8, 1=uint16, 2=sint16 */
-} MockComSignalType;
-
-static MockComSignalType mock_com_rx_signals[MOCK_COM_MAX_SIGNALS];
-static uint8  mock_com_tx_data[MOCK_COM_MAX_PDUS][8];
-static uint8  mock_com_tx_count;
-static uint8  mock_com_tx_last_pdu;
-
-Std_ReturnType Com_ReceiveSignal(uint8 SignalId, void* DataPtr)
+Std_ReturnType Com_ReceiveSignal(Com_SignalIdType SignalId, void* DataPtr)
 {
-    if (DataPtr == NULL_PTR) {
-        return E_NOT_OK;
-    }
-    if (SignalId >= MOCK_COM_MAX_SIGNALS) {
-        return E_NOT_OK;
-    }
-    if (mock_com_rx_signals[SignalId].available != TRUE) {
-        return E_NOT_OK;
-    }
-    switch (mock_com_rx_signals[SignalId].sig_type) {
-    case 2u:  /* sint16 */
-        *((sint16*)DataPtr) = (sint16)mock_com_rx_signals[SignalId].value;
-        break;
-    case 1u:  /* uint16 */
-        *((uint16*)DataPtr) = (uint16)mock_com_rx_signals[SignalId].value;
-        break;
-    default:  /* uint8 */
-        *((uint8*)DataPtr) = (uint8)mock_com_rx_signals[SignalId].value;
-        break;
-    }
-    return E_OK;
+    mock_com_rx_call_count++;
+    (void)SignalId;
+    (void)DataPtr;
+    return E_NOT_OK;
 }
 
-Std_ReturnType Com_SendSignal(uint8 SignalId, const void* DataPtr)
+/* ==================================================================
+ * Mock: Com_SendSignal
+ *
+ * Signal-level TX: stores the last value sent per Com signal ID.
+ * Widths mirror the SWC call sites: ACTUAL_ANGLE (sint16) and
+ * RANGE_CM (uint16) are 2-byte reads, all other TX signals are uint8.
+ * ================================================================== */
+
+#define MOCK_COM_MAX_SIGNALS  FZC_COM_SIG_COUNT
+
+typedef struct {
+    uint32  value;        /* Last sent value (zero-extended) */
+    uint8   sent;
+} MockComTxSignalType;
+
+static MockComTxSignalType mock_com_tx_signals[MOCK_COM_MAX_SIGNALS];
+static uint16  mock_com_tx_count;
+static uint8   mock_com_tx_last_sig;
+
+static uint8 MockCom_SignalIs16Bit(Com_SignalIdType SignalId)
 {
-    const uint8* ptr;
-    uint8 i;
+    return (uint8)(((SignalId == FZC_COM_SIG_STEERING_STATUS_ACTUAL_ANGLE) ||
+                    (SignalId == FZC_COM_SIG_LIDAR_DISTANCE_RANGE_CM)) ? TRUE : FALSE);
+}
+
+Std_ReturnType Com_SendSignal(Com_SignalIdType SignalId, const void* DataPtr)
+{
     if (DataPtr == NULL_PTR) {
         return E_NOT_OK;
     }
     mock_com_tx_count++;
-    mock_com_tx_last_pdu = SignalId;
-    ptr = (const uint8*)DataPtr;
-    if (SignalId < MOCK_COM_MAX_PDUS) {
-        for (i = 0u; i < 8u; i++) {
-            mock_com_tx_data[SignalId][i] = ptr[i];
+    mock_com_tx_last_sig = SignalId;
+    if (SignalId < MOCK_COM_MAX_SIGNALS) {
+        mock_com_tx_signals[SignalId].sent = TRUE;
+        if (MockCom_SignalIs16Bit(SignalId) == TRUE) {
+            mock_com_tx_signals[SignalId].value = (uint32)(*(const uint16*)DataPtr);
+        } else {
+            mock_com_tx_signals[SignalId].value = (uint32)(*(const uint8*)DataPtr);
         }
     }
     return E_OK;
 }
 
 /* ==================================================================
- * Mock: PduR_Transmit
+ * Mock: Swc_FzcCanMonitor_NotifyRx (called by Swc_FzcCom_Receive)
  * ================================================================== */
 
-static uint8   mock_pdur_tx_count;
-static uint16  mock_pdur_last_pdu_id;
-static uint8   mock_pdur_tx_pdu_data[MOCK_COM_MAX_PDUS][8];
-static uint8   mock_pdur_tx_sent[MOCK_COM_MAX_PDUS];
+static uint16  mock_canmon_notify_count;
 
-Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
+void Swc_FzcCanMonitor_NotifyRx(void)
 {
-    uint8 i;
-    mock_pdur_tx_count++;
-    mock_pdur_last_pdu_id = TxPduId;
-    if ((PduInfoPtr != NULL_PTR) && (PduInfoPtr->SduDataPtr != NULL_PTR)) {
-        if (TxPduId < MOCK_COM_MAX_PDUS) {
-            mock_pdur_tx_sent[TxPduId] = TRUE;
-            for (i = 0u; i < 8u; i++) {
-                mock_pdur_tx_pdu_data[TxPduId][i] = PduInfoPtr->SduDataPtr[i];
-            }
-        }
-    }
-    return E_OK;
+    mock_canmon_notify_count++;
 }
 
 /* ==================================================================
@@ -259,37 +204,24 @@ Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
 
 void setUp(void)
 {
-    uint8 i;
-    uint8 j;
+    uint16 i;
 
-    mock_e2e_protect_count = 0u;
     mock_rte_write_count = 0u;
     for (i = 0u; i < MOCK_RTE_MAX_SIGNALS; i++) {
         mock_rte_signals[i] = 0u;
     }
     mock_rte_signals[FZC_SIG_VEHICLE_STATE] = FZC_STATE_RUN;
 
+    mock_com_rx_call_count = 0u;
+
     mock_com_tx_count    = 0u;
-    mock_com_tx_last_pdu = 0xFFu;
+    mock_com_tx_last_sig = 0xFFu;
     for (i = 0u; i < MOCK_COM_MAX_SIGNALS; i++) {
-        mock_com_rx_signals[i].value     = 0;
-        mock_com_rx_signals[i].available = FALSE;
-        mock_com_rx_signals[i].sig_type  = 0u;
-    }
-    for (i = 0u; i < MOCK_COM_MAX_PDUS; i++) {
-        for (j = 0u; j < 8u; j++) {
-            mock_com_tx_data[i][j] = 0u;
-        }
+        mock_com_tx_signals[i].value = 0u;
+        mock_com_tx_signals[i].sent  = FALSE;
     }
 
-    mock_pdur_tx_count    = 0u;
-    mock_pdur_last_pdu_id = 0xFFu;
-    for (i = 0u; i < MOCK_COM_MAX_PDUS; i++) {
-        mock_pdur_tx_sent[i] = FALSE;
-        for (j = 0u; j < 8u; j++) {
-            mock_pdur_tx_pdu_data[i][j] = 0u;
-        }
-    }
+    mock_canmon_notify_count = 0u;
 
     Swc_FzcCom_Init();
 }
@@ -328,12 +260,12 @@ void test_FzcCom_e2e_protect_crc_and_alive(void)
 /** @verifies SWR-FZC-019 — E2E protect rejects NULL data */
 void test_FzcCom_e2e_protect_null_rejected(void)
 {
-    Std_ReturnType ret = Swc_FzcCom_E2eProtect(NULL_PTR, 8u, 0x11u);
+    Std_ReturnType ret = Swc_FzcCom_E2eProtect(NULL_PTR, 8u, FZC_E2E_HEARTBEAT_DATA_ID);
     TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, ret);
 }
 
 /* ==================================================================
- * SWR-FZC-020: E2E Receive (3 tests)
+ * SWR-FZC-020: E2E Receive + RX safety (3 tests)
  * ================================================================== */
 
 /** @verifies SWR-FZC-020 — E2E check accepts valid protected message */
@@ -349,26 +281,24 @@ void test_FzcCom_e2e_check_valid(void)
     TEST_ASSERT_EQUAL_UINT8(E_OK, ret);
 }
 
-/** @verifies SWR-FZC-020 — Brake RX: Com_ReceiveSignal unavailable → no RTE write */
-void test_FzcCom_receive_brake_unavailable_no_rte_write(void)
+/** @verifies SWR-FZC-020 — Receive performs no RTE writes (Com auto-push owns routing) */
+void test_FzcCom_receive_no_rte_writes(void)
 {
-    /* Brake signal (13) not available */
-    mock_com_rx_signals[13].available = FALSE;
-
     /* Set RTE to sentinel value to detect if it gets overwritten */
     mock_rte_signals[FZC_SIG_BRAKE_CMD] = 0xDEADu;
 
+    mock_rte_write_count = 0u;
     Swc_FzcCom_Receive();
 
-    /* assert: RTE was NOT written (sentinel preserved) */
+    /* assert: no RTE writes from the RX cycle */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_rte_write_count);
+    /* assert: brake command sentinel preserved (no stale bridging) */
     TEST_ASSERT_EQUAL_UINT32(0xDEADu, mock_rte_signals[FZC_SIG_BRAKE_CMD]);
 }
 
-/** @verifies SWR-FZC-020 — All RX unavailable → no fault-triggering writes */
+/** @verifies SWR-FZC-020 — RX cycle injects no fault-triggering safe defaults */
 void test_FzcCom_receive_no_signals_no_estop(void)
 {
-    /* No signals available */
-
     Swc_FzcCom_Receive();
 
     /* assert: E-stop stays at 0 (initial), NOT set to safe default 1 */
@@ -378,54 +308,51 @@ void test_FzcCom_receive_no_signals_no_estop(void)
 }
 
 /* ==================================================================
- * SWR-FZC-026: CAN Message Reception (3 tests)
+ * SWR-FZC-026: CAN Message Reception (2 tests)
  * ================================================================== */
 
-/** @verifies SWR-FZC-026 — E-stop signal (0x001) routes to RTE */
-void test_FzcCom_receive_estop_routing(void)
+/** @verifies SWR-FZC-026 — Receive notifies CAN monitor each RX cycle
+ *  (resets the silence counter — prevents false CAN-loss latch) */
+void test_FzcCom_receive_notifies_can_monitor(void)
 {
-    /* Signal 10 = E-stop active (uint8), value = 1 */
-    mock_com_rx_signals[10].value     = 1;
-    mock_com_rx_signals[10].available = TRUE;
-    mock_com_rx_signals[10].sig_type  = 0u;  /* uint8 */
-
+    Swc_FzcCom_Receive();
+    Swc_FzcCom_Receive();
     Swc_FzcCom_Receive();
 
-    /* assert: E-stop active signal written to RTE */
-    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[FZC_SIG_ESTOP_ACTIVE]);
+    TEST_ASSERT_EQUAL_UINT16(3u, mock_canmon_notify_count);
 }
 
-/** @verifies SWR-FZC-026 — Brake command (0x103) routes to RTE */
-void test_FzcCom_receive_brake_cmd_routing(void)
+/** @verifies SWR-FZC-026 — RX bridging moved to Com auto-push:
+ *  Receive makes no Com_ReceiveSignal calls */
+void test_FzcCom_receive_no_com_signal_reads(void)
 {
-    /* Signal 13 = brake command (uint8), value = 50 */
-    mock_com_rx_signals[13].value     = 50;
-    mock_com_rx_signals[13].available = TRUE;
-    mock_com_rx_signals[13].sig_type  = 0u;  /* uint8 */
-
     Swc_FzcCom_Receive();
 
-    /* assert: brake command signal = 50 */
-    TEST_ASSERT_EQUAL_UINT32(50u, mock_rte_signals[FZC_SIG_BRAKE_CMD]);
-}
-
-/** @verifies SWR-FZC-026 — Steering command (0x102) routes to RTE */
-void test_FzcCom_receive_steering_cmd_routing(void)
-{
-    /* Signal 12 = steer command (sint16), value = 15 deg */
-    mock_com_rx_signals[12].value     = 15;
-    mock_com_rx_signals[12].available = TRUE;
-    mock_com_rx_signals[12].sig_type  = 2u;  /* sint16 */
-
-    Swc_FzcCom_Receive();
-
-    /* assert: steering command signal = 15 */
-    TEST_ASSERT_EQUAL_UINT32(15u, mock_rte_signals[FZC_SIG_STEER_CMD]);
+    TEST_ASSERT_EQUAL_UINT16(0u, mock_com_rx_call_count);
 }
 
 /* ==================================================================
- * SWR-FZC-027: CAN Message Transmission (2 tests)
+ * SWR-FZC-027: CAN Message Transmission (4 tests)
  * ================================================================== */
+
+/** @verifies SWR-FZC-027 — Heartbeat signals (ECU ID, mode, fault nibble)
+ *  pushed to Com each cycle (50ms pacing enforced by Com config) */
+void test_FzcCom_transmit_heartbeat_signals(void)
+{
+    mock_rte_signals[FZC_SIG_VEHICLE_STATE] = FZC_STATE_RUN;
+    mock_rte_signals[FZC_SIG_FAULT_MASK]    = 0x05u;
+
+    Swc_FzcCom_TransmitSchedule();
+
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_FZC_HEARTBEAT_ECU_ID].sent);
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_ECU_ID,
+        mock_com_tx_signals[FZC_COM_SIG_FZC_HEARTBEAT_ECU_ID].value);
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_STATE_RUN,
+        mock_com_tx_signals[FZC_COM_SIG_FZC_HEARTBEAT_OPERATING_MODE].value);
+    TEST_ASSERT_EQUAL_UINT32(0x05u,
+        mock_com_tx_signals[FZC_COM_SIG_FZC_HEARTBEAT_FAULT_STATUS].value);
+}
 
 /** @verifies SWR-FZC-027 — Steering status sent via Com_SendSignal every cycle */
 void test_FzcCom_transmit_steering_status_10ms(void)
@@ -439,32 +366,16 @@ void test_FzcCom_transmit_steering_status_10ms(void)
     /* Single cycle should send steering data via Com_SendSignal */
     Swc_FzcCom_TransmitSchedule();
 
-    /* At least 2 Com_SendSignal calls: steer_angle (signal 3) + steer_fault (signal 4) */
+    /* At least 2 Com_SendSignal calls: steer_angle + steer_fault */
     TEST_ASSERT_TRUE(mock_com_tx_count >= 2u);
-}
-
-/** @verifies SWR-FZC-027 — Brake fault TX via PduR_Transmit at 100ms (offset 3).
- *  FDCAN TX FIFO = 3 slots, brake_fault paced to avoid FIFO overflow. */
-void test_FzcCom_transmit_event_driven_brake_fault(void)
-{
-    uint8 i;
-
-    /* Set brake fault active in RTE */
-    mock_rte_signals[FZC_SIG_BRAKE_FAULT] = 1u;
-
-    mock_pdur_tx_count = 0u;
-
-    /* Brake fault is paced to 100ms (offset 3): run 3 cycles to reach it.
-     * Cycles: counter=1, 2, 3 — offset 3 fires on counter==3. */
-    for (i = 0u; i < 3u; i++) {
-        Swc_FzcCom_TransmitSchedule();
-    }
-
-    /* assert: brake fault PDU was sent via PduR_Transmit */
-    TEST_ASSERT_TRUE(mock_pdur_tx_sent[FZC_COM_TX_BRAKE_FAULT]);
-
-    /* Verify brake fault data byte */
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_pdur_tx_pdu_data[FZC_COM_TX_BRAKE_FAULT][2]);
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_STEERING_STATUS_ACTUAL_ANGLE].sent);
+    TEST_ASSERT_EQUAL_UINT32(45u,
+        mock_com_tx_signals[FZC_COM_SIG_STEERING_STATUS_ACTUAL_ANGLE].value);
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS].sent);
+    TEST_ASSERT_EQUAL_UINT32(0u,
+        mock_com_tx_signals[FZC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS].value);
 }
 
 /** @verifies SWR-FZC-027 — Brake position sent via Com_SendSignal every cycle */
@@ -473,59 +384,104 @@ void test_FzcCom_transmit_brake_position_10ms(void)
     /* Set brake position in RTE */
     mock_rte_signals[FZC_SIG_BRAKE_POS] = 75u;
 
-    mock_com_tx_count = 0u;
-
-    /* Single cycle should send brake position via Com_SendSignal(5u) */
     Swc_FzcCom_TransmitSchedule();
 
-    /* assert: signal 5 was sent with correct value */
-    TEST_ASSERT_EQUAL_UINT8(75u, mock_com_tx_data[5][0]);
+    /* assert: brake position signal was sent with correct value */
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_BRAKE_STATUS_BRAKE_POSITION].sent);
+    TEST_ASSERT_EQUAL_UINT32(75u,
+        mock_com_tx_signals[FZC_COM_SIG_BRAKE_STATUS_BRAKE_POSITION].value);
+}
+
+/** @verifies SWR-FZC-027 — Brake fault value pushed each cycle
+ *  (TX pacing owned by Com cycle-time config, not the SWC) */
+void test_FzcCom_transmit_brake_fault_active(void)
+{
+    /* Set brake fault active in RTE */
+    mock_rte_signals[FZC_SIG_BRAKE_FAULT] = 1u;
+
+    Swc_FzcCom_TransmitSchedule();
+
+    /* assert: brake fault signal was sent with the fault type */
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_BRAKE_FAULT_FAULT_TYPE].sent);
+    TEST_ASSERT_EQUAL_UINT32(1u,
+        mock_com_tx_signals[FZC_COM_SIG_BRAKE_FAULT_FAULT_TYPE].value);
 }
 
 /* ==================================================================
- * SWR-FZC-027: Cyclic fault TX — always send, even when no fault (2 tests)
+ * SWR-FZC-027: Cyclic fault TX — always send, even when no fault (3 tests)
  * ================================================================== */
 
 /** @verifies SWR-FZC-027
- *  Equivalence class: brake fault PDU always sent at 100ms (offset 3),
- *  even when NO_FAULT. Prevents stale CVC shadow buffer. */
+ *  Equivalence class: brake fault signal always pushed, even when
+ *  NO_FAULT. Prevents stale CVC shadow buffer. */
 void test_FzcCom_transmit_brake_fault_sent_when_no_fault(void)
 {
-    uint8 i;
-
     /* brake fault = NO_FAULT (0) */
     mock_rte_signals[FZC_SIG_BRAKE_FAULT] = FZC_BRAKE_NO_FAULT;
 
-    /* Run 3 cycles to reach offset 3 (brake_fault pacing) */
-    for (i = 0u; i < 3u; i++) {
-        Swc_FzcCom_TransmitSchedule();
-    }
+    Swc_FzcCom_TransmitSchedule();
 
-    /* assert: brake fault PDU was transmitted (cyclic, not event-driven) */
-    TEST_ASSERT_EQUAL_UINT8(TRUE, mock_pdur_tx_sent[FZC_COM_TX_BRAKE_FAULT]);
-    /* assert: data byte = 0 (no fault) */
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_pdur_tx_pdu_data[FZC_COM_TX_BRAKE_FAULT][2]);
+    /* assert: brake fault signal was pushed (cyclic, not event-driven) */
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_BRAKE_FAULT_FAULT_TYPE].sent);
+    /* assert: value = 0 (no fault) */
+    TEST_ASSERT_EQUAL_UINT32(0u,
+        mock_com_tx_signals[FZC_COM_SIG_BRAKE_FAULT_FAULT_TYPE].value);
 }
 
 /** @verifies SWR-FZC-027
- *  Equivalence class: motor cutoff PDU always sent at 100ms (offset 7),
- *  even when inactive. Prevents stale CVC shadow buffer. */
+ *  Equivalence class: motor cutoff signal always pushed, even when
+ *  inactive. Prevents stale CVC shadow buffer. */
 void test_FzcCom_transmit_motor_cutoff_sent_when_inactive(void)
 {
-    uint8 i;
-
     /* motor cutoff = 0 (inactive) */
     mock_rte_signals[FZC_SIG_MOTOR_CUTOFF] = 0u;
 
-    /* Run 7 cycles to reach offset 7 (motor_cutoff pacing) */
-    for (i = 0u; i < 7u; i++) {
-        Swc_FzcCom_TransmitSchedule();
-    }
+    Swc_FzcCom_TransmitSchedule();
 
-    /* assert: motor cutoff PDU was transmitted (cyclic, not event-driven) */
-    TEST_ASSERT_EQUAL_UINT8(TRUE, mock_pdur_tx_sent[FZC_COM_TX_MOTOR_CUTOFF]);
-    /* assert: data byte = 0 (inactive) */
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_pdur_tx_pdu_data[FZC_COM_TX_MOTOR_CUTOFF][2]);
+    /* assert: motor cutoff signal was pushed (cyclic, not event-driven) */
+    TEST_ASSERT_EQUAL_UINT8(TRUE,
+        mock_com_tx_signals[FZC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE].sent);
+    /* assert: value = 0 (inactive) */
+    TEST_ASSERT_EQUAL_UINT32(0u,
+        mock_com_tx_signals[FZC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE].value);
+}
+
+/** @verifies SWR-FZC-027
+ *  Equivalence class: motor cutoff active (1) propagated to Com signal */
+void test_FzcCom_transmit_motor_cutoff_active(void)
+{
+    mock_rte_signals[FZC_SIG_MOTOR_CUTOFF] = 1u;
+
+    Swc_FzcCom_TransmitSchedule();
+
+    TEST_ASSERT_EQUAL_UINT32(1u,
+        mock_com_tx_signals[FZC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE].value);
+}
+
+/* ==================================================================
+ * SWR-FZC-027: Lidar TX (1 test)
+ * ================================================================== */
+
+/** @verifies SWR-FZC-027 — Lidar zone/range/signal-strength pushed each cycle
+ *  so all consumers (CVC) always have current data */
+void test_FzcCom_transmit_lidar_signals(void)
+{
+    mock_rte_signals[FZC_SIG_LIDAR_ZONE]   = FZC_LIDAR_ZONE_BRAKING;
+    mock_rte_signals[FZC_SIG_LIDAR_DIST]   = 0x0123u;
+    mock_rte_signals[FZC_SIG_LIDAR_SIGNAL] = 0xABCDu;
+
+    Swc_FzcCom_TransmitSchedule();
+
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_LIDAR_ZONE_BRAKING,
+        mock_com_tx_signals[FZC_COM_SIG_LIDAR_DISTANCE_OBSTACLE_ZONE].value);
+    TEST_ASSERT_EQUAL_UINT32(0x0123u,
+        mock_com_tx_signals[FZC_COM_SIG_LIDAR_DISTANCE_RANGE_CM].value);
+    /* Signal strength: SWC sends the high byte of the 16-bit raw value */
+    TEST_ASSERT_EQUAL_UINT32(0xABu,
+        mock_com_tx_signals[FZC_COM_SIG_LIDAR_DISTANCE_SIGNAL_STRENGTH].value);
 }
 
 /* ==================================================================
@@ -540,24 +496,28 @@ int main(void)
     RUN_TEST(test_FzcCom_e2e_protect_crc_and_alive);
     RUN_TEST(test_FzcCom_e2e_protect_null_rejected);
 
-    /* SWR-FZC-020: E2E Receive + signal availability */
+    /* SWR-FZC-020: E2E Receive + RX safety */
     RUN_TEST(test_FzcCom_e2e_check_valid);
-    RUN_TEST(test_FzcCom_receive_brake_unavailable_no_rte_write);
+    RUN_TEST(test_FzcCom_receive_no_rte_writes);
     RUN_TEST(test_FzcCom_receive_no_signals_no_estop);
 
     /* SWR-FZC-026: CAN Message Reception */
-    RUN_TEST(test_FzcCom_receive_estop_routing);
-    RUN_TEST(test_FzcCom_receive_brake_cmd_routing);
-    RUN_TEST(test_FzcCom_receive_steering_cmd_routing);
+    RUN_TEST(test_FzcCom_receive_notifies_can_monitor);
+    RUN_TEST(test_FzcCom_receive_no_com_signal_reads);
 
     /* SWR-FZC-027: CAN Message Transmission */
+    RUN_TEST(test_FzcCom_transmit_heartbeat_signals);
     RUN_TEST(test_FzcCom_transmit_steering_status_10ms);
     RUN_TEST(test_FzcCom_transmit_brake_position_10ms);
-    RUN_TEST(test_FzcCom_transmit_event_driven_brake_fault);
+    RUN_TEST(test_FzcCom_transmit_brake_fault_active);
 
     /* SWR-FZC-027: Cyclic fault TX — always send */
     RUN_TEST(test_FzcCom_transmit_brake_fault_sent_when_no_fault);
     RUN_TEST(test_FzcCom_transmit_motor_cutoff_sent_when_inactive);
+    RUN_TEST(test_FzcCom_transmit_motor_cutoff_active);
+
+    /* SWR-FZC-027: Lidar TX */
+    RUN_TEST(test_FzcCom_transmit_lidar_signals);
 
     return UNITY_END();
 }
@@ -577,9 +537,5 @@ int main(void)
 #define PDUR_H
 #define E2E_H
 #define SWC_FZC_CAN_MONITOR_H
-
-/* Mock: Swc_FzcCanMonitor_NotifyRx (called by Swc_FzcCom_Receive) */
-static uint8 mock_canmon_notify_count;
-void Swc_FzcCanMonitor_NotifyRx(void) { mock_canmon_notify_count++; }
 
 #include "../src/Swc_FzcCom.c"

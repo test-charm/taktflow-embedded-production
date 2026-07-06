@@ -7,11 +7,12 @@
  * @verifies SWR-RZC-009, SWR-RZC-010, SWR-RZC-011
  *
  * Tests temperature measurement via IoHwAb, plausible-range gating,
- * stepped derating curve (100/75/50/0%), hysteresis on recovery,
- * CAN broadcast at 100ms rate, and safe behaviour before init.
+ * dual-NTC cross-check plausibility (fail-hot, GAP-OT-001), stepped
+ * derating curve (100/75/50/0%), hysteresis on recovery, CAN broadcast
+ * via RTE signals, and safe behaviour before init.
  *
- * Mocks: IoHwAb_ReadMotorTemp, Rte_Read, Rte_Write, Com_SendSignal,
- *        Dem_ReportErrorStatus
+ * Mocks: IoHwAb_ReadMotorTemp, IoHwAb_ReadMotorTemp2, Rte_Read,
+ *        Rte_Write, Com_SendSignal, Dem_ReportErrorStatus
  */
 #include "unity.h"
 
@@ -50,10 +51,10 @@ typedef uint8           Com_SignalIdType;
  * Signal IDs (from Rzc_Cfg.h — redefined locally)
  * ================================================================== */
 
-#define RZC_SIG_TEMP1_DC            24u
-#define RZC_SIG_TEMP2_DC            25u
-#define RZC_SIG_DERATING_PCT        26u
-#define RZC_SIG_TEMP_FAULT          27u
+#define RZC_SIG_TEMP1_DC           128u  /* = RZC_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_1_C */
+#define RZC_SIG_TEMP2_DC           129u  /* = RZC_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_2_C */
+#define RZC_SIG_DERATING_PCT       124u  /* = RZC_SIG_MOTOR_TEMPERATURE_DERATING_PERCENT */
+#define RZC_SIG_TEMP_FAULT         201u  /* ECU-internal (not on CAN) */
 
 #define RZC_COM_TX_MOTOR_TEMP        3u
 
@@ -78,6 +79,10 @@ typedef uint8           Com_SignalIdType;
 #define RZC_TEMP_MIN_DDC          (-300)
 #define RZC_TEMP_MAX_DDC           1500
 
+/** Dual-NTC cross-check plausibility threshold (deci-degrees C).
+ *  |NTC1 - NTC2| > 30.0 degC -> sensor plausibility fault (fail-hot). */
+#define RZC_TEMP_PLAUS_DELTA_DDC   300
+
 /* Swc_TempMonitor API declarations */
 extern void Swc_TempMonitor_Init(void);
 extern void Swc_TempMonitor_MainFunction(void);
@@ -99,10 +104,28 @@ Std_ReturnType IoHwAb_ReadMotorTemp(uint16* Temp_dC)
 }
 
 /* ==================================================================
+ * Mock: IoHwAb_ReadMotorTemp2 (second NTC — dual-sensor cross-check)
+ * ================================================================== */
+
+static sint16  mock_temp2_dC;
+static uint8   mock_iohwab2_return;
+
+Std_ReturnType IoHwAb_ReadMotorTemp2(uint16* Temp_dC)
+{
+    if (Temp_dC == NULL_PTR) {
+        return E_NOT_OK;
+    }
+    *Temp_dC = (uint16)mock_temp2_dC;
+    return mock_iohwab2_return;
+}
+
+/* ==================================================================
  * Mock: Rte_Read
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  48u
+/** Sized to RZC_SIG_COUNT (202u in Rzc_Cfg.h) so the real temperature
+ *  signal IDs (124/128/129/201) are captured. */
+#define MOCK_RTE_MAX_SIGNALS  202u
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 
@@ -193,9 +216,11 @@ void setUp(void)
 {
     uint8 i;
 
-    /* Reset IoHwAb mock */
+    /* Reset IoHwAb mocks (both NTCs agree at 25.0 degC by default) */
     mock_temp_dC        = 250;   /* 25.0 degC default */
     mock_iohwab_return  = E_OK;
+    mock_temp2_dC       = 250;
+    mock_iohwab2_return = E_OK;
 
     /* Reset RTE mock */
     mock_rte_write_count = 0u;
@@ -242,7 +267,15 @@ static void run_cycles(uint16 count)
 
 static void set_mock_temp(sint16 deci_degC)
 {
-    mock_temp_dC = deci_degC;
+    /* Both NTCs track the same value — sensors agree (plausible) */
+    mock_temp_dC  = deci_degC;
+    mock_temp2_dC = deci_degC;
+}
+
+/** Set only the second NTC (for plausibility cross-check tests) */
+static void set_mock_temp2(sint16 deci_degC)
+{
+    mock_temp2_dC = deci_degC;
 }
 
 /* ==================================================================
@@ -436,6 +469,56 @@ void test_MainFunction_without_init_safe(void)
 }
 
 /* ==================================================================
+ * SWR-RZC-009: Dual-Sensor Plausibility Cross-Check (GAP-OT-001)
+ * ================================================================== */
+
+/** @verifies SWR-RZC-009 -- Sensors disagree beyond RZC_TEMP_PLAUS_DELTA_DDC:
+ *  fail-hot, the HIGHER reading drives derating and the RTE temperature */
+void test_Plausibility_fault_uses_higher_reading(void)
+{
+    mock_temp_dC  = 500;   /* NTC1: 50.0 degC — alone would give 100% */
+    set_mock_temp2(900);   /* NTC2: 90.0 degC — delta 400 ddc > 300 ddc */
+
+    run_cycles(1u);
+
+    /* Fail-hot: 90 degC drives the derating curve -> 50% */
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_TEMP_DERATE_50_PCT,
+                             mock_rte_signals[RZC_SIG_DERATING_PCT]);
+    /* RTE temperature reflects the higher (safe) reading */
+    TEST_ASSERT_EQUAL_UINT32(900u, mock_rte_signals[RZC_SIG_TEMP1_DC]);
+    TEST_ASSERT_EQUAL_UINT32(900u, mock_rte_signals[RZC_SIG_TEMP2_DC]);
+}
+
+/** @verifies SWR-RZC-009 -- Delta exactly at threshold (300 ddc) is still
+ *  plausible: NTC1 reading is kept, no fail-hot substitution */
+void test_Plausibility_delta_at_threshold_ok(void)
+{
+    mock_temp_dC  = 500;   /* NTC1: 50.0 degC */
+    set_mock_temp2(800);   /* NTC2: 80.0 degC — delta == 300 ddc, not > */
+
+    run_cycles(1u);
+
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_TEMP_DERATE_100_PCT,
+                             mock_rte_signals[RZC_SIG_DERATING_PCT]);
+    TEST_ASSERT_EQUAL_UINT32(500u, mock_rte_signals[RZC_SIG_TEMP1_DC]);
+}
+
+/** @verifies SWR-RZC-009 -- NTC2 read failure: degrade gracefully to
+ *  single-sensor operation on NTC1, no temp fault raised */
+void test_Plausibility_temp2_read_failure_degraded(void)
+{
+    set_mock_temp(500);    /* 50.0 degC */
+    mock_iohwab2_return = E_NOT_OK;
+
+    run_cycles(1u);
+
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_TEMP_DERATE_100_PCT,
+                             mock_rte_signals[RZC_SIG_DERATING_PCT]);
+    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[RZC_SIG_TEMP_FAULT]);
+    TEST_ASSERT_EQUAL_UINT32(500u, mock_rte_signals[RZC_SIG_TEMP1_DC]);
+}
+
+/* ==================================================================
  * HARDENED TESTS — Boundary Values, Fault Injection
  * ================================================================== */
 
@@ -493,8 +576,13 @@ void test_Temp_at_max_plausible(void)
     set_mock_temp(1500);   /* 150.0 degC = RZC_TEMP_MAX_DDC */
     run_cycles(1u);
 
-    /* At exactly 150.0C, should be accepted (boundary-inclusive) */
-    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[RZC_SIG_TEMP_FAULT]);
+    /* At exactly 150.0C the reading is accepted (boundary-inclusive):
+     * no range-check early return, so the temperature is published to
+     * RTE. 150 degC is deep in the overtemp zone, so derating goes to
+     * 0% and the overtemp fault is (correctly) raised by that path. */
+    TEST_ASSERT_EQUAL_UINT32(1500u, mock_rte_signals[RZC_SIG_TEMP1_DC]);
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_TEMP_DERATE_0_PCT,
+                             mock_rte_signals[RZC_SIG_DERATING_PCT]);
 }
 
 /** @verifies SWR-RZC-009
@@ -560,6 +648,11 @@ int main(void)
     /* SWR-RZC-011: Hysteresis Recovery */
     RUN_TEST(test_Hysteresis_recovery);
     RUN_TEST(test_Hysteresis_from_shutdown);
+
+    /* SWR-RZC-009: Dual-sensor plausibility cross-check (GAP-OT-001) */
+    RUN_TEST(test_Plausibility_fault_uses_higher_reading);
+    RUN_TEST(test_Plausibility_delta_at_threshold_ok);
+    RUN_TEST(test_Plausibility_temp2_read_failure_degraded);
 
     /* Additional */
     RUN_TEST(test_CAN_broadcast);
