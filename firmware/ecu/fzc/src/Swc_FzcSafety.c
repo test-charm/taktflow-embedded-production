@@ -95,7 +95,7 @@ void Swc_FzcSafety_MainFunction(void)
     uint32 lidar_fault;
     uint32 vehicle_state;
     uint32 self_test_result;
-    uint8  fault_mask;
+    uint16 fault_mask;   /* must hold FZC_FAULT_CAN_BUS_OFF (bit 8, 0x0100) */
     uint8  wdg_feed_ok;
 
     if (Safety_Initialized != TRUE) {
