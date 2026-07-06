@@ -189,8 +189,9 @@ void test_Com_MainFunction_Tx_sends_pending(void)
     uint8 c;
     Com_SendSignal(0u, &torque);
 
-    /* Burn through startup delay + one cycle time */
-    for (c = 0u; c < 10u; c++) {
+    /* Burn through TX startup delay (COM_STARTUP_DELAY_MS 500ms / 10ms
+     * period = 50 cycles) + PDU cycle time */
+    for (c = 0u; c < 55u; c++) {
         Com_MainFunction_Tx();
     }
 
@@ -338,8 +339,8 @@ void test_Com_MainFunction_Tx_pdur_fail(void)
 
     mock_pdur_tx_result = E_NOT_OK;
 
-    /* Burn through startup delay + one cycle time */
-    for (c = 0u; c < 10u; c++) {
+    /* Burn through TX startup delay (50 cycles at 10ms) + cycle time */
+    for (c = 0u; c < 55u; c++) {
         Com_MainFunction_Tx();
     }
 
@@ -357,8 +358,14 @@ void test_Com_RxTimeout_zeros_shadow_buffers(void)
     sig_torque_buf = 0xAAu;
     sig_motor_status_buf = 0xBBu;
 
-    /* Run 11 RX main cycles without any RxIndication — exceeds 100ms timeout */
+    /* RX deadline monitoring is armed only after the TX startup delay
+     * (counter increments in Com_MainFunction_Tx) — burn 51 Tx cycles */
     uint16 i;
+    for (i = 0u; i < 51u; i++) {
+        Com_MainFunction_Tx();
+    }
+
+    /* Run 11 RX main cycles without any RxIndication — exceeds 100ms timeout */
     for (i = 0u; i < 11u; i++) {
         Com_MainFunction_Rx();
     }
@@ -442,8 +449,10 @@ void test_Com_RxIndication_E2E_fail_discards_frame(void)
     PduInfoType pdu2 = { bad_data2, 8u };
     Com_RxIndication(0u, &pdu2);  /* Error 3: SM stays INVALID → discarded */
 
-    /* Signal should retain 0xAA — SM is INVALID, frame discarded */
-    TEST_ASSERT_EQUAL_HEX8(0xAAu, sig_torque_buf);
+    /* Frame is discarded AND shadow buffers are zeroed while the SM is
+     * INVALID — SWCs must see fail-safe defaults, not stale values
+     * (ComRxDataTimeoutAction=REPLACE analog for E2E failure). */
+    TEST_ASSERT_EQUAL_HEX8(0x00u, sig_torque_buf);
 }
 
 /** @verifies SWR-BSW-016
@@ -528,8 +537,14 @@ void test_Com_RxTimeout_sets_quality_timed_out(void)
     Com_RxIndication(0u, &pdu);
     TEST_ASSERT_EQUAL(COM_SIGNAL_QUALITY_FRESH, Com_GetRxPduQuality(0u));
 
-    /* Run 11 RX main cycles (110ms > 100ms timeout) */
+    /* Arm RX deadline monitoring: burn the TX startup delay (counter
+     * increments in Com_MainFunction_Tx) */
     uint16 i;
+    for (i = 0u; i < 51u; i++) {
+        Com_MainFunction_Tx();
+    }
+
+    /* Run 11 RX main cycles (110ms > 100ms timeout) */
     for (i = 0u; i < 11u; i++) {
         Com_MainFunction_Rx();
     }
@@ -559,8 +574,8 @@ void test_Com_MainFunction_Tx_E2E_protect_applied(void)
     uint8 c;
     Com_SendSignal(1u, &steer);  /* Signal 1 on PDU 1 (E2E protected) */
 
-    /* Burn through startup delay + one cycle time */
-    for (c = 0u; c < 10u; c++) {
+    /* Burn through TX startup delay (50 cycles at 10ms) + cycle time */
+    for (c = 0u; c < 55u; c++) {
         Com_MainFunction_Tx();
     }
 

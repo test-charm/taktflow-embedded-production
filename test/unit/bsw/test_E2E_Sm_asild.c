@@ -125,6 +125,34 @@ void test_SM_null_returns_INVALID(void)
     TEST_ASSERT_EQUAL(E2E_SM_INVALID, s);
 }
 
+/** Wide supervision window — mirrors the generated config for 10ms PDUs
+ *  (Vehicle_State 0x100: WindowSizeInvalid = max(3, ceil(100ms/10ms)) = 10).
+ *  Exactly WindowSizeInvalid consecutive errors are required to latch
+ *  INVALID; N-1 errors must keep the SM in VALID. This is the detection
+ *  window SIL-009 exercises end-to-end (12+ corrupt frames -> DTC 0xE601). */
+void test_SM_wide_window_latches_at_exactly_N_errors(void)
+{
+    static const E2E_SMConfigType wide_config = {
+        .WindowSizeValid   = 3u,
+        .WindowSizeInvalid = 10u,
+        .WindowSizeInit    = 1u,
+    };
+    uint8 i;
+
+    E2E_SMCheck(&wide_config, &sm, E2E_STATUS_OK);  /* NODATA→INIT */
+    E2E_SMCheck(&wide_config, &sm, E2E_STATUS_OK);  /* INIT→VALID */
+
+    /* 9 consecutive errors: still VALID (9 < WindowSizeInvalid) */
+    for (i = 0u; i < 9u; i++) {
+        E2E_SMCheck(&wide_config, &sm, E2E_STATUS_ERROR);
+    }
+    TEST_ASSERT_EQUAL(E2E_SM_VALID, sm.State);
+
+    /* 10th consecutive error latches INVALID */
+    E2E_SMStateType s = E2E_SMCheck(&wide_config, &sm, E2E_STATUS_ERROR);
+    TEST_ASSERT_EQUAL(E2E_SM_INVALID, s);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -140,5 +168,6 @@ int main(void)
     RUN_TEST(test_SM_REPEATED_is_not_OK);
     RUN_TEST(test_SM_WRONG_SEQ_is_error);
     RUN_TEST(test_SM_null_returns_INVALID);
+    RUN_TEST(test_SM_wide_window_latches_at_exactly_N_errors);
     return UNITY_END();
 }
