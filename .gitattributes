@@ -1,0 +1,25 @@
+# Line-ending normalization
+# Shell scripts must stay LF even on Windows checkouts — the SIL runner is
+# streamed to a Linux VPS/container where CRLF breaks bash (see handoff
+# 2026-05-15: run_sil.sh had to be LF-normalized before every remote run).
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Python and YAML tooling executed on Linux hosts
+*.py text
+*.yml text
+*.yaml text
+
+# Makefiles: recipe lines break under CRLF (embedded \r reaches the shell)
+Makefile* text eol=lf
+*.mk text eol=lf
+makefile text eol=lf
+
+# C sources: keep normalized text, tool-default EOL
+*.c text
+*.h text
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.pdx binary
