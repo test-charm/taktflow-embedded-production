@@ -413,6 +413,13 @@ class MQTTMonitor:
             paho_mqtt.CallbackAPIVersion.VERSION2,
             client_id="taktflow-sil-verdict-checker",
         )
+        # Broker runs with allow_anonymous=false (hardened since 1bf6c48);
+        # authenticate with the shared service credentials like every other
+        # SIL component (see sil_test_lib.py).
+        mqtt_user = os.environ.get("MQTT_USER", "taktflow")
+        mqtt_pass = os.environ.get("MQTT_PASSWORD", "taktflow-dev")
+        if mqtt_user:
+            self._client.username_pw_set(mqtt_user, mqtt_pass)
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
         try:
