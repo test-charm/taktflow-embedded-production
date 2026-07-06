@@ -30,6 +30,10 @@ class Finding:
 
 
 def read_lines(path: Path) -> List[str]:
+    """Read a file's lines; a missing file yields [] so individual audit
+    checks degrade to no-evidence instead of crashing the whole audit."""
+    if not path.is_file():
+        return []
     return path.read_text(encoding="utf-8", errors="replace").splitlines()
 
 
@@ -71,7 +75,7 @@ def audit(repo_root: Path) -> List[Finding]:
     seq = 1
 
     # 1) MCAL boundary purity: SPI POSIX stub contains simulation + override behavior.
-    spi_posix = repo_root / "firmware/shared/bsw/mcal/posix/Spi_Posix.c"
+    spi_posix = repo_root / "firmware/platform/posix/src/Spi_Posix.c"
     spi_lines = read_lines(spi_posix)
     l_osc = find_first(spi_lines, r"oscillat|SPI_OVERRIDE_STEP|dead-zone")
     l_udp = find_first(spi_lines, r"UDP|SPI_PEDAL_UDP_PORT|recv\(")
@@ -91,8 +95,8 @@ def audit(repo_root: Path) -> List[Finding]:
 
     # 2) Platform-specific safety behavior in critical modules.
     safety_paths = [
-        repo_root / "firmware/cvc/src/Swc_VehicleState.c",
-        repo_root / "firmware/fzc/src/Swc_FzcSafety.c",
+        repo_root / "firmware/ecu/cvc/src/Swc_VehicleState.c",
+        repo_root / "firmware/ecu/fzc/src/Swc_FzcSafety.c",
     ]
     for p in safety_paths:
         lines = read_lines(p)
@@ -111,7 +115,7 @@ def audit(repo_root: Path) -> List[Finding]:
             )
 
     # 3) SAFE_STOP recovery relay-state semantic check.
-    vsm = repo_root / "firmware/cvc/src/Swc_VehicleState.c"
+    vsm = repo_root / "firmware/ecu/cvc/src/Swc_VehicleState.c"
     vsm_lines = read_lines(vsm)
     l_comment = find_first(vsm_lines, r"RelayState.*1=energized.*0=killed")
     l_recover = find_first(vsm_lines, r"\(sc_relay_kill\s*==\s*0u\)")
@@ -129,7 +133,7 @@ def audit(repo_root: Path) -> List[Finding]:
         )
 
     # 4) Brake sequencing check: feedback compare before fresh sensor read.
-    brake = repo_root / "firmware/fzc/src/Swc_Brake.c"
+    brake = repo_root / "firmware/ecu/fzc/src/Swc_Brake.c"
     brake_lines = read_lines(brake)
     l_cmp = find_first(brake_lines, r"deviation\s*=\s*|Compare commanded duty")
     l_read = find_first(brake_lines, r"IoHwAb_ReadBrakePosition")
@@ -147,7 +151,7 @@ def audit(repo_root: Path) -> List[Finding]:
         )
 
     # 5) Steering plausibility reference check.
-    steer = repo_root / "firmware/fzc/src/Swc_Steering.c"
+    steer = repo_root / "firmware/ecu/fzc/src/Swc_Steering.c"
     steer_lines = read_lines(steer)
     l_plaus = find_first(steer_lines, r"Steering_AbsDiffSint16\(cmd_angle,\s*actual_angle\)")
     if l_plaus:
@@ -164,7 +168,7 @@ def audit(repo_root: Path) -> List[Finding]:
         )
 
     # 6) ESM init status.
-    sc_main = repo_root / "firmware/sc/src/sc_main.c"
+    sc_main = repo_root / "firmware/ecu/sc/src/sc_main.c"
     sc_main_lines = read_lines(sc_main)
     l_esm_guard = find_first(sc_main_lines, r"#ifdef\s+SC_ESM_ENABLED")
     l_esm_call = find_first(sc_main_lines, r"SC_ESM_Init\(\)")
@@ -182,7 +186,7 @@ def audit(repo_root: Path) -> List[Finding]:
         )
 
     # 7) MPU presence note (informational pass/fail style).
-    sc_startup = repo_root / "firmware/sc/src/sc_startup.S"
+    sc_startup = repo_root / "firmware/ecu/sc/src/sc_startup.S"
     sc_startup_lines = read_lines(sc_startup)
     l_mpu = find_first(sc_startup_lines, r"_mpuInit_|Enable MPU")
     if not l_mpu:
