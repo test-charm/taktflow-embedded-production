@@ -1,0 +1,17 @@
+VERSION ""
+
+NS_ :
+    BA_DEF_
+    BA_
+
+BS_:
+
+BU_: ECU_A ECU_B
+
+BO_ 258 UnsupportedSendType: 8 ECU_A
+ SG_ Command : 0|8@1+ (1,0) [0|255] "" ECU_B
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_ "GenMsgSendType" STRING;
+BA_ "GenMsgCycleTime" BO_ 258 20;
+BA_ "GenMsgSendType" BO_ 258 "OnWriteWithRepetition";
