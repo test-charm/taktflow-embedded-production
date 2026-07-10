@@ -1,0 +1,19 @@
+VERSION ""
+
+NS_ :
+    BA_DEF_
+    BA_
+
+BS_:
+
+BU_: ECU_A ECU_B
+
+BO_ 259 AliasOne: 8 ECU_A
+ SG_ ValueOne : 0|8@1+ (1,0) [0|255] "" ECU_B
+
+BO_ 260 AliasTwo: 8 ECU_A
+ SG_ ValueTwo : 0|8@1+ (1,0) [0|255] "" ECU_B
+
+BA_DEF_ BO_ "SystemMessageLongSymbol" STRING;
+BA_ "SystemMessageLongSymbol" BO_ 259 "Collision-A";
+BA_ "SystemMessageLongSymbol" BO_ 260 "Collision A";
