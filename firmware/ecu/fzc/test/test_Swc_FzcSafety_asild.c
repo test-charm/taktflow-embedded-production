@@ -7,10 +7,13 @@
  *
  * Tests safety initialization, watchdog feed toggling in normal and fault
  * conditions, fault aggregation into a unified mask, DTC reporting on
- * watchdog failure, safety status RTE publication, and safe behaviour
- * when uninitialized.
+ * watchdog failure, safety status RTE publication, safe behaviour when
+ * uninitialized, and RX-quality-based CAN-bus-off detection (April 2026
+ * SIL-stability series: stale Steer/Brake_Command PDUs from CVC raise a
+ * comm fault, gated by the post-INIT boot grace period).
  *
- * Mocks: Rte_Read, Rte_Write, Dio_WriteChannel, Dem_ReportErrorStatus
+ * Mocks: Rte_Read, Rte_Write, Dio_WriteChannel, Dem_ReportErrorStatus,
+ *        Com_GetRxPduQuality
  */
 #include "unity.h"
 
@@ -30,18 +33,34 @@ typedef uint8           Std_ReturnType;
 #define FALSE       0u
 #define NULL_PTR    ((void*)0)
 
+typedef uint16          PduIdType;
+
+/* RX PDU signal quality (mirrors Com.h — blocked by COM_H guard below) */
+typedef enum {
+    COM_SIGNAL_QUALITY_FRESH     = 0u,  /**< Last frame valid and unpacked    */
+    COM_SIGNAL_QUALITY_E2E_FAIL  = 1u,  /**< Last frame discarded (CRC/DataID) */
+    COM_SIGNAL_QUALITY_TIMED_OUT = 2u   /**< No frame within timeout window   */
+} Com_SignalQualityType;
+
 /* ==================================================================
- * Signal IDs (from Fzc_Cfg.h)
+ * Signal IDs (from Fzc_Cfg.h — verified against generated header)
  * ================================================================== */
 
-#define FZC_SIG_STEER_FAULT         18u
-#define FZC_SIG_BRAKE_FAULT         21u
-#define FZC_SIG_LIDAR_FAULT         25u
-#define FZC_SIG_VEHICLE_STATE       26u
-#define FZC_SIG_FAULT_MASK          30u
-#define FZC_SIG_SAFETY_STATUS       35u
+#define FZC_SIG_BRAKE_FAULT         44u  /* FZC_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS */
+#define FZC_SIG_LIDAR_FAULT         96u  /* FZC_SIG_LIDAR_DISTANCE_SENSOR_STATUS */
+#define FZC_SIG_MOTOR_CUTOFF       115u  /* FZC_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE */
+#define FZC_SIG_STEER_FAULT        159u  /* FZC_SIG_STEERING_STATUS_STEER_FAULT_STATUS */
+#define FZC_SIG_VEHICLE_STATE      187u  /* FZC_SIG_VEHICLE_STATE_MODE */
+#define FZC_SIG_SELF_TEST_RESULT   201u
+#define FZC_SIG_SAFETY_STATUS      202u
+#define FZC_SIG_FAULT_MASK         204u
+#define FZC_SIG_COUNT              205u
 
 #define FZC_DTC_WATCHDOG_FAIL       14u
+
+/* Com RX PDU IDs polled by the RX-quality check (from Fzc_Cfg.h) */
+#define FZC_COM_RX_STEER_COMMAND     9u   /* CAN 0x102 */
+#define FZC_COM_RX_BRAKE_COMMAND    10u   /* CAN 0x103 */
 
 /* Watchdog DIO channel: PB0 */
 #define FZC_DIO_WATCHDOG_CH          0u
@@ -50,35 +69,29 @@ typedef uint8           Std_ReturnType;
 #define DIO_LEVEL_LOW                0u
 #define DIO_LEVEL_HIGH               1u
 
-/* DEM event status */
+/* DEM event status (from Dem.h) */
 #define DEM_EVENT_STATUS_PASSED      0u
 #define DEM_EVENT_STATUS_FAILED      1u
-
-/* Additional signal IDs used by Swc_FzcSafety.c (from Fzc_Cfg.h) */
-#define FZC_SIG_MOTOR_CUTOFF        29u
-#define FZC_SIG_SELF_TEST_RESULT    33u
-
-/* Com TX Signal IDs (from Fzc_Cfg.h — NOT PDU IDs!) */
-#define FZC_COM_SIG_TX_MOTOR_CUTOFF  7u
 
 /* Vehicle state values (from Fzc_Cfg.h) */
 #define FZC_STATE_INIT               0u
 #define FZC_STATE_SHUTDOWN           5u
 
-/* Self-test result values (from Fzc_Cfg.h) */
+/* Self-test result values (from Fzc_App.h) */
 #define FZC_SELF_TEST_PASS           1u
 #define FZC_SELF_TEST_FAIL           0u
 
-/* Post-INIT grace period (from Fzc_Cfg.h) */
-#define FZC_POST_INIT_GRACE_CYCLES   500u
+/* Post-INIT grace period (from Fzc_Cfg_Platform.h, platform_posix) */
+#define FZC_POST_INIT_GRACE_CYCLES   1500u
 
-/* Fault mask bits */
+/* Fault mask bits (from Fzc_App.h) */
 #define FZC_FAULT_NONE            0x00u
 #define FZC_FAULT_STEER             (1u << 0u)
 #define FZC_FAULT_BRAKE             (1u << 1u)
 #define FZC_FAULT_LIDAR             (1u << 2u)
 #define FZC_FAULT_WATCHDOG         0x10u
 #define FZC_FAULT_SELF_TEST        0x20u
+#define FZC_FAULT_CAN_BUS_OFF     0x0100u  /* bit 8: outside 8-bit payload range */
 
 /* Safety status values */
 #define FZC_SAFETY_OK                0u
@@ -93,7 +106,7 @@ extern uint8 Swc_FzcSafety_GetStatus(void);
  * Mock: Rte_Read
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  48u
+#define MOCK_RTE_MAX_SIGNALS  FZC_SIG_COUNT
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint32  mock_steer_fault;
@@ -185,20 +198,23 @@ void Dem_ReportErrorStatus(uint8 EventId, uint8 EventStatus)
 }
 
 /* ==================================================================
- * Mock: Com_SendSignal
+ * Mock: Com_GetRxPduQuality (per-PDU settable quality)
  * ================================================================== */
 
-typedef uint8 Com_SignalIdType;
+#define MOCK_COM_MAX_RX_PDUS  37u   /* FZC_COM_RX_* range 0..36 (Fzc_Cfg.h) */
 
-static uint8   mock_com_send_count;
-static uint8   mock_com_last_signal_id;
+static uint8   mock_com_pdu_quality[MOCK_COM_MAX_RX_PDUS];
+static uint8   mock_com_quality_queried[MOCK_COM_MAX_RX_PDUS];
+static uint16  mock_com_quality_call_count;
 
-Std_ReturnType Com_SendSignal(Com_SignalIdType SignalId, const void* SignalDataPtr)
+Com_SignalQualityType Com_GetRxPduQuality(PduIdType RxPduId)
 {
-    mock_com_send_count++;
-    mock_com_last_signal_id = SignalId;
-    (void)SignalDataPtr;
-    return E_OK;
+    mock_com_quality_call_count++;
+    if (RxPduId < MOCK_COM_MAX_RX_PDUS) {
+        mock_com_quality_queried[RxPduId] = TRUE;
+        return (Com_SignalQualityType)mock_com_pdu_quality[RxPduId];
+    }
+    return COM_SIGNAL_QUALITY_FRESH;
 }
 
 /* ==================================================================
@@ -207,7 +223,7 @@ Std_ReturnType Com_SendSignal(Com_SignalIdType SignalId, const void* SignalDataP
 
 void setUp(void)
 {
-    uint8 i;
+    uint16 i;
 
     /* Reset RTE mock */
     mock_rte_write_count = 0u;
@@ -234,9 +250,12 @@ void setUp(void)
         mock_dem_event_status[i]   = 0xFFu;
     }
 
-    /* Reset Com mock */
-    mock_com_send_count    = 0u;
-    mock_com_last_signal_id = 0xFFu;
+    /* Reset Com RX quality mock — all PDUs fresh */
+    mock_com_quality_call_count = 0u;
+    for (i = 0u; i < MOCK_COM_MAX_RX_PDUS; i++) {
+        mock_com_pdu_quality[i]     = (uint8)COM_SIGNAL_QUALITY_FRESH;
+        mock_com_quality_queried[i] = FALSE;
+    }
 
     Swc_FzcSafety_Init();
 }
@@ -374,7 +393,7 @@ void test_Safety_status_written(void)
 void test_MainFunction_uninit_safe(void)
 {
     /* Re-create uninitialised state by re-initialising mocks without Init */
-    uint8 i;
+    uint16 i;
     mock_rte_write_count = 0u;
     mock_dio_write_count = 0u;
     mock_dio_toggle_count = 0u;
@@ -417,6 +436,11 @@ void test_MainFunction_uninit_safe(void)
  *   OK:       no faults
  *   DEGRADED: lidar fault only (non-critical)
  *   FAULT:    steer or brake fault (critical)
+ *
+ * Equivalence classes for RX-quality bus-off detection:
+ *   Suppressed: post-INIT grace running -> quality not polled
+ *   Active:     grace expired -> Steer/Brake_Command quality polled,
+ *               TIMED_OUT raises FZC_FAULT_CAN_BUS_OFF (non-critical)
  * ------------------------------------------------------------------ */
 
 /** @verifies SWR-FZC-023
@@ -576,6 +600,72 @@ void test_FaultInj_double_init_resets_status(void)
 }
 
 /* ==================================================================
+ * SWR-FZC-023: RX-quality-based CAN-bus-off detection (April 2026)
+ * ================================================================== */
+
+/** @verifies SWR-FZC-023
+ *  Boot grace: RX quality is NOT polled while the post-INIT grace
+ *  period runs (CVC boots last in the SIL reset sequence — stale
+ *  Steer/Brake_Command PDUs are legitimate then).  No CAN-bus-off
+ *  fault may latch during grace, else Heartbeat TX is suppressed
+ *  and the CVC/FZC startup deadlocks. */
+void test_RxQuality_not_polled_during_boot_grace(void)
+{
+    /* Commands stale from the very first cycle */
+    mock_com_pdu_quality[FZC_COM_RX_STEER_COMMAND] = (uint8)COM_SIGNAL_QUALITY_TIMED_OUT;
+    mock_com_pdu_quality[FZC_COM_RX_BRAKE_COMMAND] = (uint8)COM_SIGNAL_QUALITY_TIMED_OUT;
+
+    run_cycles(FZC_POST_INIT_GRACE_CYCLES);
+
+    /* assert: quality API never polled while grace counter > 0 */
+    TEST_ASSERT_EQUAL_UINT16(0u, mock_com_quality_call_count);
+    /* assert: no fault latched, status stays OK */
+    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[FZC_SIG_FAULT_MASK]);
+    TEST_ASSERT_EQUAL_UINT8(FZC_SAFETY_OK, Swc_FzcSafety_GetStatus());
+}
+
+/** @verifies SWR-FZC-023
+ *  RX quality TIMED_OUT on Steer_Command/Brake_Command after grace
+ *  expiry: the source raises FZC_FAULT_CAN_BUS_OFF (bit 8, 0x0100) in
+ *  its fault aggregation.  FZC_FAULT_CAN_BUS_OFF is deliberately
+ *  "outside 8-bit payload range" (Fzc_App.h) — excluded from the CAN
+ *  heartbeat payload byte, but it MUST be present in the RTE-published
+ *  FZC_SIG_FAULT_MASK: Swc_Heartbeat reads that signal and suppresses
+ *  heartbeat TX when bit 8 is set (Swc_Heartbeat.c).  Bus-off is a comm
+ *  fault, NOT a critical steer/brake fault: the watchdog must keep
+ *  feeding and no watchdog DTC may be reported. */
+void test_RxQuality_timed_out_after_grace_raises_bus_off(void)
+{
+    /* Expire the post-INIT grace period (quality checks suppressed until then) */
+    run_cycles(FZC_POST_INIT_GRACE_CYCLES);
+    TEST_ASSERT_EQUAL_UINT16(0u, mock_com_quality_call_count);
+
+    /* Steer + brake command PDUs go stale */
+    mock_com_pdu_quality[FZC_COM_RX_STEER_COMMAND] = (uint8)COM_SIGNAL_QUALITY_TIMED_OUT;
+    mock_com_pdu_quality[FZC_COM_RX_BRAKE_COMMAND] = (uint8)COM_SIGNAL_QUALITY_TIMED_OUT;
+
+    mock_dio_toggle_count = 0u;
+    Swc_FzcSafety_MainFunction();
+
+    /* assert: both safety-critical command PDUs polled once grace expired */
+    TEST_ASSERT_EQUAL_UINT16(2u, mock_com_quality_call_count);
+    TEST_ASSERT_EQUAL_UINT8(TRUE, mock_com_quality_queried[FZC_COM_RX_STEER_COMMAND]);
+    TEST_ASSERT_EQUAL_UINT8(TRUE, mock_com_quality_queried[FZC_COM_RX_BRAKE_COMMAND]);
+
+    /* assert: published mask carries the full bus-off bit (0x0100) so
+     * Swc_Heartbeat can suppress TX; no critical steer/brake bits set */
+    TEST_ASSERT_EQUAL_UINT32((uint32)FZC_FAULT_CAN_BUS_OFF,
+                             mock_rte_signals[FZC_SIG_FAULT_MASK]);
+    TEST_ASSERT_TRUE((mock_rte_signals[FZC_SIG_FAULT_MASK]
+                      & (FZC_FAULT_STEER | FZC_FAULT_BRAKE)) == 0u);
+
+    /* assert: comm fault is not critical — watchdog feed continues,
+     * no watchdog DTC reported */
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_dio_toggle_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_dem_event_reported[FZC_DTC_WATCHDOG_FAIL]);
+}
+
+/* ==================================================================
  * Test runner
  * ================================================================== */
 
@@ -612,6 +702,10 @@ int main(void)
     RUN_TEST(test_Watchdog_dio_alternates);
     RUN_TEST(test_FaultInj_DTC_on_all_critical_faults);
     RUN_TEST(test_FaultInj_double_init_resets_status);
+
+    /* SWR-FZC-023: RX-quality-based bus-off detection */
+    RUN_TEST(test_RxQuality_not_polled_during_boot_grace);
+    RUN_TEST(test_RxQuality_timed_out_after_grace_raises_bus_off);
 
     return UNITY_END();
 }

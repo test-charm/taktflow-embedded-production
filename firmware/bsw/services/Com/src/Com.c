@@ -16,9 +16,6 @@
 #include "SchM.h"
 #include "SchM_Timing.h"
 #include "Det.h"
-#ifdef SIL_DIAG
-#include <stdio.h>
-#endif
 
 
 /* ---- Internal State ---- */
@@ -133,6 +130,8 @@ static void com_pack_signal_to_pdu(const Com_SignalConfigType* sig, uint32 value
         raw16 = (raw16 & ~(mask16 << shift)) | (val16 << shift);
         com_tx_pdu_buf[pdu_id][byte_offset]       = (uint8)(raw16 & 0xFFu);
         com_tx_pdu_buf[pdu_id][byte_offset + 1u]  = (uint8)(raw16 >> 8u);
+    } else {
+        /* Signal would overrun the PDU buffer — no write (MISRA 15.7) */
     }
 }
 
@@ -390,15 +389,6 @@ void Com_RxIndication(PduIdType ComRxPduId, const PduInfoType* PduInfoPtr)
     }
     SchM_Exit_Com_COM_EXCLUSIVE_AREA_0();
 
-#ifdef SIL_DIAG
-    if (ComRxPduId == 22u) {
-        fprintf(stderr, "[COM] RxInd PDU=22 len=%u data=%02X%02X%02X%02X%02X%02X\n",
-                PduInfoPtr->SduLength,
-                PduInfoPtr->SduDataPtr[0], PduInfoPtr->SduDataPtr[1],
-                PduInfoPtr->SduDataPtr[2], PduInfoPtr->SduDataPtr[3],
-                PduInfoPtr->SduDataPtr[4], PduInfoPtr->SduDataPtr[5]);
-    }
-#endif
 
     /* ---- E2E RX check with supervision state machine ---- */
     {
@@ -456,7 +446,7 @@ void Com_RxIndication(PduIdType ComRxPduId, const PduInfoType* PduInfoPtr)
                                         *((uint8*)sig_table[k].ShadowBuffer) = 0u;
                                     }
                                     if (sig_table[k].RteSignalId != COM_RTE_SIGNAL_NONE) {
-                                        Rte_Write((Rte_SignalIdType)sig_table[k].RteSignalId, 0u);
+                                        (void)Rte_Write((Rte_SignalIdType)sig_table[k].RteSignalId, 0u);
                                     }
                                 }
                             }
@@ -524,7 +514,7 @@ void Com_RxIndication(PduIdType ComRxPduId, const PduInfoType* PduInfoPtr)
 
             /* Auto-push to RTE if binding configured */
             if (sig->RteSignalId != COM_RTE_SIGNAL_NONE) {
-                Rte_Write((Rte_SignalIdType)sig->RteSignalId, rte_val);
+                (void)Rte_Write((Rte_SignalIdType)sig->RteSignalId, rte_val);
             }
         }
     }
@@ -839,6 +829,9 @@ void Com_MainFunction_Rx(void)
                     (Rte_SignalIdType)com_config->rxPduConfig[i].CommStatusRteSignalId,
                     (uint32)COM_COMM_STATUS_OK);
             }
+        } else {
+            /* E2E_FAIL quality — comm status handled by the E2E RX path
+             * (MISRA 15.7) */
         }
 
         SchM_Exit_Com_COM_EXCLUSIVE_AREA_0();

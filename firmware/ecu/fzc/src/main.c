@@ -74,8 +74,22 @@
  * CMSIS-RTOS2 (ThreadX backend via CMSIS adapter)
  * ================================================================== */
 
+/* ==================================================================
+ * Hardware Abstraction Interface (declared in Main_Hw.h, MISRA 8.5)
+ * ================================================================== */
+
+#include "Main_Hw.h"
+
 #ifdef USE_THREADX
 #include "tx_api.h"
+
+/* ThreadX timer callback prototypes — callbacks are registered by the
+ * platform layer (tx_stubs.c). Declared here so a compatible declaration
+ * is visible at the external definitions below (MISRA 8.4). */
+void Timer_1ms_Callback(ULONG arg);
+void Timer_10ms_Callback(ULONG arg);
+void Timer_100ms_Callback(ULONG arg);
+void Timer_5s_Callback(ULONG arg);
 #endif
 
 #ifdef USE_OSEK
@@ -89,16 +103,14 @@
  * External Configuration (defined in cfg/ files)
  * ================================================================== */
 
+/* cppcheck-suppress-begin misra-c2012-8.4 ; extern declarations of generated
+ * config objects (definitions live in generated cfg sources) — these are
+ * declarations, not definitions */
 extern const Rte_ConfigType  fzc_rte_config;
 extern const Com_ConfigType  fzc_com_config;
 extern const CanTp_ConfigType fzc_cantp_config;
 extern const Dcm_ConfigType  fzc_dcm_config;
-
-/* ==================================================================
- * Hardware Abstraction Interface (declared in Main_Hw.h, MISRA 8.5)
- * ================================================================== */
-
-#include "Main_Hw.h"
+/* cppcheck-suppress-end misra-c2012-8.4 */
 
 /* ==================================================================
  * Static Configuration Constants
@@ -113,6 +125,7 @@ static const Can_ConfigType can_config = {
 /* CanIf config — use GENERATED routing table from CanIf_Cfg_Fzc.c
  * DO NOT hand-write CAN ID routing here. All routing is generated from
  * DBC → ARXML → codegen. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const CanIf_ConfigType fzc_canif_config;
 #define canif_config fzc_canif_config
 
@@ -120,6 +133,7 @@ extern const CanIf_ConfigType fzc_canif_config;
  * DO NOT hand-write routing tables here. All routing is generated from
  * DBC → ARXML → codegen. The generated config includes XCP, UDS, and
  * all Com RX PDU routing. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const PduR_ConfigType fzc_pdur_config;
 
 /** SPI driver configuration — AS5048A steering angle sensor */

@@ -61,6 +61,10 @@ typedef uint8           Std_ReturnType;
 
 #define CVCDCM_MAX_DTC_SLOTS          20u
 
+/* Deferred ECU reset countdown (mirrors Swc_CvcDcm.h) — 5 cycles = 50ms
+ * at 10ms so Dcm can send the 0x11 positive response before reset fires */
+#define CVCDCM_RESET_DELAY_CYCLES      5u
+
 /* Signal IDs from Cvc_Cfg.h */
 #define CVC_SIG_PEDAL_POSITION    18u
 #define CVC_SIG_PEDAL_FAULT       19u

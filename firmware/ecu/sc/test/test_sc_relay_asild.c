@@ -148,6 +148,16 @@ boolean SC_Plausibility_IsCreepFaulted(void)
  * Include source under test
  * ================================================================== */
 
+/* Unit tests verify TARGET hardware behavior; the POSIX/SIL overrides are
+ * SIL-runtime accommodations and must not leak into the harness.
+ * Specifically, sc_relay.c suppresses most kill reasons in
+ * SC_Relay_IsKilled() under PLATFORM_POSIX/PLATFORM_HIL (SIL boot / plant-
+ * sim tolerance), and PLATFORM_HIL turns SC_Relay_DeEnergize() into a
+ * no-op. Undefine both so the included source compiles with the
+ * production TMS570 logic (SWR-SC-010/011/012). */
+#undef PLATFORM_POSIX
+#undef PLATFORM_HIL
+
 #include "../src/sc_relay.c"
 
 /* ==================================================================

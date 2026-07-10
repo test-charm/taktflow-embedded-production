@@ -7,10 +7,15 @@
  *
  * Tests E2E CRC-8 protection and alive counters (TX and RX),
  * 3-failure safe default for torque command, E-stop message
- * handling, torque timeout at 100ms, heartbeat 50ms TX schedule,
- * and motor status 10ms TX schedule.
+ * handling, torque timeout at 100ms, heartbeat signal publication,
+ * and the paced motor status / temp / battery TX schedule.
  *
- * Mocks: Rte_Read, Rte_Write, Com_SendSignal, PduR_Transmit, Dem_ReportErrorStatus
+ * Since Phase 2 the per-PDU E2E RX callback (Rzc_E2eRxCheck) is gone —
+ * E2E protection lives in the Com layer. TX goes through Com_SendSignal
+ * per signal instead of PduR_Transmit per PDU.
+ *
+ * Mocks: Rte_Read, Rte_Write, Com_SendSignal, Dem_ReportErrorStatus,
+ *        Swc_RzcSafety_NotifyCanRx
  *
  * @standard AUTOSAR SWC pattern, ISO 26262 Part 6
  * @copyright Taktflow Systems 2026
@@ -37,31 +42,6 @@ typedef uint8           Std_ReturnType;
 
 typedef uint8           boolean;
 typedef uint8           Com_SignalIdType;
-typedef uint16          PduIdType;
-
-typedef struct {
-    uint8* SduDataPtr;
-    uint8  SduLength;
-} PduInfoType;
-
-/* E2E types (must match shared/bsw/services/E2E.h layout) */
-typedef struct {
-    uint8  DataId;
-    uint8  MaxDeltaCounter;
-    uint16 DataLength;
-} E2E_ConfigType;
-
-typedef struct {
-    uint8  Counter;
-} E2E_StateType;
-
-typedef enum {
-    E2E_STATUS_OK           = 0u,
-    E2E_STATUS_REPEATED     = 1u,
-    E2E_STATUS_WRONG_SEQ    = 2u,
-    E2E_STATUS_ERROR        = 3u,
-    E2E_STATUS_NO_NEW_DATA  = 4u
-} E2E_CheckStatusType;
 
 /* Prevent BSW headers from redefining types when source is included */
 #define PLATFORM_TYPES_H
@@ -83,57 +63,69 @@ static uint8 mock_safety_notify_count;
 void Swc_RzcSafety_NotifyCanRx(void) { mock_safety_notify_count++; }
 
 /* ==================================================================
- * RZC signal IDs (from Rzc_Cfg.h -- redefined locally for test isolation)
+ * RZC signal IDs (from Rzc_Cfg.h -- redefined locally for test isolation,
+ * values verified against the generated header / its aliases)
  * ================================================================== */
 
-#define RZC_SIG_TORQUE_CMD         16u
-#define RZC_SIG_TORQUE_ECHO        17u
-#define RZC_SIG_MOTOR_SPEED        18u
-#define RZC_SIG_MOTOR_DIR          19u
-#define RZC_SIG_MOTOR_ENABLE       20u
-#define RZC_SIG_MOTOR_FAULT        21u
-#define RZC_SIG_CURRENT_MA         22u
-#define RZC_SIG_OVERCURRENT        23u
-#define RZC_SIG_TEMP1_DC           24u
-#define RZC_SIG_TEMP2_DC           25u
-#define RZC_SIG_DERATING_PCT       26u
-#define RZC_SIG_TEMP_FAULT         27u
-#define RZC_SIG_BATTERY_MV         28u
-#define RZC_SIG_BATTERY_STATUS     29u
-#define RZC_SIG_BATTERY_SOC        40u
-#define RZC_SIG_ENCODER_SPEED      30u
-#define RZC_SIG_ENCODER_DIR        31u
-#define RZC_SIG_ENCODER_STALL      32u
-#define RZC_SIG_VEHICLE_STATE      33u
-#define RZC_SIG_ESTOP_ACTIVE       34u
-#define RZC_SIG_FAULT_MASK         35u
-#define RZC_SIG_SELF_TEST_RESULT   36u
-#define RZC_SIG_HEARTBEAT_ALIVE    37u
-#define RZC_SIG_SAFETY_STATUS      38u
-#define RZC_SIG_CMD_TIMEOUT        39u
-#define RZC_SIG_COUNT              40u
+#define RZC_SIG_BATTERY_MV         21u   /* = RZC_SIG_BATTERY_STATUS_BATTERY_VOLTAGE_M_V */
+#define RZC_SIG_BATTERY_STATUS     25u   /* = RZC_SIG_BATTERY_STATUS_LEVEL */
+#define RZC_SIG_BATTERY_SOC        25u   /* = RZC_SIG_BATTERY_STATUS_LEVEL */
+#define RZC_SIG_ESTOP_ACTIVE       68u   /* = RZC_SIG_ESTOP_BROADCAST_ACTIVE */
+#define RZC_SIG_OVERCURRENT       108u   /* = RZC_SIG_MOTOR_CURRENT_OVERCURRENT_FLAG */
+#define RZC_SIG_CURRENT_MA        109u   /* = RZC_SIG_MOTOR_CURRENT_PHASE_M_A */
+#define RZC_SIG_TORQUE_ECHO       110u   /* = RZC_SIG_MOTOR_CURRENT_TORQUE_ECHO */
+#define RZC_SIG_MOTOR_DIR         119u   /* = RZC_SIG_MOTOR_STATUS_MOTOR_DIRECTION */
+#define RZC_SIG_MOTOR_ENABLE      120u   /* = RZC_SIG_MOTOR_STATUS_MOTOR_ENABLE */
+#define RZC_SIG_MOTOR_FAULT       121u   /* = RZC_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS */
+#define RZC_SIG_DERATING_PCT      124u   /* = RZC_SIG_MOTOR_TEMPERATURE_DERATING_PERCENT */
+#define RZC_SIG_TEMP1_DC          128u   /* = RZC_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_1_C */
+#define RZC_SIG_TEMP2_DC          129u   /* = RZC_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_2_C */
+#define RZC_SIG_TORQUE_CMD        166u   /* = RZC_SIG_TORQUE_REQUEST_COMMAND_PCT */
+#define RZC_SIG_FAULT_MASK        186u   /* = RZC_SIG_VEHICLE_STATE_FAULT_MASK */
+#define RZC_SIG_VEHICLE_STATE     187u   /* = RZC_SIG_VEHICLE_STATE_MODE */
+#define RZC_SIG_ENCODER_SPEED     198u   /* ECU-internal (not on CAN) */
+#define RZC_SIG_COUNT             202u
 
 /* ==================================================================
- * Com/E2E IDs (from Rzc_Cfg.h)
+ * Com PDU / signal IDs (from Rzc_Cfg.h)
  * ================================================================== */
 
-#define RZC_COM_TX_HEARTBEAT       0u
+#define RZC_COM_TX_HEARTBEAT       0u   /* = RZC_COM_TX_RZC_HEARTBEAT */
 #define RZC_COM_TX_MOTOR_STATUS    1u
 #define RZC_COM_TX_MOTOR_CURRENT   2u
-#define RZC_COM_TX_MOTOR_TEMP      3u
+#define RZC_COM_TX_MOTOR_TEMP      3u   /* = RZC_COM_TX_MOTOR_TEMPERATURE */
 #define RZC_COM_TX_BATTERY_STATUS  4u
 
-#define RZC_COM_RX_ESTOP           0u
-#define RZC_COM_RX_VEHICLE_TORQUE  1u
-#define RZC_COM_RX_VIRT_SENSORS    2u
+#define RZC_COM_RX_ESTOP           0u   /* = RZC_COM_RX_ESTOP_BROADCAST */
+#define RZC_COM_RX_VEHICLE_TORQUE  7u   /* = RZC_COM_RX_VEHICLE_STATE (legacy alias) */
 
-#define RZC_E2E_HEARTBEAT_DATA_ID    0x04u
-#define RZC_E2E_MOTOR_STATUS_DATA_ID 0x0Eu
+/* Com TX signal IDs (index into Com signal config table) */
+#define RZC_COM_SIG_RZC_HEARTBEAT_ECU_ID                 3u
+#define RZC_COM_SIG_RZC_HEARTBEAT_FAULT_STATUS           5u
+#define RZC_COM_SIG_MOTOR_STATUS_TORQUE_ECHO             9u
+#define RZC_COM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM        10u
+#define RZC_COM_SIG_MOTOR_STATUS_MOTOR_DIRECTION        11u
+#define RZC_COM_SIG_MOTOR_STATUS_MOTOR_ENABLE           12u
+#define RZC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS     13u
+#define RZC_COM_SIG_MOTOR_CURRENT_PHASE_M_A             17u
+#define RZC_COM_SIG_MOTOR_CURRENT_DIR_IS_REVERSE        18u
+#define RZC_COM_SIG_MOTOR_CURRENT_MOTOR_ENABLE          19u
+#define RZC_COM_SIG_MOTOR_CURRENT_OVERCURRENT_FLAG      20u
+#define RZC_COM_SIG_MOTOR_CURRENT_TORQUE_ECHO           21u
+#define RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_1_C  25u
+#define RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_2_C  26u
+#define RZC_COM_SIG_MOTOR_TEMPERATURE_DERATING_PERCENT  27u
+#define RZC_COM_SIG_BATTERY_STATUS_BATTERY_VOLTAGE_M_V  31u
+#define RZC_COM_SIG_BATTERY_STATUS_LEVEL                32u
+
+/* E2E Data IDs (from Rzc_Cfg.h) */
+#define RZC_E2E_HEARTBEAT_DATA_ID     0x04u
+#define RZC_E2E_MOTOR_STATUS_DATA_ID  0x0Eu
 #define RZC_E2E_MOTOR_CURRENT_DATA_ID 0x0Fu
-#define RZC_E2E_MOTOR_TEMP_DATA_ID   0x10u
-#define RZC_E2E_BATTERY_DATA_ID      0x11u
-#define RZC_E2E_ESTOP_DATA_ID        0x01u
-#define RZC_E2E_VEHSTATE_DATA_ID     0x05u
+#define RZC_E2E_MOTOR_TEMP_DATA_ID    0x00u
+#define RZC_E2E_BATTERY_DATA_ID       0x13u
+#define RZC_E2E_ESTOP_DATA_ID         0x01u
+#define RZC_E2E_VEHSTATE_DATA_ID      0x05u
 
 #define RZC_ECU_ID               0x03u
 
@@ -154,13 +146,13 @@ extern Std_ReturnType  Swc_RzcCom_E2eProtect(uint8 pduId, uint8 *data, uint8 len
 extern Std_ReturnType  Swc_RzcCom_E2eCheck(uint8 pduId, const uint8 *data, uint8 length);
 extern void            Swc_RzcCom_Receive(void);
 extern void            Swc_RzcCom_TransmitSchedule(void);
-extern Std_ReturnType  Rzc_E2eRxCheck(uint8 pduId, const uint8* data, uint8 length);
 
 /* ==================================================================
  * Mock: Rte_Read / Rte_Write
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  48u
+/** Sized to RZC_SIG_COUNT so real signal IDs (16..201) are captured */
+#define MOCK_RTE_MAX_SIGNALS  RZC_SIG_COUNT
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint8   mock_rte_write_count;
@@ -186,52 +178,43 @@ Std_ReturnType Rte_Write(uint16 SignalId, uint32 Data)
 }
 
 /* ==================================================================
- * Mock: Com_SendSignal
+ * Mock: Com_SendSignal — captures the last value per signal ID.
+ * Swc_RzcCom passes uint8* or uint16* depending on the signal, so the
+ * mock reads the correct width via a signal-size lookup.
  * ================================================================== */
+
+#define MOCK_COM_MAX_SIGNALS  48u
 
 static uint8   mock_com_send_count;
 static uint16  mock_com_last_signal_id;
-static uint8   mock_com_last_data[8];
+static uint16  mock_com_sig_value[MOCK_COM_MAX_SIGNALS];
+static uint8   mock_com_sig_sent[MOCK_COM_MAX_SIGNALS];
+
+/** Signals transmitted as uint16 by Swc_RzcCom — all others are uint8 */
+static uint8 mock_com_sig_is_u16(Com_SignalIdType SignalId)
+{
+    uint8 is_u16 = FALSE;
+    if ((SignalId == RZC_COM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM) ||
+        (SignalId == RZC_COM_SIG_MOTOR_CURRENT_PHASE_M_A) ||
+        (SignalId == RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_1_C) ||
+        (SignalId == RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_2_C) ||
+        (SignalId == RZC_COM_SIG_BATTERY_STATUS_BATTERY_VOLTAGE_M_V)) {
+        is_u16 = TRUE;
+    }
+    return is_u16;
+}
 
 Std_ReturnType Com_SendSignal(Com_SignalIdType SignalId, const void* SignalDataPtr)
 {
-    uint8 i;
-    const uint8* DataPtr = (const uint8*)SignalDataPtr;
     mock_com_send_count++;
     mock_com_last_signal_id = (uint16)SignalId;
-    if (SignalDataPtr != NULL_PTR) {
-        for (i = 0u; i < 8u; i++) {
-            mock_com_last_data[i] = DataPtr[i];
+    if ((SignalDataPtr != NULL_PTR) && (SignalId < MOCK_COM_MAX_SIGNALS)) {
+        if (mock_com_sig_is_u16(SignalId) == TRUE) {
+            mock_com_sig_value[SignalId] = *(const uint16*)SignalDataPtr;
+        } else {
+            mock_com_sig_value[SignalId] = (uint16)(*(const uint8*)SignalDataPtr);
         }
-    }
-    return E_OK;
-}
-
-/* ==================================================================
- * Mock: PduR_Transmit
- * ================================================================== */
-
-#define MOCK_PDUR_MAX_PDUS  8u
-
-static uint8   mock_pdur_tx_count;
-static uint16  mock_pdur_last_pdu_id;
-static uint8   mock_pdur_last_data[8];
-static uint8   mock_pdur_tx_data[MOCK_PDUR_MAX_PDUS][8];
-
-Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
-{
-    uint8 i;
-    mock_pdur_tx_count++;
-    mock_pdur_last_pdu_id = TxPduId;
-    if ((PduInfoPtr != NULL_PTR) && (PduInfoPtr->SduDataPtr != NULL_PTR)) {
-        for (i = 0u; i < 8u; i++) {
-            mock_pdur_last_data[i] = PduInfoPtr->SduDataPtr[i];
-        }
-        if (TxPduId < MOCK_PDUR_MAX_PDUS) {
-            for (i = 0u; i < 8u; i++) {
-                mock_pdur_tx_data[TxPduId][i] = PduInfoPtr->SduDataPtr[i];
-            }
-        }
+        mock_com_sig_sent[SignalId] = 1u;
     }
     return E_OK;
 }
@@ -239,8 +222,6 @@ Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
 /* ==================================================================
  * Mock: Dem_ReportErrorStatus
  * ================================================================== */
-
-#define MOCK_DEM_MAX_EVENTS  16u
 
 static uint8   mock_dem_call_count;
 static uint8   mock_dem_last_event_id;
@@ -251,41 +232,6 @@ void Dem_ReportErrorStatus(uint8 EventId, uint8 EventStatus)
     mock_dem_call_count++;
     mock_dem_last_event_id = EventId;
     mock_dem_last_status   = EventStatus;
-}
-
-/* ==================================================================
- * Mock: E2E_Protect (shared BSW E2E module)
- * ================================================================== */
-
-static uint8 mock_e2e_protect_count;
-
-Std_ReturnType E2E_Protect(const E2E_ConfigType* config, E2E_StateType* state,
-                           uint8* data, uint16 length)
-{
-    (void)config;
-    (void)state;
-    (void)data;
-    (void)length;
-    mock_e2e_protect_count++;
-    return E_OK;
-}
-
-/* ==================================================================
- * Mock: E2E_Check (shared BSW E2E module — RX verification)
- * ================================================================== */
-
-static E2E_CheckStatusType mock_e2e_check_result;
-static uint8               mock_e2e_check_count;
-
-E2E_CheckStatusType E2E_Check(const E2E_ConfigType* config, E2E_StateType* state,
-                              const uint8* data, uint16 length)
-{
-    (void)config;
-    (void)state;
-    (void)data;
-    (void)length;
-    mock_e2e_check_count++;
-    return mock_e2e_check_result;
 }
 
 /* ==================================================================
@@ -301,33 +247,18 @@ void setUp(void)
     }
     mock_rte_write_count = 0u;
 
-    mock_com_send_count    = 0u;
+    mock_com_send_count     = 0u;
     mock_com_last_signal_id = 0xFFu;
-    for (i = 0u; i < 8u; i++) {
-        mock_com_last_data[i] = 0u;
-    }
-
-    mock_pdur_tx_count    = 0u;
-    mock_pdur_last_pdu_id = 0xFFu;
-    for (i = 0u; i < 8u; i++) {
-        mock_pdur_last_data[i] = 0u;
-    }
-    {
-        uint8 j;
-        for (j = 0u; j < MOCK_PDUR_MAX_PDUS; j++) {
-            for (i = 0u; i < 8u; i++) {
-                mock_pdur_tx_data[j][i] = 0u;
-            }
-        }
+    for (i = 0u; i < MOCK_COM_MAX_SIGNALS; i++) {
+        mock_com_sig_value[i] = 0u;
+        mock_com_sig_sent[i]  = 0u;
     }
 
     mock_dem_call_count    = 0u;
     mock_dem_last_event_id = 0xFFu;
     mock_dem_last_status   = 0xFFu;
 
-    mock_e2e_protect_count = 0u;
-    mock_e2e_check_result  = E2E_STATUS_ERROR;  /* Default: reject (safe) */
-    mock_e2e_check_count   = 0u;
+    mock_safety_notify_count = 0u;
 
     Swc_RzcCom_Init();
 }
@@ -408,7 +339,8 @@ void test_RzcCom_e2e_check_valid(void)
     TEST_ASSERT_EQUAL_UINT8(E_OK, result);
 }
 
-/** @verifies SWR-RZC-020 -- 3 consecutive E2E failures triggers zero torque for torque cmd */
+/** @verifies SWR-RZC-020 -- 3 consecutive E2E failures triggers zero torque
+ *  for torque cmd and reports the CAN bus-off DTC */
 void test_RzcCom_e2e_check_3_failures_zero_torque(void)
 {
     uint8 bad_data[8] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu};
@@ -425,6 +357,8 @@ void test_RzcCom_e2e_check_3_failures_zero_torque(void)
     Swc_RzcCom_Receive();
 
     TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[RZC_SIG_TORQUE_CMD]);
+    TEST_ASSERT_EQUAL_UINT8(RZC_DTC_CAN_BUS_OFF, mock_dem_last_event_id);
+    TEST_ASSERT_EQUAL_UINT8(DEM_EVENT_STATUS_FAILED, mock_dem_last_status);
 }
 
 /* ==================================================================
@@ -441,6 +375,8 @@ void test_RzcCom_receive_estop_disables_motor(void)
 
     /* ESTOP should remain written to RTE */
     TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[RZC_SIG_ESTOP_ACTIVE]);
+    /* Receive notifies the safety module (CAN silence counter reset) */
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_safety_notify_count);
 }
 
 /** @verifies SWR-RZC-026 -- Torque timeout after 100ms (10 cycles at 10ms) forces zero */
@@ -464,8 +400,25 @@ void test_RzcCom_receive_torque_timeout_100ms_zero(void)
  * SWR-RZC-027: CAN Message Transmission
  * ================================================================== */
 
+/** @verifies SWR-RZC-027 -- Heartbeat signals (ECU ID + state/fault byte)
+ *  are published via Com on every TX schedule cycle */
+void test_RzcCom_transmit_heartbeat_signals(void)
+{
+    mock_rte_signals[RZC_SIG_VEHICLE_STATE] = 2u;     /* DEGRADED */
+    mock_rte_signals[RZC_SIG_FAULT_MASK]    = 0x05u;
+
+    Swc_RzcCom_TransmitSchedule();
+
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_com_sig_sent[RZC_COM_SIG_RZC_HEARTBEAT_ECU_ID]);
+    TEST_ASSERT_EQUAL_UINT16((uint16)RZC_ECU_ID,
+                             mock_com_sig_value[RZC_COM_SIG_RZC_HEARTBEAT_ECU_ID]);
+    /* state_fault = ((fault_mask & 0x0F) << 4) | (vehicle_state & 0x0F) = 0x52 */
+    TEST_ASSERT_EQUAL_UINT16(0x52u,
+                             mock_com_sig_value[RZC_COM_SIG_RZC_HEARTBEAT_FAULT_STATUS]);
+}
+
 /** @verifies SWR-RZC-027 -- Motor status+current transmitted every cycle,
- *  motor_temp paced to 100ms (offset 3), battery to 1s (offset 7).
+ *  motor_temp paced to 100ms (offset 3), battery to 200ms (offset 7).
  *  FDCAN TX FIFO = 3 slots, max 2 frames/cycle from this SWC. */
 void test_RzcCom_transmit_motor_data_10ms(void)
 {
@@ -481,114 +434,66 @@ void test_RzcCom_transmit_motor_data_10ms(void)
     mock_rte_signals[RZC_SIG_OVERCURRENT]   = 0u;
     mock_rte_signals[RZC_SIG_TEMP1_DC]      = 650u;
     mock_rte_signals[RZC_SIG_TEMP2_DC]      = 700u;
-    mock_rte_signals[RZC_SIG_DERATING_PCT]  = 0u;
+    mock_rte_signals[RZC_SIG_DERATING_PCT]  = 25u;
     mock_rte_signals[RZC_SIG_BATTERY_MV]    = 12000u;
     mock_rte_signals[RZC_SIG_BATTERY_STATUS] = 1u;
 
-    mock_pdur_tx_count = 0u;
-
-    /* First cycle: only motor_status + motor_current (2 PduR calls).
-     * motor_temp fires at cycle%10==3, battery at cycle%100==7. */
+    /* First cycle: heartbeat (2 signals) + motor status (5) + motor
+     * current (5) = 12 Com_SendSignal calls. motor_temp fires at
+     * cycle%10==3, battery at cycle%20==7. */
     Swc_RzcCom_TransmitSchedule();
-    TEST_ASSERT_EQUAL_UINT8(2u, mock_pdur_tx_count);
+    TEST_ASSERT_EQUAL_UINT8(12u, mock_com_send_count);
 
-    /* Verify motor status PDU (0x300) — torque_echo in byte 2 */
-    TEST_ASSERT_EQUAL_UINT8(42u, mock_pdur_tx_data[RZC_COM_TX_MOTOR_STATUS][2]);
+    /* Motor status (0x300) signal values */
+    TEST_ASSERT_EQUAL_UINT16(42u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_STATUS_TORQUE_ECHO]);
+    TEST_ASSERT_EQUAL_UINT16(1500u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM]);
+    TEST_ASSERT_EQUAL_UINT16(1u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_STATUS_MOTOR_ENABLE]);
 
-    /* Verify motor current PDU (0x301) — current_mA low byte in byte 2 */
-    TEST_ASSERT_EQUAL_UINT8((uint8)(5000u & 0xFFu),
-                            mock_pdur_tx_data[RZC_COM_TX_MOTOR_CURRENT][2]);
+    /* Motor current (0x301) signal values; dir 1 != reverse (2) -> 0 */
+    TEST_ASSERT_EQUAL_UINT16(5000u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_CURRENT_PHASE_M_A]);
+    TEST_ASSERT_EQUAL_UINT16(0u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_CURRENT_DIR_IS_REVERSE]);
+    TEST_ASSERT_EQUAL_UINT16(0u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_CURRENT_OVERCURRENT_FLAG]);
+    TEST_ASSERT_EQUAL_UINT16(42u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_CURRENT_TORQUE_ECHO]);
+
+    /* Motor temp (0x302) not sent yet (fires at cycle offset 3) */
+    TEST_ASSERT_EQUAL_UINT8(0u,
+        mock_com_sig_sent[RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_1_C]);
 
     /* Run 2 more cycles to reach offset 3 (motor_temp) */
     for (i = 0u; i < 2u; i++) {
         Swc_RzcCom_TransmitSchedule();
     }
+    TEST_ASSERT_EQUAL_UINT16(650u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_1_C]);
+    TEST_ASSERT_EQUAL_UINT16(700u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_TEMPERATURE_WINDING_TEMP_2_C]);
+    TEST_ASSERT_EQUAL_UINT16(25u,
+        mock_com_sig_value[RZC_COM_SIG_MOTOR_TEMPERATURE_DERATING_PERCENT]);
 
-    /* Verify motor temp PDU (0x302) was sent at cycle 3 */
-    TEST_ASSERT_EQUAL_UINT8((uint8)(650u & 0xFFu),
-                            mock_pdur_tx_data[RZC_COM_TX_MOTOR_TEMP][2]);
+    /* Battery (0x303) not sent yet (fires at cycle offset 7) */
+    TEST_ASSERT_EQUAL_UINT8(0u,
+        mock_com_sig_sent[RZC_COM_SIG_BATTERY_STATUS_BATTERY_VOLTAGE_M_V]);
 
     /* Run 4 more cycles to reach offset 7 (battery) */
     for (i = 0u; i < 4u; i++) {
         Swc_RzcCom_TransmitSchedule();
     }
-
-    /* Verify battery status PDU (0x303) was sent at cycle 7 */
-    TEST_ASSERT_EQUAL_UINT8((uint8)(12000u & 0xFFu),
-                            mock_pdur_tx_data[RZC_COM_TX_BATTERY_STATUS][2]);
+    TEST_ASSERT_EQUAL_UINT16(12000u,
+        mock_com_sig_value[RZC_COM_SIG_BATTERY_STATUS_BATTERY_VOLTAGE_M_V]);
+    TEST_ASSERT_EQUAL_UINT16(1u,
+        mock_com_sig_value[RZC_COM_SIG_BATTERY_STATUS_LEVEL]);
 }
 
-/* ==================================================================
- * SWR-RZC-020: Rzc_E2eRxCheck CanIf Callback
- * ================================================================== */
-
-/** @verifies SWR-RZC-020 -- E2E-protected PDU with bad CRC returns E_NOT_OK */
-void test_Rzc_E2eRxCheck_vehicle_torque_bad_crc(void)
-{
-    uint8 bad_data[8] = {0xFFu, 0x01u, 0x03u, 0x00u, 0x64u, 0x00u, 0x00u, 0x00u};
-    Std_ReturnType result;
-
-    mock_e2e_check_result = E2E_STATUS_ERROR;
-    result = Rzc_E2eRxCheck(RZC_COM_RX_VEHICLE_TORQUE, bad_data, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, result);
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_e2e_check_count);
-}
-
-/** @verifies SWR-RZC-020 -- Valid E2E frame returns E_OK and clears fail count */
-void test_Rzc_E2eRxCheck_vehicle_torque_valid(void)
-{
-    uint8 data[8] = {0x15u, 0xAAu, 0x01u, 0x00u, 0x64u, 0x00u, 0x00u, 0x00u};
-    Std_ReturnType result;
-
-    mock_e2e_check_result = E2E_STATUS_OK;
-    result = Rzc_E2eRxCheck(RZC_COM_RX_VEHICLE_TORQUE, data, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_OK, result);
-}
-
-/** @verifies SWR-RZC-020 -- Non-E2E PDU (virtual sensors) always returns E_OK */
-void test_Rzc_E2eRxCheck_virt_sensors_always_ok(void)
-{
-    uint8 any_data[8] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu};
-    Std_ReturnType result;
-
-    result = Rzc_E2eRxCheck(RZC_COM_RX_VIRT_SENSORS, any_data, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_OK, result);
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_e2e_check_count);  /* E2E_Check not called */
-}
-
-/** @verifies SWR-RZC-020 -- E-stop PDU with bad CRC returns E_NOT_OK */
-void test_Rzc_E2eRxCheck_estop_bad_crc(void)
-{
-    uint8 bad_data[8] = {0xAAu, 0xBBu, 0xCCu, 0xDDu, 0xEEu, 0xFFu, 0x00u, 0x11u};
-    Std_ReturnType result;
-
-    mock_e2e_check_result = E2E_STATUS_ERROR;
-    result = Rzc_E2eRxCheck(RZC_COM_RX_ESTOP, bad_data, 8u);
-
-    TEST_ASSERT_EQUAL_UINT8(E_NOT_OK, result);
-}
-
-/** @verifies SWR-RZC-020 -- 3 E2E failures via CanIf callback triggers DTC in Receive */
-void test_Rzc_E2eRxCheck_3_failures_triggers_dem(void)
-{
-    uint8 bad_data[8] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu};
-
-    mock_e2e_check_result = E2E_STATUS_ERROR;
-
-    /* 3 consecutive failures on VEHICLE_TORQUE via CanIf callback */
-    (void)Rzc_E2eRxCheck(RZC_COM_RX_VEHICLE_TORQUE, bad_data, 8u);
-    (void)Rzc_E2eRxCheck(RZC_COM_RX_VEHICLE_TORQUE, bad_data, 8u);
-    (void)Rzc_E2eRxCheck(RZC_COM_RX_VEHICLE_TORQUE, bad_data, 8u);
-
-    /* Receive should detect fail count >= 3 and report DTC */
-    Swc_RzcCom_Receive();
-
-    TEST_ASSERT_EQUAL_UINT8(RZC_DTC_CAN_BUS_OFF, mock_dem_last_event_id);
-    TEST_ASSERT_EQUAL_UINT8(DEM_EVENT_STATUS_FAILED, mock_dem_last_status);
-}
+/* Rzc_E2eRxCheck test cases removed — the CanIf E2E RX callback was
+ * deleted from Swc_RzcCom.c (E2E RX check moved to the Com layer in
+ * Phase 2; dead design). */
 
 /* ==================================================================
  * Test runner
@@ -610,14 +515,8 @@ int main(void)
     RUN_TEST(test_RzcCom_receive_torque_timeout_100ms_zero);
 
     /* SWR-RZC-027: CAN Message Transmission */
+    RUN_TEST(test_RzcCom_transmit_heartbeat_signals);
     RUN_TEST(test_RzcCom_transmit_motor_data_10ms);
-
-    /* SWR-RZC-020: Rzc_E2eRxCheck CanIf Callback */
-    RUN_TEST(test_Rzc_E2eRxCheck_vehicle_torque_bad_crc);
-    RUN_TEST(test_Rzc_E2eRxCheck_vehicle_torque_valid);
-    RUN_TEST(test_Rzc_E2eRxCheck_virt_sensors_always_ok);
-    RUN_TEST(test_Rzc_E2eRxCheck_estop_bad_crc);
-    RUN_TEST(test_Rzc_E2eRxCheck_3_failures_triggers_dem);
 
     return UNITY_END();
 }

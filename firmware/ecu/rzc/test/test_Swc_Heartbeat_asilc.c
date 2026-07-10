@@ -6,10 +6,16 @@
  * @verifies SWR-RZC-021, SWR-RZC-022
  *
  * Tests heartbeat initialization, periodic 50ms transmission, alive counter
- * increment and wrap, ECU ID (0x03) / fault mask / vehicle state inclusion in
- * heartbeat payload, CAN bus-off suppression, and safe behaviour on init.
+ * increment and wrap, ECU ID (0x03) / fault mask / vehicle state publication
+ * via the heartbeat RTE signals, CAN bus-off suppression, and safe behaviour
+ * on init.
  *
- * Mocks: Rte_Read, Rte_Write, PduR_Transmit, Dem_ReportErrorStatus
+ * Since the SIL-stability series (Phase 2) the SWC no longer builds the CAN
+ * payload itself: E2E protection lives in the Com layer and the heartbeat
+ * PDU is auto-pulled by Com_MainFunction_Tx from the RTE signals written
+ * here. Tests therefore assert on the RTE signal writes.
+ *
+ * Mocks: Rte_Read, Rte_Write
  *
  * @standard AUTOSAR SWC pattern, ISO 26262 Part 6
  * @copyright Taktflow Systems 2026
@@ -33,12 +39,6 @@ typedef uint8           Std_ReturnType;
 #define NULL_PTR    ((void*)0)
 
 typedef uint8           boolean;
-typedef uint16          PduIdType;
-
-typedef struct {
-    uint8* SduDataPtr;
-    uint8  SduLength;
-} PduInfoType;
 
 /* Prevent BSW headers from redefining types when source is included */
 #define PLATFORM_TYPES_H
@@ -57,11 +57,16 @@ typedef struct {
  * Signal IDs (from Rzc_Cfg.h -- redefined locally for test isolation)
  * ================================================================== */
 
-#define RZC_SIG_FAULT_MASK          35u
-#define RZC_SIG_VEHICLE_STATE       33u
-#define RZC_SIG_HEARTBEAT_ALIVE     37u
+#define RZC_SIG_RZC_HEARTBEAT_ECU_ID          133u
+#define RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS    134u
+#define RZC_SIG_RZC_HEARTBEAT_OPERATING_MODE  135u
+/* Alias RZC_SIG_HEARTBEAT_ALIVE -> RZC_SIG_RZC_HEARTBEAT_E_2_E_ALIVE_COUNTER */
+#define RZC_SIG_HEARTBEAT_ALIVE               130u
+/* Alias RZC_SIG_VEHICLE_STATE -> RZC_SIG_VEHICLE_STATE_MODE */
+#define RZC_SIG_VEHICLE_STATE                 187u
+/* Alias RZC_SIG_FAULT_MASK -> RZC_SIG_VEHICLE_STATE_FAULT_MASK */
+#define RZC_SIG_FAULT_MASK                    186u
 
-#define RZC_COM_TX_HEARTBEAT         0u
 #define RZC_ECU_ID                  0x03u
 
 #define RZC_RTE_PERIOD_MS           50u
@@ -70,8 +75,6 @@ typedef struct {
 
 /** Derived: cycles per heartbeat TX period (used in run_cycles) */
 #define RZC_HB_PERIOD_CYCLES  (RZC_HB_TX_PERIOD_MS / RZC_RTE_PERIOD_MS)
-
-#define RZC_DTC_CAN_BUS_OFF          5u
 
 /* Vehicle states */
 #define RZC_STATE_INIT               0u
@@ -84,25 +87,6 @@ typedef struct {
 /* Fault mask bits */
 #define RZC_FAULT_CAN               0x08u
 
-/* DEM event status */
-#define DEM_EVENT_STATUS_PASSED      0u
-#define DEM_EVENT_STATUS_FAILED      1u
-
-/* Heartbeat payload layout (byte offsets) — E2E-protected PDU
- * Bytes 0-1: E2E overhead (counter+dataid, CRC) — written by E2E_Protect
- * Byte 2:    ECU_ID
- * Byte 3:    [FaultStatus:4 | OperatingMode:4]
- */
-#define HB_BYTE_ECU_ID               2u
-#define HB_BYTE_STATE_FAULT          3u
-
-/* E2E config */
-#define RZC_E2E_HEARTBEAT_DATA_ID   0x04u
-
-/* E2E types needed by Swc_Heartbeat.c */
-typedef struct { uint8 DataId; uint8 MaxDeltaCounter; uint16 DataLength; } E2E_ConfigType;
-typedef struct { uint8 Counter; } E2E_StateType;
-
 /* Swc_Heartbeat API declarations */
 extern void Swc_Heartbeat_Init(void);
 extern void Swc_Heartbeat_MainFunction(void);
@@ -111,7 +95,9 @@ extern void Swc_Heartbeat_MainFunction(void);
  * Mock: Rte_Read
  * ================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  48u
+/** Sized to RZC_SIG_COUNT (202u in Rzc_Cfg.h) so the real heartbeat
+ *  signal IDs (130..135) and state signals (186/187) are captured. */
+#define MOCK_RTE_MAX_SIGNALS  202u
 
 static uint32  mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 static uint32  mock_vehicle_state;
@@ -143,78 +129,25 @@ Std_ReturnType Rte_Read(uint16 SignalId, uint32* DataPtr)
 
 static uint8   mock_rte_write_count;
 
+/** One heartbeat TX cycle = one write each to OPERATING_MODE and
+ *  FAULT_STATUS. Counted separately as TX markers. */
+static uint8   mock_hb_mode_write_count;
+static uint8   mock_hb_fault_write_count;
+
 Std_ReturnType Rte_Write(uint16 SignalId, uint32 Data)
 {
     mock_rte_write_count++;
+    if (SignalId == RZC_SIG_RZC_HEARTBEAT_OPERATING_MODE) {
+        mock_hb_mode_write_count++;
+    }
+    if (SignalId == RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS) {
+        mock_hb_fault_write_count++;
+    }
     if (SignalId < MOCK_RTE_MAX_SIGNALS) {
         mock_rte_signals[SignalId] = Data;
         return E_OK;
     }
     return E_NOT_OK;
-}
-
-/* ==================================================================
- * Mock: PduR_Transmit
- * ================================================================== */
-
-#define MOCK_COM_MAX_DATA  8u
-
-static uint8   mock_com_send_count;
-static uint16  mock_com_last_signal_id;
-static uint8   mock_com_last_data[MOCK_COM_MAX_DATA];
-
-Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr)
-{
-    uint8 i;
-    mock_com_send_count++;
-    mock_com_last_signal_id = (uint16)TxPduId;
-    if ((PduInfoPtr != NULL_PTR) && (PduInfoPtr->SduDataPtr != NULL_PTR)) {
-        for (i = 0u; i < MOCK_COM_MAX_DATA; i++) {
-            mock_com_last_data[i] = PduInfoPtr->SduDataPtr[i];
-        }
-    }
-    return E_OK;
-}
-
-/* ==================================================================
- * Mock: Dem_ReportErrorStatus
- * ================================================================== */
-
-#define MOCK_DEM_MAX_EVENTS  16u
-
-static uint8   mock_dem_last_event_id;
-static uint8   mock_dem_last_status;
-static uint8   mock_dem_call_count;
-static uint8   mock_dem_event_reported[MOCK_DEM_MAX_EVENTS];
-static uint8   mock_dem_event_status[MOCK_DEM_MAX_EVENTS];
-
-void Dem_ReportErrorStatus(uint8 EventId, uint8 EventStatus)
-{
-    mock_dem_call_count++;
-    mock_dem_last_event_id = EventId;
-    mock_dem_last_status   = EventStatus;
-    if (EventId < MOCK_DEM_MAX_EVENTS) {
-        mock_dem_event_reported[EventId] = 1u;
-        mock_dem_event_status[EventId]   = EventStatus;
-    }
-}
-
-/* ==================================================================
- * Mock: E2E_Protect
- * ================================================================== */
-
-static uint8 mock_e2e_protect_count;
-static const E2E_ConfigType* mock_e2e_config_ptr;
-
-Std_ReturnType E2E_Protect(const E2E_ConfigType* Config, E2E_StateType* State,
-                           uint8* DataPtr, uint16 Length)
-{
-    mock_e2e_protect_count++;
-    mock_e2e_config_ptr = Config;
-    (void)State;
-    (void)DataPtr;
-    (void)Length;
-    return E_OK;
 }
 
 /* ==================================================================
@@ -232,31 +165,13 @@ void setUp(void)
     uint8 i;
 
     /* Reset RTE mock */
-    mock_rte_write_count = 0u;
-    mock_vehicle_state   = RZC_STATE_RUN;
-    mock_fault_mask      = 0u;
+    mock_rte_write_count      = 0u;
+    mock_hb_mode_write_count  = 0u;
+    mock_hb_fault_write_count = 0u;
+    mock_vehicle_state        = RZC_STATE_RUN;
+    mock_fault_mask           = 0u;
     for (i = 0u; i < MOCK_RTE_MAX_SIGNALS; i++) {
         mock_rte_signals[i] = 0u;
-    }
-
-    /* Reset COM mock */
-    mock_com_send_count     = 0u;
-    mock_com_last_signal_id = 0xFFu;
-    for (i = 0u; i < MOCK_COM_MAX_DATA; i++) {
-        mock_com_last_data[i] = 0u;
-    }
-
-    /* Reset E2E mock */
-    mock_e2e_protect_count = 0u;
-    mock_e2e_config_ptr    = NULL_PTR;
-
-    /* Reset DEM mock */
-    mock_dem_call_count    = 0u;
-    mock_dem_last_event_id = 0xFFu;
-    mock_dem_last_status   = 0xFFu;
-    for (i = 0u; i < MOCK_DEM_MAX_EVENTS; i++) {
-        mock_dem_event_reported[i] = 0u;
-        mock_dem_event_status[i]   = 0xFFu;
     }
 
     Swc_Heartbeat_Init();
@@ -265,7 +180,7 @@ void setUp(void)
 void tearDown(void) { }
 
 /* ==================================================================
- * Helper: run N main cycles (10ms per call)
+ * Helper: run N main cycles
  * ================================================================== */
 
 static void run_cycles(uint16 count)
@@ -284,23 +199,45 @@ static void run_cycles(uint16 count)
 void test_Init_succeeds(void)
 {
     /* Init already called in setUp. Verify module is operational
-     * by running one full period — heartbeat should be sent. */
+     * by running one full period — heartbeat signals must be written. */
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_EQUAL_UINT8(1u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_mode_write_count);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_fault_write_count);
 }
 
 /* ==================================================================
  * SWR-RZC-022: Heartbeat Transmission
  * ================================================================== */
 
-/** @verifies SWR-RZC-022 -- Heartbeat sent every 50ms (5 calls at 10ms each) */
+/** @verifies SWR-RZC-022 -- Heartbeat published every 50ms period */
 void test_HB_sends_at_50ms(void)
 {
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_TRUE(mock_com_send_count >= 1u);
-    TEST_ASSERT_EQUAL_UINT16(RZC_COM_TX_HEARTBEAT, mock_com_last_signal_id);
+    TEST_ASSERT_TRUE(mock_hb_mode_write_count >= 1u);
+    TEST_ASSERT_EQUAL_UINT8(mock_hb_mode_write_count, mock_hb_fault_write_count);
+}
+
+/** @verifies SWR-RZC-022 -- MainFunction writes operating mode AND fault
+ *  status once per TX cycle (auto-pulled by Com_MainFunction_Tx) */
+void test_HB_writes_mode_and_fault_each_tx_cycle(void)
+{
+    mock_vehicle_state = RZC_STATE_RUN;
+    mock_fault_mask    = 0x02u;
+
+    run_cycles(RZC_HB_PERIOD_CYCLES);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_mode_write_count);
+    TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_fault_write_count);
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_STATE_RUN,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_OPERATING_MODE]);
+    TEST_ASSERT_EQUAL_UINT32(0x02u,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS]);
+
+    /* Second period: both signals written again */
+    run_cycles(RZC_HB_PERIOD_CYCLES);
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_hb_mode_write_count);
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_hb_fault_write_count);
 }
 
 /** @verifies SWR-RZC-022 -- Alive counter increments each TX */
@@ -339,12 +276,13 @@ void test_HB_alive_counter_wraps(void)
     TEST_ASSERT_EQUAL_UINT8(0u, alive_val);
 }
 
-/** @verifies SWR-RZC-022 -- ECU ID 0x03 included in heartbeat data */
+/** @verifies SWR-RZC-022 -- Init writes ECU ID 0x03 to the heartbeat signal */
 void test_HB_includes_ecu_id(void)
 {
-    run_cycles(RZC_HB_PERIOD_CYCLES);
-
-    TEST_ASSERT_EQUAL_UINT8(RZC_ECU_ID, mock_com_last_data[HB_BYTE_ECU_ID]);
+    /* Written once by Swc_Heartbeat_Init (called in setUp) — constant
+     * heartbeat field, auto-pulled by the Com TX path. */
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_ECU_ID,
+                             mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_ECU_ID]);
 }
 
 /** @verifies SWR-RZC-022 -- Fault bitmask from RTE included in heartbeat */
@@ -354,9 +292,9 @@ void test_HB_includes_fault_mask(void)
 
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    /* FaultStatus in byte 3 high nibble */
-    TEST_ASSERT_EQUAL_UINT8(0x05u,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    /* FaultStatus signal carries fault_mask & 0x0F */
+    TEST_ASSERT_EQUAL_UINT32(0x05u,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-RZC-022 -- Vehicle state from RTE included in heartbeat */
@@ -366,9 +304,9 @@ void test_HB_includes_state(void)
 
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    /* OperatingMode in byte 3 low nibble */
-    TEST_ASSERT_EQUAL_UINT8((uint8)RZC_STATE_DEGRADED,
-                            mock_com_last_data[HB_BYTE_STATE_FAULT] & 0x0Fu);
+    /* OperatingMode signal carries vehicle_state & 0x0F */
+    TEST_ASSERT_EQUAL_UINT32((uint32)RZC_STATE_DEGRADED,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_OPERATING_MODE]);
 }
 
 /** @verifies SWR-RZC-021 -- No TX when CAN bus-off active */
@@ -379,17 +317,18 @@ void test_HB_suppressed_in_bus_off(void)
 
     run_cycles(RZC_HB_PERIOD_CYCLES * 3u);
 
-    /* No heartbeat should have been sent */
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    /* No heartbeat signals should have been written */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_mode_write_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_fault_write_count);
 }
 
 /** @verifies SWR-RZC-022 -- No send before 50ms period elapsed */
 void test_No_send_before_period(void)
 {
-    /* Run 4 cycles (< 5 cycles = 50ms period) */
+    /* Run one cycle less than a full period */
     run_cycles(RZC_HB_PERIOD_CYCLES - 1u);
 
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_mode_write_count);
 }
 
 /** @verifies SWR-RZC-021 -- MainFunction immediately after init is safe */
@@ -398,7 +337,7 @@ void test_MainFunction_without_init_safe(void)
     /* Init called in setUp. Running fewer than one period should not send. */
     run_cycles(RZC_HB_PERIOD_CYCLES - 1u);
 
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_mode_write_count);
 }
 
 /* ==================================================================
@@ -428,9 +367,8 @@ void test_HB_fault_mask_max(void)
 
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    /* FaultStatus in byte 3 high nibble = 0x0F */
-    TEST_ASSERT_EQUAL_UINT8(0x0Fu,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    TEST_ASSERT_EQUAL_UINT32(0x0Fu,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-RZC-022
@@ -444,28 +382,22 @@ void test_HB_all_states_valid(void)
     for (i = 0u; i < 6u; i++) {
         mock_vehicle_state = states[i];
         mock_fault_mask    = 0u;
-        mock_com_send_count = 0u;
+        mock_hb_mode_write_count = 0u;
         run_cycles(RZC_HB_PERIOD_CYCLES);
 
-        if ((states[i] == RZC_STATE_SAFE_STOP) &&
-            ((mock_fault_mask & RZC_FAULT_CAN) != 0u)) {
-            /* Bus-off suppresses send */
-            continue;
-        }
-        /* OperatingMode in byte 3 low nibble should match */
-        if (mock_com_send_count > 0u) {
-            TEST_ASSERT_EQUAL_UINT8((uint8)states[i],
-                                    mock_com_last_data[HB_BYTE_STATE_FAULT] & 0x0Fu);
-        }
+        /* Without RZC_FAULT_CAN set, no state suppresses the heartbeat */
+        TEST_ASSERT_EQUAL_UINT8(1u, mock_hb_mode_write_count);
+        TEST_ASSERT_EQUAL_UINT32((uint32)states[i],
+            mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_OPERATING_MODE]);
     }
 }
 
 /** @verifies SWR-RZC-022
- *  Equivalence class: Boundary — exactly 4 cycles (just before first TX) */
+ *  Equivalence class: Boundary — just before first TX period elapses */
 void test_HB_exactly_4_cycles_no_send(void)
 {
     run_cycles(RZC_HB_PERIOD_CYCLES - 1u);
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_mode_write_count);
 }
 
 /** @verifies SWR-RZC-022
@@ -475,9 +407,8 @@ void test_HB_zero_fault_mask(void)
     mock_fault_mask = 0u;
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    /* FaultStatus in byte 3 high nibble should be 0 */
-    TEST_ASSERT_EQUAL_UINT8(0u,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    TEST_ASSERT_EQUAL_UINT32(0u,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /** @verifies SWR-RZC-021
@@ -486,14 +417,14 @@ void test_HB_bus_off_mid_sequence(void)
 {
     /* Normal TX first */
     run_cycles(RZC_HB_PERIOD_CYCLES);
-    TEST_ASSERT_TRUE(mock_com_send_count >= 1u);
+    TEST_ASSERT_TRUE(mock_hb_mode_write_count >= 1u);
 
     /* CAN bus-off — no more TX */
     mock_fault_mask = RZC_FAULT_CAN;
     mock_vehicle_state = RZC_STATE_SAFE_STOP;
-    mock_com_send_count = 0u;
+    mock_hb_mode_write_count = 0u;
     run_cycles(RZC_HB_PERIOD_CYCLES * 3u);
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_hb_mode_write_count);
 }
 
 /* ==================================================================
@@ -539,11 +470,11 @@ void test_HB_double_init_resets_alive(void)
 {
     /* Advance alive counter */
     run_cycles(RZC_HB_PERIOD_CYCLES * 5u);
-    TEST_ASSERT_EQUAL_UINT8(5u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(5u, mock_hb_mode_write_count);
 
     /* Re-init */
     Swc_Heartbeat_Init();
-    mock_com_send_count = 0u;
+    mock_hb_mode_write_count = 0u;
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
     /* Alive counter should restart at 0 (sent via Rte_Write) */
@@ -556,19 +487,20 @@ void test_HB_10_periods_accuracy(void)
 {
     run_cycles(RZC_HB_PERIOD_CYCLES * 10u);
 
-    TEST_ASSERT_EQUAL_UINT8(10u, mock_com_send_count);
+    TEST_ASSERT_EQUAL_UINT8(10u, mock_hb_mode_write_count);
+    TEST_ASSERT_EQUAL_UINT8(10u, mock_hb_fault_write_count);
 }
 
 /** @verifies SWR-RZC-022
- *  Phase 6: Fault mask 4-bit encoding (0x000A → FaultStatus nibble = 0xA) */
+ *  Phase 6: Fault mask 4-bit encoding (0x000A → FaultStatus signal = 0xA) */
 void test_HB_fault_mask_nibble_encoding(void)
 {
     mock_fault_mask = 0x000Au;  /* 4-bit value: 0xA */
 
     run_cycles(RZC_HB_PERIOD_CYCLES);
 
-    TEST_ASSERT_EQUAL_UINT8(0x0Au,
-        (uint8)((mock_com_last_data[HB_BYTE_STATE_FAULT] >> 4u) & 0x0Fu));
+    TEST_ASSERT_EQUAL_UINT32(0x0Au,
+        mock_rte_signals[RZC_SIG_RZC_HEARTBEAT_FAULT_STATUS]);
 }
 
 /* ==================================================================
@@ -584,6 +516,7 @@ int main(void)
 
     /* SWR-RZC-022: Heartbeat transmission */
     RUN_TEST(test_HB_sends_at_50ms);
+    RUN_TEST(test_HB_writes_mode_and_fault_each_tx_cycle);
     RUN_TEST(test_HB_alive_counter_increments);
     RUN_TEST(test_HB_alive_counter_wraps);
     RUN_TEST(test_HB_includes_ecu_id);

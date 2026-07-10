@@ -64,14 +64,6 @@
 #include "Det.h"
 
 /* ==================================================================
- * External Configuration (defined in cfg/ files)
- * ================================================================== */
-
-extern const Rte_ConfigType  cvc_rte_config;
-extern const Com_ConfigType  cvc_com_config;
-extern const Dcm_ConfigType  cvc_dcm_config;
-
-/* ==================================================================
  * Hardware Abstraction Interface (declared in Main_Hw.h, MISRA 8.5)
  * ================================================================== */
 
@@ -79,6 +71,14 @@ extern const Dcm_ConfigType  cvc_dcm_config;
 
 #ifdef USE_THREADX
 #include "tx_api.h"
+
+/* ThreadX timer callback prototypes — callbacks are registered by the
+ * platform layer (tx_stubs.c). Declared here so a compatible declaration
+ * is visible at the external definitions below (MISRA 8.4). */
+void Timer_1ms_Callback(ULONG arg);
+void Timer_10ms_Callback(ULONG arg);
+void Timer_100ms_Callback(ULONG arg);
+void Timer_5s_Callback(ULONG arg);
 #endif
 
 #ifdef USE_OSEK
@@ -87,6 +87,18 @@ extern const Dcm_ConfigType  cvc_dcm_config;
 #include "Os_Port.h"
 #include "Os_FaultRecord.h"   /* S-OS-31-FIX-07 boot forensics */
 #endif
+
+/* ==================================================================
+ * External Configuration (defined in cfg/ files)
+ * ================================================================== */
+
+/* cppcheck-suppress-begin misra-c2012-8.4 ; extern declarations of generated
+ * config objects (definitions live in generated cfg sources) — these are
+ * declarations, not definitions */
+extern const Rte_ConfigType  cvc_rte_config;
+extern const Com_ConfigType  cvc_com_config;
+extern const Dcm_ConfigType  cvc_dcm_config;
+/* cppcheck-suppress-end misra-c2012-8.4 */
 
 /* ==================================================================
  * Static Configuration Constants
@@ -101,6 +113,7 @@ static const Can_ConfigType can_config = {
 /* CanIf config — use GENERATED routing table from CanIf_Cfg_Cvc.c
  * DO NOT hand-write CAN ID routing here. All routing is generated from
  * DBC → ARXML → codegen. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const CanIf_ConfigType cvc_canif_config;
 #define canif_config cvc_canif_config
 
@@ -108,9 +121,11 @@ extern const CanIf_ConfigType cvc_canif_config;
  * DO NOT hand-write routing tables here. All routing is generated from
  * DBC → ARXML → codegen. The generated config includes XCP, UDS, and
  * all Com RX PDU routing. */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const PduR_ConfigType cvc_pdur_config;
 
 /** CanTp configuration — generated from ARXML (CanTp_Cfg_Cvc.c) */
+/* cppcheck-suppress misra-c2012-8.4 ; extern declaration of generated config object — not a definition */
 extern const CanTp_ConfigType cvc_cantp_config;
 
 /** SPI driver configuration — AS5048A angle sensors (CPOL=0, CPHA=1, 16-bit) */
@@ -623,7 +638,7 @@ int main(void)
             last_5s_us = tick_us;
             Main_Hw_DebugPrintStatus(tick_us);
 #ifdef SIL_DIAG
-            fprintf(stderr, "[MAIN] t=%us com_tx_calls=%u hb_sends=%u vs_sends=%u\n",
+            (void)fprintf(stderr, "[MAIN] t=%us com_tx_calls=%u hb_sends=%u vs_sends=%u\n",
                 (unsigned)(tick_us / 1000000u),
                 (unsigned)g_dbg_com_tx_calls,
                 (unsigned)com_tx_send_count[1],  /* heartbeat PDU */

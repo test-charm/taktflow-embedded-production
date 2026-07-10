@@ -5,3 +5,7 @@
 # CAN gateway: publishes decoded CAN telemetry and DTC alerts
 user taktflow
 topic readwrite taktflow/#
+# vehicle/# namespace: ML anomaly alerts (vehicle/alerts), DTC events
+# (vehicle/dtc/new), retained telemetry (vehicle/telemetry) — consumed by
+# the cloud connector and the SIL/HIL verdict checkers.
+topic readwrite vehicle/#

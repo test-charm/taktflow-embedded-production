@@ -306,6 +306,8 @@ E2E_SMStateType E2E_SMCheck(const E2E_SMConfigType* SMConfig,
             SM->State = E2E_SM_VALID;
         } else if (SM->ErrCount >= SMConfig->WindowSizeInvalid) {
             SM->State = E2E_SM_INVALID;
+        } else {
+            /* Neither window met — remain in INIT (MISRA 15.7) */
         }
         break;
 

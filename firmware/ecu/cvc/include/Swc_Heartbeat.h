@@ -38,4 +38,12 @@ void Swc_Heartbeat_MainFunction(void);
  */
 void Swc_Heartbeat_RxIndication(uint8 ecuId);
 
+/**
+ * @brief  Reset comm status to OK — called when post-INIT grace expires
+ * @note   Clears stale TIMEOUT status accumulated during boot transient and
+ *         forces the E2E state machines to VALID (grace period already
+ *         absorbed the transient).
+ */
+void Swc_Heartbeat_ResetCommStatus(void);
+
 #endif /* SWC_HEARTBEAT_H */

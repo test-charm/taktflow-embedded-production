@@ -1,27 +1,39 @@
 # =============================================================================
 # @file    sil_009_e2e_corruption.yaml
-# @brief   SIL scenario: E2E CRC corruption — frame rejection verification
+# @brief   SIL scenario: E2E CRC corruption — frame rejection + DTC escalation
 # @aspice  SWE.5 — Software Component Verification & Integration
 # @iso     ISO 26262 Part 6, Section 10 — Software Integration & Testing
 # @verifies  SG-008, TSR-022, SWR-BSW-023, SWR-BSW-024
-# @date    2026-03-05
+# @date    2026-03-05 (revised 2026-07-06: aligned to Com-layer E2E design)
 #
 # Validates the E2E (End-to-End) protection layer by injecting CAN 0x100
-# (Vehicle_State + Torque) frames with intentionally corrupted CRC-8 SAE
-# J1850 checksums.  The RZC CanIf E2E callback must detect the CRC mismatch,
-# reject all frames, and NOT apply the torque command.  After 3+ failures
-# the RZC must report DTC 0xE601 (CAN bus-off).
+# (Vehicle_State + Torque) frames with intentionally corrupted E2E bytes.
+#
+# Detection chain under test (Phase 2 architecture — E2E lives in Com, not
+# in a CanIf callback):
+#   CanIf_RxIndication -> PduR -> Com_RxIndication -> E2E_Check (dataId+CRC)
+#   -> E2E_SMCheck supervision -> on E2E_SM_INVALID: shadow buffers zeroed
+#   (fail-safe defaults) + Dem_ReportErrorStatus(FAILED)
+#   -> Dem debounce (3 FAILED) -> DTC 0x00E601 broadcast on 0x500.
+#
+# Timing budget: Vehicle_State (0x100) is a 10 ms PDU, so the generated
+# supervision window is E2eSmWindowInvalid = max(3, ceil(100ms / 10ms)) = 10
+# consecutive bad frames (~100 ms of sustained corruption) before the SM
+# latches INVALID; Dem then needs 3 FAILED reports (frames 10..12) to
+# confirm. Minimum 12 corrupted frames -> we inject 14 for margin.
 # =============================================================================
 
 name: "E2E CRC Corruption"
 id: "SIL-009"
 description: >
   Stop the CVC to eliminate valid E2E-protected 0x100 frames from the bus,
-  then inject Vehicle_State+Torque frames (0x100) with corrupted CRC bytes
-  via direct python-can injection on vcan0.  With no valid frames to reset
-  the E2E error counter, the RZC must reject all 4 corrupted frames
-  (exceeding RZCCOM_E2E_FAIL_LIMIT=3) and report DTC 0xE601 via Dem.
-  After verification the CVC is restarted and vehicle returns to RUN.
+  then inject 14 Vehicle_State+Torque frames (0x100) with corrupted E2E
+  dataId/CRC bytes via direct python-can injection on vcan0.  With no valid
+  frames interleaved, the RZC Com-layer E2E supervision must reject every
+  frame (E2E_Check dataId mismatch), latch E2E_SM_INVALID after 10
+  consecutive errors, zero the shadow signals (motor must NOT move), and
+  escalate via Dem to a confirmed DTC 0xE601 broadcast.  After verification
+  the CVC is restarted and the vehicle returns to RUN.
   This tests AUTOSAR E2E protection per ISO 26262 Part 6.
 verifies:
   - "SWR-BSW-010"   # E2E CRC-8 SAE J1850 protection on CAN frames
@@ -44,7 +56,8 @@ setup:
 
 steps:
   # Stop CVC to eliminate valid E2E-protected 0x100 frames from the bus.
-  # Without valid frames, RzcCom_RxFailCount won't be reset to 0.
+  # Without valid frames, the E2E supervision error window cannot be reset
+  # by good frames between injections.
   - action: docker_stop
     container: cvc
     description: "Stop CVC — isolate RZC from valid E2E frames on 0x100"
@@ -52,32 +65,96 @@ steps:
     seconds: 0.5
     description: "Let CAN bus quiet down after CVC stop"
 
-  # Inject 4 corrupted frames (exceeds RZCCOM_E2E_FAIL_LIMIT=3)
+  # Inject 14 corrupted frames. Byte 0 low nibble is the E2E dataId (must
+  # be 5 for Vehicle_State) — every frame below carries a wrong dataId
+  # and/or CRC, so each one yields E2E_STATUS_ERROR in the RZC.
+  # Window math: 10 errors latch E2E_SM_INVALID; frames 10..12 produce the
+  # 3 Dem FAILED reports needed to confirm DTC 0xE601; 13-14 are margin.
   - action: inject_raw_can
     can_id: 0x100
     data: [0xFF, 0x01, 0x03, 0x00, 0x64, 0x00, 0x00, 0x00]
-    description: "Corrupted Vehicle_State+Torque: CRC=0xFF (wrong), alive=1, state=RUN, torque=100%"
+    description: "Corrupt frame 1/14: dataId=0xF (wrong), CRC=0x01, torque=100%"
   - action: wait
     seconds: 0.1
   - action: inject_raw_can
     can_id: 0x100
     data: [0x00, 0x02, 0x03, 0x00, 0x50, 0x00, 0x00, 0x00]
-    description: "2nd corrupted frame: CRC=0x00 (wrong), alive=2"
+    description: "Corrupt frame 2/14: dataId=0x0 (wrong)"
   - action: wait
     seconds: 0.1
   - action: inject_raw_can
     can_id: 0x100
     data: [0xAA, 0x03, 0x03, 0x00, 0x40, 0x00, 0x00, 0x00]
-    description: "3rd corrupted frame: triggers RZCCOM_E2E_FAIL_LIMIT"
+    description: "Corrupt frame 3/14: dataId=0xA (wrong)"
   - action: wait
     seconds: 0.1
   - action: inject_raw_can
     can_id: 0x100
     data: [0xBB, 0x04, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
-    description: "4th corrupted frame: ensures DTC is reported"
+    description: "Corrupt frame 4/14: dataId=0xB (wrong)"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0xC1, 0x05, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 5/14: dataId=0x1 (wrong)"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0xD2, 0x06, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 6/14: dataId=0x2 (wrong)"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0xE3, 0x07, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 7/14: dataId=0x3 (wrong)"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0xF4, 0x08, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 8/14: dataId=0x4 (wrong)"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0x06, 0x09, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 9/14: dataId=0x6 (wrong)"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0x17, 0x0A, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 10/14: dataId=0x7 — E2E_SM latches INVALID"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0x28, 0x0B, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 11/14: 2nd Dem FAILED report while INVALID"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0x39, 0x0C, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 12/14: 3rd Dem FAILED — DTC 0xE601 confirms"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0x4C, 0x0D, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 13/14: margin"
+  - action: wait
+    seconds: 0.1
+  - action: inject_raw_can
+    can_id: 0x100
+    data: [0x5D, 0x0E, 0x03, 0x00, 0x30, 0x00, 0x00, 0x00]
+    description: "Corrupt frame 14/14: margin"
   - action: wait
     seconds: 3
-    description: "Wait for Dem debounce (3 calls) + Dem_MainFunction (100ms) to broadcast DTC"
+    description: "Wait for Dem debounce + Dem_MainFunction (100ms) to broadcast DTC"
 
   # Restart CVC to restore vehicle state
   - action: docker_start
@@ -93,14 +170,10 @@ verdicts:
     within_ms: 500
     description: "Motor RPM must NOT change — corrupted frames must be rejected"
 
-  # TODO:TEST — Swc_RzcCom_E2eCheck is not wired into CanIf RX path.
-  # Raw CAN frames bypass E2E validation; fail counter never increments.
-  # Fix: wire E2E check into CanIf_RxIndication or COM RX callback.
-  # Until then, accept watchdog DTC (0xE802) which fires from CAN loss.
   - type: dtc_broadcast
-    dtc_code: 0x00E802
+    dtc_code: 0x00E601
     ecu_source: 3
-    description: "RZC reports DTC 0xE802 (watchdog) after CVC loss — E2E path not yet wired"
+    description: "RZC reports DTC 0xE601 after sustained E2E corruption (Com E2E -> Dem escalation)"
 
   - type: vehicle_state
     expected: RUN

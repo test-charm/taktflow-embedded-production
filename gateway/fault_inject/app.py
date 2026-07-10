@@ -142,6 +142,7 @@ def _idle_command_loop() -> None:
     """
     from .pedal_udp import (
         send_pedal_override,
+        send_pedal_neutral,
         clear_pedal_override,
         pedal_pct_to_angle,
     )
@@ -151,8 +152,9 @@ def _idle_command_loop() -> None:
     IDLE_CRUISE_PCT = float(os.environ.get("IDLE_CRUISE_PCT", "60"))
     # Default OFF so test scenarios see a quiet pedal. Set
     # IDLE_CRUISE_ENABLE=1 in the compose env to run the demo cruise
-    # loop in-between tests. If off, the loop still opens the bus and
-    # keeps the daemon alive; it just never sends pedal overrides.
+    # loop in-between tests. If off, the loop holds a neutral pedal
+    # override so the POSIX SPI fallback cannot jitter into plausibility
+    # faults while the demo is idle.
     IDLE_CRUISE_ENABLE = os.environ.get("IDLE_CRUISE_ENABLE", "0") == "1"
     PHASE_RAMP_UP_SEC   = 2.0
     PHASE_HOLD_SEC      = 6.0
@@ -163,12 +165,23 @@ def _idle_command_loop() -> None:
     bus = None
     t_phase = 0.0
     phase = "ramp_up"
+    neutral_logged = False
 
     def _send_pct(pct: float) -> None:
         try:
             send_pedal_override(pedal_pct_to_angle(pct))
         except Exception as exc:  # noqa: BLE001
             log.debug("Idle pedal send failed: %s", exc)
+
+    def _send_neutral() -> None:
+        nonlocal neutral_logged
+        try:
+            send_pedal_neutral()
+            if not neutral_logged:
+                log.info("Idle command loop: holding neutral pedal override")
+                neutral_logged = True
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Neutral pedal send failed: %s", exc)
 
     while True:
         try:
@@ -184,7 +197,7 @@ def _idle_command_loop() -> None:
                 )
 
             post_scenario_pause = now < _idle_paused_until
-            if (not IDLE_CRUISE_ENABLE) or _idle_paused or remote_locked or post_scenario_pause:
+            if _idle_paused or post_scenario_pause:
                 # Just stop sending pedal updates — do NOT clear the
                 # override. Scenarios like runaway_accel set their own
                 # SPI pedal value (100%) and the test then observes the
@@ -192,6 +205,18 @@ def _idle_command_loop() -> None:
                 # clear_pedal_override here wipes the scenario's pedal
                 # on the very next tick, so the observation window sees
                 # pedal=0 and the vehicle never leaves RUN.
+                phase = "ramp_up"
+                t_phase = 0.0
+                neutral_logged = False
+                time.sleep(TICK)
+                continue
+
+            if (not IDLE_CRUISE_ENABLE) or remote_locked:
+                # The web dashboard control lock does not stream manual
+                # pedal data. Keep CVC's POSIX SPI stub pinned at neutral
+                # so its default dead-zone oscillation cannot trip the
+                # pedal plausibility monitor while the demo is idle.
+                _send_neutral()
                 phase = "ramp_up"
                 t_phase = 0.0
                 time.sleep(TICK)

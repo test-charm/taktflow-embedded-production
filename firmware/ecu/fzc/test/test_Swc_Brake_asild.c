@@ -87,10 +87,6 @@ typedef uint8           Std_ReturnType;
 #define FZC_BRAKE_OSCILLATION_DELTA_THRESH  30u
 #define FZC_BRAKE_OSCILLATION_DEBOUNCE       4u
 
-/* Com TX Signal IDs (NOT PDU IDs — see Com_Cfg_Fzc.c signal table) */
-#define FZC_COM_SIG_TX_BRAKE_FAULT      6u
-#define FZC_COM_SIG_TX_MOTOR_CUTOFF     7u
-
 /* ==================================================================
  * Swc_Brake Config Type (mirrors header)
  * ================================================================== */
@@ -159,11 +155,18 @@ Std_ReturnType Rte_Read(uint16 SignalId, uint32* DataPtr)
 
 static uint8   mock_rte_write_count;
 static uint16  mock_rte_last_write_id;
+/** Number of Rte_Write calls asserting FZC_SIG_MOTOR_CUTOFF = 1.
+ *  The cutoff sequence writes the RTE signal once per 10ms cycle;
+ *  Swc_FzcCom reads it and transmits on CAN with E2E protection. */
+static uint16  mock_rte_cutoff_set_count;
 
 Std_ReturnType Rte_Write(uint16 SignalId, uint32 Data)
 {
     mock_rte_write_count++;
     mock_rte_last_write_id = SignalId;
+    if ((SignalId == FZC_SIG_MOTOR_CUTOFF) && (Data == 1u)) {
+        mock_rte_cutoff_set_count++;
+    }
     if (SignalId < MOCK_RTE_MAX_SIGNALS) {
         mock_rte_signals[SignalId] = Data;
         return E_OK;
@@ -280,6 +283,7 @@ void setUp(void)
     mock_rte_read_count        = 0u;
     mock_rte_write_count       = 0u;
     mock_rte_last_write_id     = 0u;
+    mock_rte_cutoff_set_count  = 0u;
     mock_rte_brake_cmd_not_ok  = 0u;
     for (i = 0u; i < MOCK_RTE_MAX_SIGNALS; i++) {
         mock_rte_signals[i] = 0u;
@@ -597,7 +601,7 @@ void test_Motor_cutoff_on_brake_fault(void)
     TEST_ASSERT_EQUAL_UINT32(1u, cutoff);
 }
 
-/** @verifies SWR-FZC-012 -- Cutoff msg repeated 10 times at 10ms */
+/** @verifies SWR-FZC-012 -- Cutoff request repeated >= 10 cycles via RTE */
 void test_Motor_cutoff_repeats(void)
 {
     /* Force fault */
@@ -609,15 +613,18 @@ void test_Motor_cutoff_repeats(void)
         Swc_Brake_MainFunction();
     }
 
-    /* Record Com call count at the point the fault is confirmed */
-    uint8 com_count_at_fault = mock_com_call_count;
-
     /* Run 10 more cycles to let the cutoff sequence complete */
     run_cycles(100u, 10u);
 
-    /* Com_SendSignal should have been called for motor cutoff repeats */
-    TEST_ASSERT_TRUE(mock_com_call_count >= com_count_at_fault);
-    TEST_ASSERT_TRUE(mock_com_call_count >= 10u);
+    /* Cutoff request (FZC_SIG_MOTOR_CUTOFF = 1) written to RTE at least
+     * cutoffRepeatCount times — one per 10ms cycle while the sequence
+     * runs.  Swc_FzcCom reads the RTE signal and transmits on CAN. */
+    TEST_ASSERT_TRUE(mock_rte_cutoff_set_count >= FZC_BRAKE_CUTOFF_REPEAT_COUNT);
+
+    /* Direct Com_SendSignal path was removed from the brake fault path:
+     * it bypassed E2E and the duplicate frame broke CVC's E2E check.
+     * Swc_Brake must never call Com directly. */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_call_count);
 }
 
 /** @verifies SWR-FZC-012 -- Motor cutoff signal written to RTE */
@@ -636,8 +643,8 @@ void test_Motor_cutoff_rte_write(void)
     TEST_ASSERT_EQUAL_UINT32(1u, cutoff);
 }
 
-/** @verifies SWR-FZC-012 -- Com_SendSignal called for cutoff PDU */
-void test_Motor_cutoff_com_send(void)
+/** @verifies SWR-FZC-012 -- Cutoff flows via RTE to Swc_FzcCom, no direct Com send */
+void test_Motor_cutoff_via_rte_not_com(void)
 {
     /* Force fault */
     uint16 i;
@@ -648,10 +655,16 @@ void test_Motor_cutoff_com_send(void)
         Swc_Brake_MainFunction();
     }
 
-    /* Run one more cycle to trigger Com_SendSignal for cutoff */
+    /* Run one more cycle with the cutoff sequence active */
     run_cycles(100u, 1u);
 
-    TEST_ASSERT_TRUE(mock_com_signal_count[FZC_COM_SIG_TX_MOTOR_CUTOFF] > 0u);
+    /* Cutoff request asserted on RTE — Swc_FzcCom_TransmitSchedule
+     * reads it and sends on CAN with E2E protection */
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[FZC_SIG_MOTOR_CUTOFF]);
+    TEST_ASSERT_TRUE(mock_rte_cutoff_set_count > 0u);
+
+    /* No direct Com_SendSignal from Swc_Brake (E2E bypass removed) */
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_call_count);
 }
 
 /** @verifies SWR-FZC-012 -- No cutoff when no fault present */
@@ -666,8 +679,9 @@ void test_No_cutoff_without_fault(void)
     uint32 cutoff = mock_rte_signals[FZC_SIG_MOTOR_CUTOFF];
     TEST_ASSERT_EQUAL_UINT32(0u, cutoff);
 
-    /* No Com_SendSignal for motor cutoff (brake fault status is sent every cycle) */
-    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_signal_count[FZC_COM_SIG_TX_MOTOR_CUTOFF]);
+    /* No cutoff request cycles on RTE, and no direct Com sends at all */
+    TEST_ASSERT_EQUAL_UINT16(0u, mock_rte_cutoff_set_count);
+    TEST_ASSERT_EQUAL_UINT8(0u, mock_com_call_count);
 }
 
 /* ==================================================================
@@ -1222,7 +1236,7 @@ int main(void)
     RUN_TEST(test_Motor_cutoff_on_brake_fault);
     RUN_TEST(test_Motor_cutoff_repeats);
     RUN_TEST(test_Motor_cutoff_rte_write);
-    RUN_TEST(test_Motor_cutoff_com_send);
+    RUN_TEST(test_Motor_cutoff_via_rte_not_com);
     RUN_TEST(test_No_cutoff_without_fault);
 
     /* General */

@@ -17,6 +17,7 @@ import struct
 
 PEDAL_UDP_PORT = int(os.environ.get("SPI_PEDAL_UDP_PORT", "9100"))
 PEDAL_OVERRIDE_CLEAR = 0xFFFF
+PEDAL_NEUTRAL_ANGLE = 0x0000
 ESTOP_ACTIVATE = 0xE500
 ESTOP_CLEAR = 0xE5FF
 
@@ -55,6 +56,12 @@ def send_pedal_override(angle: int,
         sock.sendto(struct.pack("<H", angle & 0x3FFF), (host, port))
     finally:
         sock.close()
+
+
+def send_pedal_neutral(host: str = "127.0.0.1",
+                       port: int | None = None) -> None:
+    """Hold both simulated pedal sensors at neutral/zero angle."""
+    send_pedal_override(PEDAL_NEUTRAL_ANGLE, host, port)
 
 
 def clear_pedal_override(host: str = "127.0.0.1",

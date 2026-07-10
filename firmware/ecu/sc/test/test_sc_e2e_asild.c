@@ -48,6 +48,19 @@ typedef uint8               Std_ReturnType;
  * Include source under test
  * ================================================================== */
 
+/* Unit tests verify TARGET hardware behavior; the POSIX/SIL overrides are
+ * SIL-runtime accommodations and must not leak into the harness.
+ * Specifically, sc_e2e.c makes SC_E2E_IsAnyCriticalFailed() return FALSE
+ * unconditionally under PLATFORM_POSIX (Docker jitter tolerance), clears
+ * the e2e_failed latch on any valid frame, and stretches the boot grace
+ * window to 1000 ticks. Undefine both platform macros so the included
+ * source compiles with the production TMS570 logic (SWR-SC-003):
+ * strict alive-counter checking and the 5-tick (50ms) boot grace.
+ * The strict target value for SC_E2E_MAX_CONSEC_FAIL is pre-defined
+ * above and honoured by the #ifndef guard in Sc_Hw_Cfg.h. */
+#undef PLATFORM_POSIX
+#undef PLATFORM_HIL
+
 #include "../src/sc_e2e.c"
 
 /* ==================================================================
@@ -108,7 +121,20 @@ static void build_valid_msg(uint8* data, uint8 dataId, uint8 alive,
 
 void setUp(void)
 {
+    uint16 g;
+
     SC_E2E_Init();
+
+    /* Drain the production boot-grace window (SC_E2E_GRACE_TICKS = 5 on
+     * target hardware). While grace is active, SC_E2E_IsAnyCriticalFailed()
+     * reports FALSE and, on expiry, resets all E2E failure state — this is
+     * intended boot-transient tolerance (see sc_e2e.c). These tests verify
+     * post-grace steady-state enforcement per SWR-SC-003, so expire the
+     * grace window up front. The expiry reset leaves the module in the
+     * same clean state as a fresh SC_E2E_Init(). */
+    for (g = 0u; g < SC_E2E_GRACE_TICKS; g++) {
+        (void)SC_E2E_IsAnyCriticalFailed();
+    }
 }
 
 void tearDown(void) { }

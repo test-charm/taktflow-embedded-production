@@ -17,9 +17,6 @@
  */
 #include "Xcp.h"
 #include "Det.h"
-#ifdef SIL_DIAG
-#include <stdio.h>
-#endif
 
 /* ---- External: CAN transmit (provided by CanIf or PduR) ---- */
 extern Std_ReturnType PduR_Transmit(PduIdType TxPduId, const PduInfoType* PduInfoPtr);
@@ -180,7 +177,7 @@ static void xcp_cmd_connect(const uint8* data, uint8 length)
     xcp_tx_buf[2] = 0x00u;                          /* COMM_MODE_BASIC: little-endian, no block */
     xcp_tx_buf[3] = XCP_MAX_CTO;                    /* MAX_CTO */
     xcp_tx_buf[4] = (uint8)(XCP_MAX_DTO & 0xFFu);  /* MAX_DTO low byte */
-    xcp_tx_buf[5] = (uint8)(XCP_MAX_DTO >> 8u);     /* MAX_DTO high byte */
+    xcp_tx_buf[5] = (uint8)((uint16)XCP_MAX_DTO >> 8u);  /* MAX_DTO high byte */
     xcp_tx_buf[6] = XCP_PROTOCOL_VERSION_MAJOR;
     xcp_tx_buf[7] = XCP_TRANSPORT_VERSION_MAJOR;
     xcp_send_response(8u);
@@ -562,18 +559,10 @@ void Xcp_RxIndication(PduIdType RxPduId, const PduInfoType* PduInfoPtr)
     }
 
     if (RxPduId != xcp_config->RxPduId) {
-#ifdef SIL_DIAG
-        fprintf(stderr, "[XCP] RxPduId=%u rejected (expected %u)\n",
-                (unsigned)RxPduId, (unsigned)xcp_config->RxPduId);
-#endif
         return;
     }
 
     g_dbg_xcp_rx_count++;
-#ifdef SIL_DIAG
-    fprintf(stderr, "[XCP] RX cmd=0x%02X len=%u\n",
-            PduInfoPtr->SduDataPtr[0], PduInfoPtr->SduLength);
-#endif
 
     cmd = PduInfoPtr->SduDataPtr[0];
 

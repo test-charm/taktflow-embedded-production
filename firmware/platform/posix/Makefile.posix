@@ -161,7 +161,9 @@ ifeq ($(TARGET),icu)
 endif
 
 # --- Tests ---
-TEST_SRCS = $(wildcard $(ECU)/$(TARGET)/test/*.c)
+# test_eth_ping.c is a standalone TMS570/HALCoGen bring-up image (built via
+# Makefile.tms570 eth-ping target), not a POSIX unit test — exclude it here.
+TEST_SRCS = $(filter-out %/test_eth_ping.c,$(wildcard $(ECU)/$(TARGET)/test/*.c))
 TEST_BINS = $(patsubst $(ECU)/$(TARGET)/test/%.c,$(BUILD)/test/$(TARGET)/%,$(TEST_SRCS))
 UNITY_SRC = $(UNITY)/unity.c
 
@@ -307,7 +309,8 @@ misra: $(BUILD)
 	done
 	@echo ""
 	@echo "=== MISRA C:2012 Analysis — sc (no BSW) ==="
-	cppcheck $(CPPCHECK_FLAGS) -I$(ECU)/sc/include \
+	cppcheck $(CPPCHECK_FLAGS) -DGIT_HASH=\"misra\" -DPLATFORM_POSIX \
+		-I$(ECU)/sc/include -Ifirmware/platform/posix/include \
 		$$(find $(ECU)/sc/src -name '*.c' 2>/dev/null) 2>&1
 	@echo ""
 	@echo "=== MISRA analysis complete ==="
@@ -329,7 +332,8 @@ misra-report: $(BUILD)
 	done
 	@echo "" >> $(BUILD)/misra-report.txt
 	@echo "--- sc (no BSW) ---" >> $(BUILD)/misra-report.txt
-	cppcheck $(CPPCHECK_FLAGS) -I$(ECU)/sc/include \
+	cppcheck $(CPPCHECK_FLAGS) -DGIT_HASH=\"misra\" -DPLATFORM_POSIX \
+		-I$(ECU)/sc/include -Ifirmware/platform/posix/include \
 		$$(find $(ECU)/sc/src -name '*.c' 2>/dev/null) >> $(BUILD)/misra-report.txt 2>&1
 	@echo ""
 	@echo "=== Report written to $(BUILD)/misra-report.txt ==="

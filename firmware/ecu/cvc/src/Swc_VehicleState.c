@@ -587,10 +587,10 @@ void Swc_VehicleState_MainFunction(void)
             uint8 hb_ok;
 #ifdef SIL_DIAG
             /* SIL: accept if zone ECUs were seen at least once during hold */
-            hb_ok = (uint8)((sil_fzc_seen == TRUE) && (sil_rzc_seen == TRUE));
+            hb_ok = ((sil_fzc_seen == TRUE) && (sil_rzc_seen == TRUE)) ? 1u : 0u;
 #else
             /* Production: require simultaneous heartbeat OK */
-            hb_ok = (uint8)((fzc_comm == CVC_COMM_OK) && (rzc_comm == CVC_COMM_OK));
+            hb_ok = ((fzc_comm == CVC_COMM_OK) && (rzc_comm == CVC_COMM_OK)) ? 1u : 0u;
 #endif
             (void)hb_ok; /* suppress unused warning if not used below */
         }
@@ -683,6 +683,11 @@ void Swc_VehicleState_MainFunction(void)
             {
                 Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
             }
+            else
+            {
+                /* Single timeout outside RUN/DEGRADED — no transition
+                 * defined for this state; no action required (MISRA 15.7) */
+            }
         }
     }
     else
@@ -771,6 +776,9 @@ void Swc_VehicleState_MainFunction(void)
                 (motor_speed < CVC_CREEP_SPEED_THRESH))
             {
                 creep_debounce_count++;
+                /* cppcheck-suppress misra-config ; CVC_CREEP_DEBOUNCE_TICKS is
+                 * defined in the per-platform Cvc_Cfg_Platform.h, which is on
+                 * the compiler include path but not the static-analysis path */
                 if (creep_debounce_count >= CVC_CREEP_DEBOUNCE_TICKS)
                 {
                     Dem_ReportErrorStatus(CVC_DTC_CREEP_FAULT, DEM_EVENT_STATUS_FAILED);

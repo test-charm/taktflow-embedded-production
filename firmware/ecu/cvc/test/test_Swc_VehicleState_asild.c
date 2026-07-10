@@ -44,6 +44,8 @@ typedef uint8 Std_ReturnType;
 #define CVC_SIG_MOTOR_FAULT_RZC   33u
 #define CVC_SIG_PEDAL_POSITION    18u
 #define CVC_SIG_MOTOR_SPEED       25u
+/* Heartbeat OperatingMode mirror written each cycle (from Cvc_Cfg.h) */
+#define CVC_SIG_CVC_HEARTBEAT_OPERATING_MODE   56u
 
 /* ==================================================================
  * Vehicle State / Event / Comm definitions (from Cvc_Cfg.h)
@@ -119,9 +121,21 @@ typedef uint8 Std_ReturnType;
 #define CVC_DTC_CREEP_FAULT       18u
 
 /* Com Signal IDs used by Swc_VehicleState.c (mirrors Cvc_Cfg.h) */
-#define CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE           103u
-#define CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE    109u
-#define CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS  125u
+#define CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS  106u
+#define CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE           111u
+#define CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE    117u
+#define CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS  133u
+
+/* Com RX PDU IDs / quality codes (mirrors Cvc_Cfg.h / Com.h) */
+#define CVC_COM_RX_MOTOR_STATUS   11u   /* CAN 0x300 */
+
+typedef uint16 PduIdType;
+
+typedef enum {
+    COM_SIGNAL_QUALITY_FRESH     = 0u,  /**< Last frame valid and unpacked    */
+    COM_SIGNAL_QUALITY_E2E_FAIL  = 1u,  /**< Last frame discarded (CRC/DataID) */
+    COM_SIGNAL_QUALITY_TIMED_OUT = 2u   /**< No frame within timeout window   */
+} Com_SignalQualityType;
 
 /* Creep guard constants — must match Cvc_Cfg.h */
 #define CVC_CREEP_SPEED_THRESH     50u
@@ -142,7 +156,7 @@ typedef uint8 Std_ReturnType;
  * Mock: RTE signal store
  * ================================================================== */
 
-static uint32 mock_rte_signals[48];
+static uint32 mock_rte_signals[64];
 static Std_ReturnType mock_rte_read_return;
 static Std_ReturnType mock_rte_write_return;
 
@@ -151,9 +165,13 @@ static uint16 mock_rte_write_last_id;
 static uint32 mock_rte_write_last_value;
 static uint8  mock_rte_write_call_count;
 
+/* Dedicated captures for the two per-cycle state writes */
+static uint32 mock_rte_written_vehicle_state;
+static uint32 mock_rte_written_hb_mode;
+
 Std_ReturnType Rte_Read(uint16 SignalId, uint32* DataPtr)
 {
-    if ((DataPtr == NULL_PTR) || (SignalId >= 48u))
+    if ((DataPtr == NULL_PTR) || (SignalId >= 64u))
     {
         return E_NOT_OK;
     }
@@ -163,13 +181,21 @@ Std_ReturnType Rte_Read(uint16 SignalId, uint32* DataPtr)
 
 Std_ReturnType Rte_Write(uint16 SignalId, uint32 Data)
 {
-    if (SignalId >= 48u)
+    if (SignalId >= 64u)
     {
         return E_NOT_OK;
     }
     mock_rte_write_last_id    = SignalId;
     mock_rte_write_last_value = Data;
     mock_rte_write_call_count++;
+    if (SignalId == CVC_SIG_VEHICLE_STATE)
+    {
+        mock_rte_written_vehicle_state = Data;
+    }
+    if (SignalId == CVC_SIG_CVC_HEARTBEAT_OPERATING_MODE)
+    {
+        mock_rte_written_hb_mode = Data;
+    }
     return mock_rte_write_return;
 }
 
@@ -226,36 +252,30 @@ Std_ReturnType Com_SendSignal(uint16 SignalId, const void* SignalDataPtr)
 
 typedef uint8 Com_SignalIdType;
 
-static uint8 mock_com_rx_values[32];
+/* Full Com_SignalIdType (uint8) range — generated IDs reach 181 */
+static uint8 mock_com_rx_values[256];
 
 Std_ReturnType Com_ReceiveSignal(Com_SignalIdType SignalId, void* SignalDataPtr)
 {
-    if (SignalId < 32u)
-    {
-        *((uint8*)SignalDataPtr) = mock_com_rx_values[SignalId];
-    }
+    *((uint8*)SignalDataPtr) = mock_com_rx_values[SignalId];
     return E_OK;
 }
 
 /* ==================================================================
- * Mock: Swc_CvcCom_GetRxStatus (E2E status check)
+ * Mock: Com_GetRxPduQuality (per-PDU RX quality from Com E2E SM)
  * ================================================================== */
 
-typedef struct {
-    uint8   failCount;
-    uint8   useSafeDefault;
-} Swc_CvcCom_RxStatusType;
+#define MOCK_COM_MAX_RX_PDUS  33u
 
-static Swc_CvcCom_RxStatusType mock_rx_status[4];
+static Com_SignalQualityType mock_com_rx_pdu_quality[MOCK_COM_MAX_RX_PDUS];
 
-Std_ReturnType Swc_CvcCom_GetRxStatus(uint8 rxIndex,
-                                       Swc_CvcCom_RxStatusType* status)
+Com_SignalQualityType Com_GetRxPduQuality(PduIdType RxPduId)
 {
-    if (rxIndex < 4u)
+    if (RxPduId < MOCK_COM_MAX_RX_PDUS)
     {
-        *status = mock_rx_status[rxIndex];
+        return mock_com_rx_pdu_quality[RxPduId];
     }
-    return E_OK;
+    return COM_SIGNAL_QUALITY_FRESH;
 }
 
 /* Stub: Swc_Heartbeat_ResetCommStatus (called by VSM on recovery) */
@@ -276,10 +296,10 @@ extern void  Swc_VehicleState_OnEvent(uint8 event);
 
 void setUp(void)
 {
-    uint8 i;
+    uint16 i;
 
     /* Clear RTE signal store */
-    for (i = 0u; i < 48u; i++)
+    for (i = 0u; i < 64u; i++)
     {
         mock_rte_signals[i] = 0u;
     }
@@ -294,6 +314,8 @@ void setUp(void)
     mock_rte_write_last_id  = 0u;
     mock_rte_write_last_value = 0u;
     mock_rte_write_call_count = 0u;
+    mock_rte_written_vehicle_state = 0xFFFFFFFFu;
+    mock_rte_written_hb_mode       = 0xFFFFFFFFu;
 
     /* Clear BswM mock */
     mock_bswm_requester_id   = 0xFFu;
@@ -306,19 +328,16 @@ void setUp(void)
     mock_com_send_count     = 0u;
 
     /* Clear Com receive mock (confirmation reads) */
-    for (i = 0u; i < 32u; i++)
+    for (i = 0u; i < 256u; i++)
     {
         mock_com_rx_values[i] = 0u;
     }
 
-    /* Clear CvcCom RX status mock (E2E) */
+    /* Com RX PDU quality: default FRESH so timeout handling does not
+     * interfere with unrelated tests */
+    for (i = 0u; i < MOCK_COM_MAX_RX_PDUS; i++)
     {
-        uint8 j;
-        for (j = 0u; j < 4u; j++)
-        {
-            mock_rx_status[j].failCount     = 0u;
-            mock_rx_status[j].useSafeDefault = FALSE;
-        }
+        mock_com_rx_pdu_quality[i] = COM_SIGNAL_QUALITY_FRESH;
     }
 
     /* Clear Dem mock */
@@ -429,8 +448,9 @@ void test_RUN_to_DEGRADED_on_single_pedal_fault(void)
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_DEGRADED, Swc_VehicleState_GetState());
 }
 
-/** @verifies SWR-CVC-010 — RUN -> LIMP on single CAN timeout */
-void test_RUN_to_LIMP_on_single_CAN_timeout(void)
+/** @verifies SWR-CVC-010 — RUN -> SAFE_STOP on single CAN timeout
+ *  (HARA: losing one zone means no backup zone — full stop, not LIMP) */
+void test_RUN_to_SAFE_STOP_on_single_CAN_timeout(void)
 {
     /* Get to RUN */
     get_to_run();
@@ -438,7 +458,7 @@ void test_RUN_to_LIMP_on_single_CAN_timeout(void)
     /* Single CAN timeout */
     Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
 
-    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_LIMP, Swc_VehicleState_GetState());
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
 }
 
 /** @verifies SWR-CVC-010 — RUN -> SAFE_STOP on dual pedal fault */
@@ -489,7 +509,7 @@ void test_FAULT_CLEARED_blocked_by_motor_cutoff(void)
     /* Get to DEGRADED via motor cutoff confirmation */
     get_to_run();
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -498,7 +518,7 @@ void test_FAULT_CLEARED_blocked_by_motor_cutoff(void)
     /* pedal_fault = 0, but motor_cutoff = 1 → must NOT clear to RUN */
     mock_rte_signals[CVC_SIG_PEDAL_FAULT] = 0u;
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     Swc_VehicleState_MainFunction();
 
     /* Still DEGRADED (or escalated to SAFE_STOP) — NOT RUN */
@@ -516,7 +536,7 @@ void test_FAULT_CLEARED_blocked_by_brake_fault(void)
     /* pedal_fault = 0, brake_fault = 1 (not yet confirmed) → must NOT clear */
     mock_rte_signals[CVC_SIG_PEDAL_FAULT] = 0u;
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;  /* Com signal 13 = brake_fault */
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;  /* 0x201 status shadow */
     Swc_VehicleState_MainFunction();
 
     /* Should NOT bounce to RUN with brake_fault pending */
@@ -553,8 +573,9 @@ void test_DEGRADED_to_SAFE_STOP_on_estop(void)
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
 }
 
-/** @verifies SWR-CVC-011 — DEGRADED -> LIMP on CAN timeout */
-void test_DEGRADED_to_LIMP_on_CAN_timeout(void)
+/** @verifies SWR-CVC-011 — DEGRADED -> SAFE_STOP on CAN timeout
+ *  (HARA: no backup zone — timeout escalates to full stop) */
+void test_DEGRADED_to_SAFE_STOP_on_CAN_timeout(void)
 {
     /* Get to DEGRADED */
     get_to_run();
@@ -563,7 +584,7 @@ void test_DEGRADED_to_LIMP_on_CAN_timeout(void)
     /* Single CAN timeout */
     Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
 
-    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_LIMP, Swc_VehicleState_GetState());
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
 }
 
 /* ==================================================================
@@ -573,9 +594,9 @@ void test_DEGRADED_to_LIMP_on_CAN_timeout(void)
 /** @verifies SWR-CVC-012 — LIMP -> SAFE_STOP on E-stop */
 void test_LIMP_to_SAFE_STOP_on_estop(void)
 {
-    /* Get to LIMP: RUN -> CAN_TIMEOUT_SINGLE */
+    /* Get to LIMP: RUN -> BATTERY_CRIT (CAN timeout now goes SAFE_STOP) */
     get_to_run();
-    Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
+    Swc_VehicleState_OnEvent(CVC_EVT_BATTERY_CRIT);
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_LIMP, Swc_VehicleState_GetState());
 
     /* E-stop */
@@ -587,9 +608,9 @@ void test_LIMP_to_SAFE_STOP_on_estop(void)
 /** @verifies SWR-CVC-012 — LIMP -> DEGRADED on CAN restored (no pedal fault) */
 void test_LIMP_to_DEGRADED_on_CAN_restored(void)
 {
-    /* Get to LIMP */
+    /* Get to LIMP via battery-critical */
     get_to_run();
-    Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
+    Swc_VehicleState_OnEvent(CVC_EVT_BATTERY_CRIT);
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_LIMP, Swc_VehicleState_GetState());
 
     /* CAN restored -> goes to DEGRADED (not directly RUN) */
@@ -667,7 +688,9 @@ void test_BswM_called_on_valid_transition(void)
  * SWR-CVC-009: State Written to RTE Each Cycle
  * ================================================================== */
 
-/** @verifies SWR-CVC-009 — State written to RTE each cycle */
+/** @verifies SWR-CVC-009 — State written to RTE each cycle (both the
+ *  Vehicle_State.Mode slot and the CVC_Heartbeat.OperatingMode mirror
+ *  auto-pulled by Com_MainFunction_Tx) */
 void test_State_written_to_RTE_each_cycle(void)
 {
     mock_rte_write_call_count = 0u;
@@ -676,8 +699,9 @@ void test_State_written_to_RTE_each_cycle(void)
 
     /* State should be written via Rte_Write */
     TEST_ASSERT_TRUE(mock_rte_write_call_count > 0u);
-    TEST_ASSERT_EQUAL_UINT16(CVC_SIG_VEHICLE_STATE, mock_rte_write_last_id);
-    TEST_ASSERT_EQUAL_UINT32((uint32)CVC_STATE_INIT, mock_rte_write_last_value);
+    TEST_ASSERT_EQUAL_UINT32((uint32)CVC_STATE_INIT, mock_rte_written_vehicle_state);
+    /* Heartbeat OperatingMode mirror carries the same state */
+    TEST_ASSERT_EQUAL_UINT32((uint32)CVC_STATE_INIT, mock_rte_written_hb_mode);
 }
 
 /* ==================================================================
@@ -692,7 +716,7 @@ void test_Motor_cutoff_reports_DTC(void)
 
     /* Set motor cutoff signal active + Com confirms */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     mock_dem_call_count = 0u;
 
     /* DTC reported after 3-cycle confirmation */
@@ -711,7 +735,7 @@ void test_Brake_fault_reports_DTC(void)
 
     /* Set brake fault signal active + Com confirms + E2E OK */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;
     mock_dem_call_count = 0u;
 
     /* DTC reported after 3-cycle confirmation */
@@ -797,9 +821,9 @@ void test_Estop_from_INIT_via_signal(void)
  *  Fault injection: critical E-stop from degraded operational mode */
 void test_Estop_from_LIMP_via_OnEvent(void)
 {
-    /* Get to LIMP */
+    /* Get to LIMP via battery-critical */
     get_to_run();
-    Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
+    Swc_VehicleState_OnEvent(CVC_EVT_BATTERY_CRIT);
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_LIMP, Swc_VehicleState_GetState());
 
     /* E-stop */
@@ -830,9 +854,9 @@ void test_SC_KILL_from_DEGRADED(void)
  *  Fault injection: safety controller kill from LIMP mode */
 void test_SC_KILL_from_LIMP(void)
 {
-    /* Get to LIMP */
+    /* Get to LIMP via battery-critical */
     get_to_run();
-    Swc_VehicleState_OnEvent(CVC_EVT_CAN_TIMEOUT_SINGLE);
+    Swc_VehicleState_OnEvent(CVC_EVT_BATTERY_CRIT);
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_LIMP, Swc_VehicleState_GetState());
 
     Swc_VehicleState_OnEvent(CVC_EVT_SC_KILL);
@@ -944,7 +968,7 @@ void test_RUN_to_DEGRADED_on_motor_cutoff(void)
 
     /* Motor cutoff in RTE + Com confirms, 3 cycles */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;  /* Com signal 14 = motor_cutoff */
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;  /* 0x211 request shadow */
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -960,7 +984,7 @@ void test_RUN_to_SAFE_STOP_on_brake_fault(void)
 
     /* Brake fault in RTE + Com confirms + E2E OK, 3 cycles for confirmation */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;  /* Com signal 13 = brake_fault */
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;  /* 0x201 status shadow */
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -968,8 +992,9 @@ void test_RUN_to_SAFE_STOP_on_brake_fault(void)
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
 }
 
-/** @verifies SWR-CVC-010 — RUN -> DEGRADED on steering fault signal (debounce only) */
-void test_RUN_to_DEGRADED_on_steering_fault(void)
+/** @verifies SWR-CVC-010 — RUN -> SAFE_STOP on steering fault signal
+ *  (confirmed, debounce only — ASIL D reaction) */
+void test_RUN_to_SAFE_STOP_on_steering_fault(void)
 {
     /* Get to RUN */
     get_to_run();
@@ -980,7 +1005,7 @@ void test_RUN_to_DEGRADED_on_steering_fault(void)
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
 
-    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_DEGRADED, Swc_VehicleState_GetState());
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
 }
 
 /** @verifies SWR-CVC-011 — DEGRADED -> SAFE_STOP on motor cutoff (escalation, confirmed) */
@@ -995,7 +1020,7 @@ void test_DEGRADED_to_SAFE_STOP_on_motor_cutoff(void)
      * motor_cutoff=1 blocks FAULT_CLEARED by itself (no pedal workaround needed). */
     mock_rte_signals[CVC_SIG_PEDAL_FAULT] = 1u;  /* Redundant with fix but doesn't hurt */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;  /* Com signal 14 = motor_cutoff */
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;  /* 0x211 request shadow */
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -1139,7 +1164,7 @@ void test_brake_fault_no_immediate_safe_stop(void)
 
     /* Brake fault in RTE for only 1 cycle — should NOT transition */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;
     Swc_VehicleState_MainFunction();
 
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN, Swc_VehicleState_GetState());
@@ -1153,7 +1178,7 @@ void test_brake_fault_confirmed_after_threshold(void)
 
     /* Brake fault in RTE + Com(13)=1, 3 cycles */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;
     Swc_VehicleState_MainFunction();  /* count=1 */
     Swc_VehicleState_MainFunction();  /* count=2 */
     Swc_VehicleState_MainFunction();  /* count=3 -> confirmed */
@@ -1169,13 +1194,13 @@ void test_brake_fault_clears_before_threshold(void)
 
     /* Brake fault for 2 cycles, then clears */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;
     Swc_VehicleState_MainFunction();  /* count=1 */
     Swc_VehicleState_MainFunction();  /* count=2 */
 
     /* Clear the fault */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 0u;
-    mock_com_rx_values[13u] = 0u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 0u;
     Swc_VehicleState_MainFunction();  /* count reset to 0 */
 
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN, Swc_VehicleState_GetState());
@@ -1189,7 +1214,7 @@ void test_brake_fault_com_disagrees_no_transition(void)
 
     /* RTE says brake_fault=1 but Com(13)=0 — stale RTE data */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 0u;  /* Com disagrees */
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 0u;  /* Com disagrees */
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -1198,21 +1223,56 @@ void test_brake_fault_com_disagrees_no_transition(void)
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN, Swc_VehicleState_GetState());
 }
 
-/** @verifies SWR-CVC-010 — Brake fault: E2E degraded -> no transition */
-void test_brake_fault_e2e_degraded_no_transition(void)
+/** @verifies SWR-CVC-010 — Brake fault confirms against the 0x201
+ *  Brake_Status.BrakeFaultStatus shadow, NOT the 0x210 Brake_Fault event
+ *  shadow (which stays 0 in SIL — DIRECT frame is never periodic) */
+void test_brake_fault_confirms_against_0x201_shadow(void)
 {
     /* Get to RUN */
     get_to_run();
 
-    /* RTE=1, Com(13)=1, but E2E says useSafeDefault=TRUE */
+    /* RTE=1 and the 0x210 FaultType shadow=1, but the 0x201 status
+     * shadow=0 — confirmation must FAIL (source reads the 0x201 shadow) */
     mock_rte_signals[CVC_SIG_BRAKE_FAULT] = 1u;
-    mock_com_rx_values[13u] = 1u;
-    mock_rx_status[2u].useSafeDefault = TRUE;  /* RX index 2 = 0x210 (brake) */
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_FAULT_FAULT_TYPE] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 0u;
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
 
-    /* Should NOT transition — E2E check failed */
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN, Swc_VehicleState_GetState());
+
+    /* Now the 0x201 shadow agrees -> confirmed after 3 cycles -> SAFE_STOP */
+    mock_com_rx_values[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = 1u;
+    Swc_VehicleState_MainFunction();
+    Swc_VehicleState_MainFunction();
+    Swc_VehicleState_MainFunction();
+
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
+}
+
+/** @verifies SWR-CVC-010 — Motor_Status RX timeout treated as motor fault:
+ *  Com zeroes the shadow on PDU timeout, so quality TIMED_OUT must force
+ *  motor_fault_rzc=1 (fail-closed) and block FAULT_CLEARED recovery */
+void test_motor_status_timeout_blocks_fault_clear(void)
+{
+    /* Get to DEGRADED via pedal fault */
+    get_to_run();
+    Swc_VehicleState_OnEvent(CVC_EVT_PEDAL_FAULT_SINGLE);
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_DEGRADED, Swc_VehicleState_GetState());
+
+    /* All RTE faults clear, but Motor_Status PDU timed out — the zeroed
+     * shadow must be treated as FAULT, not "OK" */
+    mock_rte_signals[CVC_SIG_PEDAL_FAULT] = 0u;
+    mock_com_rx_pdu_quality[CVC_COM_RX_MOTOR_STATUS] = COM_SIGNAL_QUALITY_TIMED_OUT;
+    Swc_VehicleState_MainFunction();
+
+    TEST_ASSERT_TRUE(Swc_VehicleState_GetState() != CVC_STATE_RUN);
+
+    /* Quality restored FRESH -> fault-clear path resumes -> RUN */
+    mock_com_rx_pdu_quality[CVC_COM_RX_MOTOR_STATUS] = COM_SIGNAL_QUALITY_FRESH;
+    Swc_VehicleState_MainFunction();
+
     TEST_ASSERT_EQUAL_UINT8(CVC_STATE_RUN, Swc_VehicleState_GetState());
 }
 
@@ -1224,7 +1284,7 @@ void test_motor_cutoff_confirmed_after_threshold(void)
 
     /* Motor cutoff in RTE + Com(14)=1, 3 cycles */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -1241,7 +1301,7 @@ void test_motor_cutoff_com_disagrees_no_transition(void)
 
     /* RTE says motor_cutoff=1 but Com(14)=0 */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 0u;  /* Com disagrees */
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 0u;  /* Com disagrees */
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
@@ -1261,7 +1321,8 @@ void test_steering_fault_debounce_only(void)
     Swc_VehicleState_MainFunction();
     Swc_VehicleState_MainFunction();
 
-    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_DEGRADED, Swc_VehicleState_GetState());
+    /* Confirmed on cycle 3 — ASIL D reaction: SAFE_STOP */
+    TEST_ASSERT_EQUAL_UINT8(CVC_STATE_SAFE_STOP, Swc_VehicleState_GetState());
 }
 
 /** @verifies SWR-CVC-010 — E-stop: immediate, no debounce (ASIL D) */
@@ -1336,7 +1397,7 @@ void test_ConfirmFault_suppressed_during_INIT(void)
 
     /* motor_cutoff=1 via RTE + Com confirms — would fire in RUN after 3 cycles */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     mock_dem_call_count = 0u;
 
     /* Run 100 cycles — well past any confirmation threshold */
@@ -1361,7 +1422,7 @@ void test_INIT_to_RUN_resets_fault_counters(void)
 
     /* Phase 1: motor_cutoff=1 during INIT for 50 cycles */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     for (i = 0u; i < 50u; i++)
     {
         Swc_VehicleState_MainFunction();
@@ -1370,7 +1431,7 @@ void test_INIT_to_RUN_resets_fault_counters(void)
 
     /* Phase 2: Clear fault, set up transition to RUN */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 0u;
-    mock_com_rx_values[14u] = 0u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 0u;
     mock_rte_signals[CVC_SIG_FZC_COMM_STATUS] = CVC_COMM_OK;
     mock_rte_signals[CVC_SIG_RZC_COMM_STATUS] = CVC_COMM_OK;
     Swc_VehicleState_OnEvent(CVC_EVT_SELF_TEST_PASS);
@@ -1406,7 +1467,7 @@ void test_real_fault_after_RUN_fresh_confirmation(void)
 
     /* Set motor_cutoff=1 + Com confirms */
     mock_rte_signals[CVC_SIG_MOTOR_CUTOFF] = 1u;
-    mock_com_rx_values[14u] = 1u;
+    mock_com_rx_values[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] = 1u;
     mock_dem_call_count = 0u;
 
     /* 2 cycles — not yet confirmed */
@@ -1437,7 +1498,7 @@ int main(void)
 
     /* SWR-CVC-010: RUN transitions */
     RUN_TEST(test_RUN_to_DEGRADED_on_single_pedal_fault);
-    RUN_TEST(test_RUN_to_LIMP_on_single_CAN_timeout);
+    RUN_TEST(test_RUN_to_SAFE_STOP_on_single_CAN_timeout);
     RUN_TEST(test_RUN_to_SAFE_STOP_on_dual_pedal_fault);
     RUN_TEST(test_RUN_to_SAFE_STOP_on_estop);
 
@@ -1447,7 +1508,7 @@ int main(void)
     RUN_TEST(test_FAULT_CLEARED_blocked_by_brake_fault);
     RUN_TEST(test_FAULT_CLEARED_when_all_faults_zero);
     RUN_TEST(test_DEGRADED_to_SAFE_STOP_on_estop);
-    RUN_TEST(test_DEGRADED_to_LIMP_on_CAN_timeout);
+    RUN_TEST(test_DEGRADED_to_SAFE_STOP_on_CAN_timeout);
 
     /* SWR-CVC-012: LIMP transitions */
     RUN_TEST(test_LIMP_to_SAFE_STOP_on_estop);
@@ -1504,7 +1565,7 @@ int main(void)
     /* SWR-CVC-010/011: Subsystem fault state transitions */
     RUN_TEST(test_RUN_to_DEGRADED_on_motor_cutoff);
     RUN_TEST(test_RUN_to_SAFE_STOP_on_brake_fault);
-    RUN_TEST(test_RUN_to_DEGRADED_on_steering_fault);
+    RUN_TEST(test_RUN_to_SAFE_STOP_on_steering_fault);
     RUN_TEST(test_DEGRADED_to_SAFE_STOP_on_motor_cutoff);
 
     /* SWR-CVC-013: SAFE_STOP recovery */
@@ -1517,7 +1578,8 @@ int main(void)
     RUN_TEST(test_brake_fault_confirmed_after_threshold);
     RUN_TEST(test_brake_fault_clears_before_threshold);
     RUN_TEST(test_brake_fault_com_disagrees_no_transition);
-    RUN_TEST(test_brake_fault_e2e_degraded_no_transition);
+    RUN_TEST(test_brake_fault_confirms_against_0x201_shadow);
+    RUN_TEST(test_motor_status_timeout_blocks_fault_clear);
     RUN_TEST(test_motor_cutoff_confirmed_after_threshold);
     RUN_TEST(test_motor_cutoff_com_disagrees_no_transition);
     RUN_TEST(test_steering_fault_debounce_only);

@@ -362,6 +362,12 @@ class MQTTMonitor:
                 paho_mqtt.CallbackAPIVersion.VERSION2,
                 client_id="taktflow-hil-runner",
             )
+            # Broker runs with allow_anonymous=false; authenticate with the
+            # shared service credentials (same env contract as the SIL stack).
+            mqtt_user = os.environ.get("MQTT_USER", "taktflow")
+            mqtt_pass = os.environ.get("MQTT_PASSWORD", "taktflow-dev")
+            if mqtt_user:
+                self._client.username_pw_set(mqtt_user, mqtt_pass)
             self._client.on_connect = self._on_connect
             self._client.on_message = self._on_message
             self._client.connect(self._host, self._port, keepalive=30)

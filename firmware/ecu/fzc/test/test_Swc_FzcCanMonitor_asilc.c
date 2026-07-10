@@ -5,9 +5,10 @@
  *
  * @verifies SWR-FZC-024
  *
- * Tests bus-off detection, silence detection (200ms), error warning
- * sustained, NO recovery (safe state latch until power cycle),
- * and safe state outputs (100% brake, center steering, continuous buzzer).
+ * Tests boot grace suppression, bus-off detection, silence detection
+ * (200ms), error warning sustained, NO recovery (safe state latch until
+ * power cycle), and safe state outputs (100% brake, center steering,
+ * continuous buzzer).
  *
  * Mocks: CanIf_GetControllerMode, Rte_Write, Dem_ReportErrorStatus
  */
@@ -179,12 +180,55 @@ void setUp(void)
 void tearDown(void) { }
 
 /* ==================================================================
+ * Helper: elapse the boot grace period
+ * ================================================================== */
+
+/**
+ * @brief  Run FZC_CAN_GRACE_CYCLES Check() cycles to exit the boot
+ *         grace window (5s at 10ms).  Monitoring is suppressed during
+ *         grace so late-booting ECUs (CVC starts last in the SIL reset
+ *         sequence) do not latch a false bus-off/silence fault.
+ */
+static void elapse_boot_grace(void)
+{
+    uint16 i;
+    for (i = 0u; i < FZC_CAN_GRACE_CYCLES; i++) {
+        Swc_FzcCanMonitor_Check();
+    }
+}
+
+/* ==================================================================
+ * SWR-FZC-024: Boot Grace Suppression (1 test)
+ * ================================================================== */
+
+/** @verifies SWR-FZC-024 — Detection suppressed during boot grace, armed after */
+void test_FzcCanMonitor_boot_grace_suppresses_detection(void)
+{
+    /* Bus-off condition present from the very first cycle */
+    mock_canif_mode = CAN_CS_STOPPED;
+
+    /* All grace cycles: status stays OK, no safe-state outputs written */
+    elapse_boot_grace();
+    TEST_ASSERT_EQUAL_UINT8(FZC_CAN_OK, Swc_FzcCanMonitor_GetStatus());
+    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[FZC_SIG_BRAKE_CMD]);
+    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[FZC_SIG_BUZZER_PATTERN]);
+
+    /* First post-grace cycle: bus-off detected immediately */
+    Swc_FzcCanMonitor_Check();
+    TEST_ASSERT_EQUAL_UINT8(FZC_CAN_BUS_OFF, Swc_FzcCanMonitor_GetStatus());
+    TEST_ASSERT_EQUAL_UINT32(100u, mock_rte_signals[FZC_SIG_BRAKE_CMD]);
+}
+
+/* ==================================================================
  * SWR-FZC-024: Bus-Off Detection (1 test)
  * ================================================================== */
 
 /** @verifies SWR-FZC-024 — Bus-off triggers auto-brake 100%, center steering, buzzer */
 void test_FzcCanMonitor_busoff_triggers_autobrake(void)
 {
+    /* Exit boot grace with CAN healthy */
+    elapse_boot_grace();
+
     /* Simulate bus-off condition */
     mock_canif_mode = CAN_CS_STOPPED;
 
@@ -216,6 +260,9 @@ void test_FzcCanMonitor_silence_200ms_triggers_safe(void)
 {
     uint16 i;
 
+    /* Exit boot grace (silence counter held at 0 during grace) */
+    elapse_boot_grace();
+
     /* Run 19 cycles without any RX notification: should be OK */
     for (i = 0u; i < 19u; i++) {
         Swc_FzcCanMonitor_Check();
@@ -240,6 +287,9 @@ void test_FzcCanMonitor_silence_200ms_triggers_safe(void)
 void test_FzcCanMonitor_no_recovery_stays_safe(void)
 {
     uint16 i;
+
+    /* Exit boot grace with CAN healthy */
+    elapse_boot_grace();
 
     /* Trigger bus-off */
     mock_canif_mode = CAN_CS_STOPPED;
@@ -272,6 +322,9 @@ void test_FzcCanMonitor_error_warning_sustained(void)
 {
     uint16 i;
 
+    /* Exit boot grace with CAN healthy */
+    elapse_boot_grace();
+
     /* Inject error counters at/above the error warning threshold (96) */
     mock_can_tec = 96u;
 
@@ -302,6 +355,7 @@ int main(void)
     UNITY_BEGIN();
 
     /* SWR-FZC-024: CAN Bus Loss Detection */
+    RUN_TEST(test_FzcCanMonitor_boot_grace_suppresses_detection);
     RUN_TEST(test_FzcCanMonitor_busoff_triggers_autobrake);
     RUN_TEST(test_FzcCanMonitor_silence_200ms_triggers_safe);
     RUN_TEST(test_FzcCanMonitor_no_recovery_stays_safe);

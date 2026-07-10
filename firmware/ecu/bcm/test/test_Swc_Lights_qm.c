@@ -44,18 +44,19 @@ typedef uint8          boolean;
  * Signal IDs (must match Bcm_Cfg.h)
  * ==================================================================== */
 
-#define BCM_SIG_VEHICLE_SPEED       16u
-#define BCM_SIG_VEHICLE_STATE       17u
-#define BCM_SIG_BODY_CONTROL_CMD    18u
-#define BCM_SIG_LIGHT_HEADLAMP      19u
-#define BCM_SIG_LIGHT_TAIL          20u
-
 /* ARXML-generated signal IDs (fully-qualified names used by SWC source) */
 #define BCM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM       119u
-#define BCM_SIG_VEHICLE_STATE_VEHICLE_STATE        182u
+#define BCM_SIG_VEHICLE_STATE_MODE                 187u
 #define BCM_SIG_BODY_CONTROL_CMD_HEADLIGHT_CMD      28u
-#define BCM_SIG_LIGHT_STATUS_HEADLIGHT_ON           98u
-#define BCM_SIG_LIGHT_STATUS_TAIL_LIGHT_ON          99u
+#define BCM_SIG_LIGHT_STATUS_HEADLIGHT_ON          101u
+#define BCM_SIG_LIGHT_STATUS_TAIL_LIGHT_ON         102u
+
+/* Short aliases used by test bodies — same IDs the SWC reads/writes */
+#define BCM_SIG_VEHICLE_SPEED       BCM_SIG_MOTOR_STATUS_MOTOR_SPEED_RPM
+#define BCM_SIG_VEHICLE_STATE       BCM_SIG_VEHICLE_STATE_MODE
+#define BCM_SIG_BODY_CONTROL_CMD    BCM_SIG_BODY_CONTROL_CMD_HEADLIGHT_CMD
+#define BCM_SIG_LIGHT_HEADLAMP      BCM_SIG_LIGHT_STATUS_HEADLIGHT_ON
+#define BCM_SIG_LIGHT_TAIL          BCM_SIG_LIGHT_STATUS_TAIL_LIGHT_ON
 
 /* Vehicle state values */
 #define BCM_VSTATE_INIT             0u
@@ -69,7 +70,7 @@ typedef uint8          boolean;
  * Mock: Rte_Read — store values in array, return when SWC reads
  * ==================================================================== */
 
-#define MOCK_RTE_MAX_SIGNALS  32u
+#define MOCK_RTE_MAX_SIGNALS  198u  /* = BCM_SIG_COUNT — covers all ARXML IDs */
 
 static uint32 mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
 
@@ -184,6 +185,10 @@ void test_Lights_auto_on_when_driving_and_speed_nonzero(void)
     Swc_Lights_10ms();
 
     TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[BCM_SIG_LIGHT_HEADLAMP]);
+    /* Verify the SWC published both ARXML Light_Status signals this cycle */
+    TEST_ASSERT_EQUAL_UINT8(2u, mock_rte_write_count);
+    TEST_ASSERT_EQUAL_UINT16(BCM_SIG_LIGHT_STATUS_TAIL_LIGHT_ON,
+                             mock_rte_write_sig);
 }
 
 /* ====================================================================
@@ -208,16 +213,16 @@ void test_Lights_off_when_stopped(void)
 }
 
 /* ====================================================================
- * SWR-BCM-005: Manual override — bit 0 of body_control_cmd forces ON
+ * SWR-BCM-005: Manual override — HEADLIGHT_CMD signal forces ON
  * ==================================================================== */
 
 /** @verifies SWR-BCM-005 */
 void test_Lights_manual_override_on(void)
 {
-    /* Parked, speed 0, but manual override bit set */
+    /* Parked, speed 0, but manual override commanded (discrete signal) */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 0u;
     mock_rte_signals[BCM_SIG_VEHICLE_STATE]    = BCM_VSTATE_READY;
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 0x01u;  /* Bit 0 = lights on */
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 0x01u;  /* HEADLIGHT_CMD = on */
 
     Swc_Lights_10ms();
 
@@ -395,20 +400,20 @@ void test_Lights_manual_override_plus_auto_on(void)
 }
 
 /** @verifies SWR-BCM-005
- *  Equivalence class: body_cmd — non-override bits should not activate lights
- *  Tests that only bit 0 of body_cmd activates manual override */
-void test_Lights_body_cmd_non_override_bits_ignored(void)
+ *  Equivalence class: HEADLIGHT_CMD — discrete decoded signal; any non-zero
+ *  command value forces the manual override ON (robustness against
+ *  unexpected encodings from the DBC decode) */
+void test_Lights_headlight_cmd_any_nonzero_forces_on(void)
 {
-    /* Set all bits EXCEPT bit 0 */
     mock_rte_signals[BCM_SIG_VEHICLE_SPEED]    = 0u;
     mock_rte_signals[BCM_SIG_VEHICLE_STATE]    = BCM_VSTATE_READY;
-    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 0xFEu;  /* All bits except bit 0 */
+    mock_rte_signals[BCM_SIG_BODY_CONTROL_CMD] = 0xFEu;  /* non-zero, non-1 */
 
     Swc_Lights_10ms();
 
-    /* Only bit 0 is manual override — lights should remain OFF */
-    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[BCM_SIG_LIGHT_HEADLAMP]);
-    TEST_ASSERT_EQUAL_UINT32(0u, mock_rte_signals[BCM_SIG_LIGHT_TAIL]);
+    /* Any non-zero HEADLIGHT_CMD forces headlamp (and tail) ON */
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[BCM_SIG_LIGHT_HEADLAMP]);
+    TEST_ASSERT_EQUAL_UINT32(1u, mock_rte_signals[BCM_SIG_LIGHT_TAIL]);
 }
 
 /** @verifies SWR-BCM-005
@@ -495,7 +500,7 @@ int main(void)
     /* HARDENED: Equivalence class / partition tests */
     RUN_TEST(test_Lights_off_for_all_non_driving_states);
     RUN_TEST(test_Lights_manual_override_plus_auto_on);
-    RUN_TEST(test_Lights_body_cmd_non_override_bits_ignored);
+    RUN_TEST(test_Lights_headlight_cmd_any_nonzero_forces_on);
     RUN_TEST(test_Lights_manual_override_toggle_off);
 
     /* HARDENED: Fault injection tests */

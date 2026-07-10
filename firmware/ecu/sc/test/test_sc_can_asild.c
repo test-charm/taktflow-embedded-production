@@ -223,6 +223,18 @@ void dcan1_transmit(uint8 mbIndex, const uint8* data, uint8 dlc)
  * Include source under test
  * ================================================================== */
 
+/* Unit tests verify TARGET hardware behavior; the POSIX/SIL overrides are
+ * SIL-runtime accommodations and must not leak into the harness.
+ * Specifically, sc_can.c forces e2e_ok = TRUE in SC_CAN_Receive() under
+ * PLATFORM_POSIX/PLATFORM_HIL (Docker/gs_usb jitter tolerance), which
+ * defeats the E2E-gating assertions here. Undefine both so the included
+ * source compiles with the production TMS570 logic (SWR-SC-002).
+ * The strict target values for SC_BUS_SILENCE_TICKS and
+ * SC_E2E_MAX_CONSEC_FAIL are pre-defined above and honoured by the
+ * #ifndef guards in Sc_Hw_Cfg.h. */
+#undef PLATFORM_POSIX
+#undef PLATFORM_HIL
+
 #include "../src/sc_can.c"
 
 /* ==================================================================

@@ -160,6 +160,15 @@ Std_ReturnType Com_FlushTxPdu(PduIdType PduId);
 /* Debug counters (bring-up diagnostics — volatile, accessed from main.c) */
 extern volatile uint32 g_dbg_com_tx_calls;
 extern volatile uint32 com_tx_send_count[];
+extern volatile uint32 g_dbg_com_tx_skip[];
+extern volatile uint32 g_dbg_com_tx_stuck[];
+extern volatile uint32 g_dbg_com_e2e_rx_fail[];
+
+#ifdef UNIT_TEST
+/* PDU buffers are non-static under UNIT_TEST for white-box test access */
+extern uint8 com_tx_pdu_buf[COM_MAX_PDUS][COM_PDU_SIZE];
+extern uint8 com_rx_pdu_buf[COM_MAX_PDUS][COM_PDU_SIZE];
+#endif
 
 /* ---- Type-safe signal send macros ---- */
 
