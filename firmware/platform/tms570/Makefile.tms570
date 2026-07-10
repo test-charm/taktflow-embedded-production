@@ -49,6 +49,31 @@ ifdef HIL
   COMMON_CFLAGS += -DPLATFORM_HIL
 endif
 
+# --- Ethernet bench instrumentation (pass ETH=1 to opt in) ---
+ifdef ETH
+  COMMON_CFLAGS += -DSC_ETH_ENABLE
+endif
+
+# --- SC source IP for ETH builds (pass ETH_IP=a.b.c.d on the command line) ---
+# Without it the UDP source IP defaults to 0.0.0.0: broadcast telemetry is
+# still accepted by receivers, but unicast replies (XCP-on-UDP, S-XCP-02)
+# are dropped as martians by the PC IP stack. Privacy rule: never commit a
+# literal bench IP here — always pass it per-build.
+ifdef ETH_IP
+  ETH_IP_PARTS = $(subst ., ,$(ETH_IP))
+  COMMON_CFLAGS += -DSC_ETH_TELEMETRY_SRC_IP0=$(word 1,$(ETH_IP_PARTS))u
+  COMMON_CFLAGS += -DSC_ETH_TELEMETRY_SRC_IP1=$(word 2,$(ETH_IP_PARTS))u
+  COMMON_CFLAGS += -DSC_ETH_TELEMETRY_SRC_IP2=$(word 3,$(ETH_IP_PARTS))u
+  COMMON_CFLAGS += -DSC_ETH_TELEMETRY_SRC_IP3=$(word 4,$(ETH_IP_PARTS))u
+endif
+
+# --- Periodic 5s SCI debug dump (pass DBGDUMP=1 to opt in) ---
+# Blocks the 10ms loop ~280ms per dump at the SCI3 9600-baud bottleneck;
+# bring-up diagnostics only, never for timing-sensitive runs.
+ifdef DBGDUMP
+  COMMON_CFLAGS += -DSC_DEBUG_PERIODIC
+endif
+
 # --- Directories (production layout) ---
 FW           = firmware
 ECU          = $(FW)/ecu
@@ -84,6 +109,13 @@ LDFLAGS += -Wl,-m,$(BUILD_DIR)/sc.map
 LDFLAGS += -Wl,--rom_model
 LDFLAGS += -Wl,--be32
 
+ifdef ETH
+  LDFLAGS += -Wl,--retain=Sc_Eth_Init
+  LDFLAGS += -Wl,--retain=Sc_Eth_PollRx
+  LDFLAGS += -Wl,--retain=Sc_Eth_Tx
+  LDFLAGS += -Wl,--retain=Sc_Eth_LinkUp
+endif
+
 # --- HALCoGen C sources (exclude files with conflicting symbols) ---
 # Excluded:
 #   HL_sys_main.c  — defines main() (conflicts with sc_main.c)
@@ -98,6 +130,16 @@ HALCOGEN_EXCLUDE  = $(HALCOGEN_DIR)/source/HL_sys_main.c \
                     $(HALCOGEN_DIR)/source/HL_rti.c \
                     $(HALCOGEN_DIR)/source/HL_notification.c \
                     $(HALCOGEN_DIR)/source/HL_emif.c
+
+HALCOGEN_APP_ETH_SRCS = $(HALCOGEN_DIR)/source/HL_emac.c \
+                        $(HALCOGEN_DIR)/source/HL_mdio.c \
+                        $(HALCOGEN_DIR)/source/HL_phy_dp83640.c \
+                        $(HALCOGEN_DIR)/source/HL_phy_tlk111.c
+
+ifndef ETH
+  HALCOGEN_EXCLUDE += $(HALCOGEN_APP_ETH_SRCS)
+endif
+
 HALCOGEN_SRCS = $(filter-out $(HALCOGEN_EXCLUDE),$(HALCOGEN_SRCS_ALL))
 
 # --- HALCoGen assembly (.asm — TI assembler syntax) ---
@@ -112,8 +154,23 @@ HALCOGEN_ASM = $(filter-out $(HALCOGEN_ASM_EXCLUDE),$(HALCOGEN_ASM_ALL))
 
 # --- SC application sources (exclude POSIX backend) ---
 SC_SRCS_ALL = $(wildcard $(SC_DIR)/src/*.c)
+SC_ETH_SRCS = $(SC_DIR)/src/sc_eth.c \
+              $(SC_DIR)/src/sc_eth_udp.c \
+              $(SC_DIR)/src/sc_eth_telemetry.c \
+              $(SC_DIR)/src/sc_eth_rx_dispatch.c \
+              $(SC_DIR)/src/sc_xcp_eth.c
+# OSEK bootstrap config: needs the OS kernel include/link integration that
+# the OSEK migration plan schedules AFTER the STM32 build phase
+# (docs/plans/plan-osek-os-migration.md). Excluded until that phase wires
+# the kernel into this Makefile; the SC image still runs the bare-metal
+# scheduler.
+SC_OS_WIP_SRCS = $(SC_DIR)/src/sc_os_cfg.c
 SC_HW_TMS570 = $(PLAT)/src/sc_hw_tms570.c
-SC_SRCS = $(filter-out %_posix.c,$(SC_SRCS_ALL)) $(SC_HW_TMS570)
+SC_SRCS = $(filter-out %_posix.c $(SC_ETH_SRCS) $(SC_OS_WIP_SRCS),$(SC_SRCS_ALL)) $(SC_HW_TMS570)
+
+ifdef ETH
+  SC_SRCS += $(SC_ETH_SRCS)
+endif
 
 # --- SC GNU assembly (.S — preprocessed assembly, e.g. sc_startup.S) ---
 SC_ASM_GNU = $(wildcard $(SC_DIR)/src/*.S)
@@ -140,7 +197,7 @@ CCXML  = $(SC_DIR)/TMS570LC43xx_XDS110.ccxml
 # Targets
 # =============================================================================
 
-.PHONY: all flash size clean check-halcogen blinky flash-blinky eth-ping flash-eth-ping
+.PHONY: all flash size clean check-halcogen blinky flash-blinky eth-ping flash-eth-ping a2l
 
 all: check-halcogen $(ELF)
 	@echo "=== Built $(ELF) ==="
@@ -214,6 +271,12 @@ flash-blinky: $(BLINKY_ELF)
 # GIOA[3]/GIOA[4] used for PHY reset/powerdown instead of LEDs.
 ETH_PING_SRC = $(SC_DIR)/test/test_eth_ping.c
 ETH_PING_OBJ = $(BUILD_DIR)/test_eth_ping.o
+ETH_SC_ETH_SRC = $(SC_DIR)/src/sc_eth.c
+ETH_SC_ETH_OBJ = $(BUILD_DIR)/eth/$(SC_DIR)/src/sc_eth.o
+ETH_SC_ETH_UDP_SRC = $(SC_DIR)/src/sc_eth_udp.c
+ETH_SC_ETH_UDP_OBJ = $(BUILD_DIR)/eth/$(SC_DIR)/src/sc_eth_udp.o
+ETH_PING_CFLAGS = $(HAL_CFLAGS) -DSC_ETH_ENABLE
+ETH_SC_ETH_CFLAGS = $(SC_CFLAGS) -DSC_ETH_ENABLE
 
 # HALCoGen objects needed: all except HL_sys_main.c (we have our own main)
 # Keep HL_gio.c and HL_rti.c for this test (no SC wrapper conflict)
@@ -228,14 +291,22 @@ ETH_PING_ELF = $(BUILD_DIR)/test_eth_ping.elf
 eth-ping: check-halcogen $(ETH_PING_ELF)
 	@echo "=== Built $(ETH_PING_ELF) (standalone Ethernet ping test) ==="
 	@echo "Flash: make -f firmware/platform/tms570/Makefile.tms570 flash-eth-ping"
-	@echo "Test:  ping 192.168.1.200"
+	@echo "Test:  ping the board IP configured in test_eth_ping.c"
 
-$(ETH_PING_ELF): $(ETH_PING_OBJ) $(HAL_ETH_OBJS) $(ASM_ETH_OBJS) $(ETH_STARTUP_OBJ) | $(BUILD_DIR)
+$(ETH_PING_ELF): $(ETH_PING_OBJ) $(ETH_SC_ETH_OBJ) $(ETH_SC_ETH_UDP_OBJ) $(HAL_ETH_OBJS) $(ASM_ETH_OBJS) $(ETH_STARTUP_OBJ) | $(BUILD_DIR)
 	$(CC) $(LDFLAGS) $^ $(LDSCRIPT) -o $@
 
 $(ETH_PING_OBJ): $(ETH_PING_SRC) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(HAL_CFLAGS) -c $< -o $@
+	$(CC) $(ETH_PING_CFLAGS) -c $< -o $@
+
+$(ETH_SC_ETH_OBJ): $(ETH_SC_ETH_SRC) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ETH_SC_ETH_CFLAGS) -c $< -o $@
+
+$(ETH_SC_ETH_UDP_OBJ): $(ETH_SC_ETH_UDP_SRC) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ETH_SC_ETH_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/eth/$(HALCOGEN_DIR)/%.o: $(HALCOGEN_DIR)/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
@@ -252,6 +323,13 @@ $(BUILD_DIR)/eth/$(SC_DIR)/src/sc_startup.o: $(SC_DIR)/src/sc_startup.S | $(BUIL
 flash-eth-ping: $(ETH_PING_ELF)
 	@echo "=== Flashing Ethernet ping test via DSLite (XDS110) ==="
 	"$(DSLITE)" load -c "$(CCXML)" -f "$(ETH_PING_ELF)"
+
+# --- A2L generation (S-XCP-03: XCP measurement description from the map) ---
+a2l: $(ELF)
+	python tools/xcp/gen_a2l.py --map $(MAP) \
+		--symbols tools/xcp/xcp_symbols.yaml \
+		--byte-order MSB_FIRST --ecu SC \
+		-o $(BUILD_DIR)/sc_xcp.a2l
 
 # --- Firmware size report ---
 size: $(ELF)

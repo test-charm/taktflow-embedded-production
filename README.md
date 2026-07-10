@@ -377,10 +377,37 @@ make -f firmware/platform/tms570/Makefile.tms570 build
 # Run MISRA analysis
 cppcheck --project=compile_commands.json --addon=tools/misra/misra.json
 
-# Regenerate configs from DBC (full pipeline)
-python tools/arxml/dbc2arxml.py gateway/taktflow_vehicle.dbc arxml/
-python -m tools.arxmlgen
+# Regenerate configs from DBC (full pipeline — the SWC model JSON is
+# required; without it the ARXML loses all SWCs, ports and runnables)
+python tools/arxml/dbc2arxml.py gateway/taktflow_vehicle.dbc arxml_v2/ arxml_v2/swc_model.json --swc-mapping model/ecu_sidecar.yaml --swc-mapping-mode strict
+cp arxml_v2/TaktflowSystem.arxml arxml/TaktflowSystem.arxml
+python -m tools.arxmlgen --config project.yaml
+
+# Verify the pipeline is idempotent (run twice, expect zero diff)
+bash tools/ci/check_codegen_idempotency.sh
+
+# Independently compare DBC and ARXML frame/signal communication semantics
+python tools/ci/roundtrip_check.py gateway/taktflow_vehicle.dbc arxml/TaktflowSystem.arxml
+python tools/ci/check_swc_mapping.py gateway/taktflow_vehicle.dbc arxml_v2/swc_model.json model/ecu_sidecar.yaml arxml/TaktflowSystem.arxml --mode strict --check
 ```
+
+`strict` validates the explicit Signal-to-SWC mapping before conversion and
+uses that mapping as the sole ARXML emitter. It never falls back to legacy
+heuristics. The parity checker is a blocking gate over normalized SWCs, ports,
+interfaces, runnables, and events. A missing, invalid, or incomplete map fails
+before ARXML, assumptions-report, or parity-report replacement. Compatibility
+modes are rejected; the exact SM4 milestone remains the rollback base.
+The permanent project decision `SM6-STRICT-001` owns the reviewed shared-writer
+selections and safety-sensitive unmapped dispositions in the strict map. The
+strict parity golden is the only retained migration report; schema and
+validation negative fixtures remain as fail-closed regression coverage.
+
+The round-trip gate compares frame ID, extended-ID flag, DLC, signal start,
+length, byte order, factor, and offset. ARXML is imported with canmatrix only.
+The converter's `_Frame` suffix is a naming-only gap. canmatrix 1.2 reports a
+factor of 1 for the eight currently detached scaled `COMPU-METHOD` objects;
+the checker permits only those exact object/value tuples and fails on any new
+or changed mismatch.
 
 ---
 

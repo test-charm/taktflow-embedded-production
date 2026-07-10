@@ -5,7 +5,8 @@
  */
 #include "Os_Internal.h"
 
-#if defined(PLATFORM_STM32) || defined(PLATFORM_TMS570)
+#if defined(PLATFORM_STM32) || defined(PLATFORM_STM32L5) || defined(PLATFORM_TMS570)
+#include "Os_Port.h"
 #include "Os_Port_TaskBinding.h"
 #endif
 
@@ -15,7 +16,7 @@ uint8 os_preempted_task_depth = 0u;
 
 static void os_publish_port_dispatch(TaskType NextTask)
 {
-#if defined(PLATFORM_STM32) || defined(PLATFORM_TMS570)
+#if defined(PLATFORM_STM32) || defined(PLATFORM_STM32L5) || defined(PLATFORM_TMS570)
     Os_Port_ObserveConfiguredDispatch(NextTask);
 #else
     (void)NextTask;
@@ -24,7 +25,7 @@ static void os_publish_port_dispatch(TaskType NextTask)
 
 static void os_stage_port_dispatch(TaskType PreviousTask, TaskType NextTask)
 {
-#if defined(PLATFORM_STM32) || defined(PLATFORM_TMS570)
+#if defined(PLATFORM_STM32) || defined(PLATFORM_STM32L5) || defined(PLATFORM_TMS570)
     if (PreviousTask == INVALID_TASK) {
         Os_Port_SynchronizeConfiguredTask(NextTask);
     } else {
@@ -127,6 +128,121 @@ void os_complete_running_task(void)
     os_rebuild_ready_bitmap();
 }
 
+#if defined(PLATFORM_STM32) || defined(PLATFORM_STM32L5) || defined(PLATFORM_TMS570)
+/**
+ * @brief   Task-termination switchback (S-OS-31, BRINGUP-6 sequence)
+ *
+ * @details Called by TerminateTask INSTEAD of the bare
+ *          os_complete_running_task when the port PendSV dispatch is live
+ *          (Os_Port_IsConfiguredDispatchLive).  On hardware the service
+ *          call never returns to the task body: PendSV lands in the
+ *          switchback target, and the poisoned initial-frame LR
+ *          (0xFFFFFFFF) is never executed.
+ *
+ *          Wires exactly what the hardware-validated bringup line
+ *          (Os_Port_Stm32_Bringup.c BRINGUP-6, 6/6 PASS on STM32G474RE)
+ *          did manually after TerminateTask:
+ *          - resume target present (preempted-task restore stack top):
+ *            port select WITHOUT frame rebuild + context-switch request —
+ *            the preempted task's saved context is live, a rebuild would
+ *            destroy it;
+ *          - a READY task outranking the resume target: fresh dispatch via
+ *            Os_Port_RequestConfiguredDispatch (rebuild + select +
+ *            request), the same sequence every BRINGUP-5/6 alarm
+ *            preemption exercised;
+ *          - NEVER a self-redispatch: rebuilding the frame of the stack
+ *            still executing this very call corrupts live call frames
+ *            (docs/lessons-learned/stm32-bringup-p3.md).  A pending
+ *            activation of the terminated task re-enters READY and is
+ *            picked up by the next tick's preemption dispatch with a
+ *            fresh frame;
+ *          - neither: fail closed — report E_OS_STATE and stage nothing
+ *            (the parked context starves the watchdog into the safe
+ *            state).  Production configurations never reach this branch:
+ *            the autostarted idle task never terminates.
+ *
+ *          PostTaskHook runs first, while the terminating task still owns
+ *          the RUNNING identity (OSEK: on leaving RUNNING; the host path
+ *          runs it after Entry() returns, which never happens here).
+ *
+ * @note    Hardware: does not return (parks until PendSV lands in the
+ *          target).  UNIT_TEST: returns so the mocked register model can
+ *          be asserted.
+ */
+void os_terminate_switchback(void)
+{
+    TaskType terminated = os_current_task;
+    TaskType resume;
+    TaskType ready;
+
+    if (os_post_task_hook != (Os_HookType)0) {
+        os_post_task_hook();
+    }
+
+    os_stack_monitor_leave_task(terminated);
+    os_complete_running_task();
+
+    /* S-OS-31 FIX-04 (F-C): the terminating task's frame is now dead. Suppress
+     * its next PendSV save so a re-dispatch that rebuilds a fresh frame in its
+     * slot (coalescing race, memo section 7) is not clobbered by a save of the
+     * parked/dead context. */
+    Os_Port_SuppressTaskSave(terminated);
+
+    resume = os_current_task;
+    ready = os_select_next_ready_task();
+
+    if ((ready != INVALID_TASK) &&
+        (ready != terminated) &&
+        ((resume == INVALID_TASK) ||
+         (os_has_higher_priority(ready, resume) == TRUE))) {
+        /* Fresh dispatch of a higher-priority ready task. */
+        if (resume != INVALID_TASK) {
+            os_push_preempted_task(resume);
+        }
+
+        os_current_task = ready;
+        os_tcb[ready].State = RUNNING;
+        os_tcb[ready].ReadyStamp = 0u;
+        (void)Os_Port_RequestConfiguredDispatch(ready);
+        Os_Port_ObserveConfiguredDispatch(ready);
+
+        if (os_task_stack_top_cfg[ready] != (uintptr_t)0u) {
+            os_stack_monitor_enter_task(ready, os_task_stack_top_cfg[ready]);
+        }
+
+        os_rebuild_ready_bitmap();
+        os_dispatch_count++;
+
+        if (os_pre_task_hook != (Os_HookType)0) {
+            os_pre_task_hook();
+        }
+    } else if (resume != INVALID_TASK) {
+        /* BRINGUP-6 switchback: resume the preempted task as-is. The port
+         * rejects a stale/invalid saved frame (S-OS-31 fail-closed guard,
+         * docs/plans/memo-s-os-31-switchback-resume-defect.md); if the resume
+         * cannot be staged validly, fail closed rather than let PendSV return
+         * into a corrupt frame (INVSTATE HardFault on target). */
+        if (Os_Port_StageConfiguredResume(resume) == E_OK) {
+            Os_Port_ObserveConfiguredDispatch(resume);
+        } else {
+            os_report_service_error(OS_DET_API_TERMINATE_TASK, DET_E_PARAM_VALUE,
+                                    E_OS_STATE);
+        }
+    } else {
+        os_report_service_error(OS_DET_API_TERMINATE_TASK, DET_E_PARAM_VALUE,
+                                E_OS_STATE);
+    }
+
+#if !defined(UNIT_TEST)
+    for (;;) {
+        /* Terminated context: park until PendSV lands in the target.
+         * If nothing was staged (fail-closed branch) the watchdog
+         * starves and forces the safe state. */
+    }
+#endif
+}
+#endif /* PLATFORM_STM32 || PLATFORM_STM32L5 || PLATFORM_TMS570 */
+
 static void os_dispatch_task(TaskType NextTask)
 {
     TaskType previous_task = os_current_task;
@@ -144,6 +260,22 @@ static void os_dispatch_task(TaskType NextTask)
     os_stack_monitor_enter_task(NextTask, (uintptr_t)&stack_base_marker);
     os_rebuild_ready_bitmap();
     os_dispatch_count++;
+
+#if defined(PLATFORM_STM32) || defined(PLATFORM_TMS570)
+    /* On hardware, context switch is deferred to PendSV/IRQ exception return.
+     * os_stage_port_dispatch already set SelectedNextTask + requested switch.
+     * Do NOT call Entry() from ISR context -- PendSV will restore the task.
+     *
+     * ThreadX ref: tx_timer_interrupt.S -- SysTick never calls task entry,
+     * only sets _tx_timer_expired + PENDSVSET.
+     *
+     * Kernel os_isr_cat2_nesting is already 0 here (decremented by
+     * Os_BootstrapExitIsr2 before dispatch).  Os_PortIsInIsrContext checks
+     * port-level nesting, decremented later in Os_PortExitIsr2. */
+    if (Os_PortIsInIsrContext() == TRUE) {
+        return;
+    }
+#endif
 
     if (os_pre_task_hook != (Os_HookType)0) {
         os_pre_task_hook();
@@ -246,14 +378,15 @@ StatusType Schedule(void)
         return E_OS_CALLEVEL;
     }
 
-    if (os_is_preemptive_task(os_current_task) == TRUE) {
-        os_report_service_error(OS_DET_API_SCHEDULE, DET_E_PARAM_VALUE, E_OS_CALLEVEL);
-        return E_OS_CALLEVEL;
-    }
-
     if (os_tcb[os_current_task].ResourceCount != 0u) {
         os_report_service_error(OS_DET_API_SCHEDULE, DET_E_PARAM_VALUE, E_OS_RESOURCE);
         return E_OS_RESOURCE;
+    }
+
+    /* OSEK OS 2.2.3 section 13.2.3.4: Schedule has no influence on a
+     * full-preemptive running task, so it succeeds without rescheduling. */
+    if (os_is_preemptive_task(os_current_task) == TRUE) {
+        return E_OK;
     }
 
     next_task = os_select_next_ready_task();

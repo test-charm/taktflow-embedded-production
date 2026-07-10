@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+target/
 *.o
 *.elf
 *.bin
@@ -75,3 +76,11 @@ firmware/lib/x-cube-azrtos-g4-full/
 # SCORE HSM (separate repo with its own .git)
 scorehsm/
 gateway/taktflow.dbc.bak
+
+# Local machine state / generated debug leftovers
+.claude/*.lock
+true
+tools/bench/*.local.toml
+tools/bench/*.csv
+tools/bench/__pycache__/
+tools/xtask/Cargo.lock

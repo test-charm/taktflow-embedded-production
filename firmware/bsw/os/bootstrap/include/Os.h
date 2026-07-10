@@ -66,7 +66,7 @@ typedef void (*Os_ErrorHookType)(StatusType Error);
 typedef void (*Os_ShutdownHookType)(StatusType Error);
 typedef void* TrustedFunctionParameterRefType;
 typedef StatusType (*Os_TrustedFunctionType)(TrustedFunctionParameterRefType Params);
-#if defined(UNIT_TEST)
+#if defined(UNIT_TEST) || defined(OS_BOOTSTRAP_BRINGUP)
 typedef void (*Os_TestIsrHandlerType)(void);
 #endif
 
@@ -144,6 +144,20 @@ typedef struct {
     uint16 BudgetBytes;
 } Os_StackMonitorConfigType;
 
+/**
+ * @brief   Physical task-stack binding (S-OS-31 first-task launch seam)
+ * @note    StackBase is the LOWEST address of the stack storage and must
+ *          be 8-byte aligned (AAPCS); SizeBytes must be a non-zero
+ *          multiple of 8 and at least the task's monitor budget. The
+ *          port builds the initial exception frame at
+ *          StackBase + SizeBytes (stack grows down).
+ */
+typedef struct {
+    TaskType TaskID;
+    uint8* StackBase;
+    uint32 SizeBytes;
+} Os_TaskStackConfigType;
+
 typedef struct {
     const char* Name;
     ApplicationType Application;
@@ -151,7 +165,10 @@ typedef struct {
     MemorySizeType Size;
 } Os_MemoryRegionConfigType;
 
-#define OS_MAX_SCHEDULE_TABLES      4u
+/* 5: cvc/rzc period groups {1,10,50,100,5000} ms under rate-monotonic
+ * re-banding (S-OS-11, docs/plans/memo-rm-reband-trace.md section 3).
+ * Mirrored in tools/arxmlgen/generators/os_cfg.py. */
+#define OS_MAX_SCHEDULE_TABLES      5u
 #define OS_MAX_EXPIRY_POINTS        8u
 #define OS_MAX_TASKS            8u
 #define OS_MAX_RESOURCES        8u
@@ -299,7 +316,7 @@ boolean Os_ServiceProtCheck(uint8 AllowedMask);
 void Os_ServiceProtViolation(void);
 void Os_ServiceProtReset(void);
 
-#if defined(UNIT_TEST)
+#if defined(UNIT_TEST) || defined(OS_BOOTSTRAP_BRINGUP)
 void Os_TestReset(void);
 StatusType Os_TestConfigureTasks(const Os_TaskConfigType* Config, uint8 TaskCount);
 StatusType Os_TestConfigureResources(const Os_ResourceConfigType* Config, uint8 ResourceCount);
@@ -329,7 +346,7 @@ TickType Os_TestGetCounterValue(void);
 uint16 Os_TestGetTaskStackPeak(TaskType TaskID);
 boolean Os_TestTaskHasStackViolation(TaskType TaskID);
 void Os_TestSetProtectionHook(Os_ProtectionHookType Hook);
-void Os_TestSetCurrentTaskRunning(TaskType TaskID);
+StatusType Os_TestSetCurrentTaskRunning(TaskType TaskID);
 #endif
 
 #endif /* OS_H */

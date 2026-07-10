@@ -32,6 +32,8 @@
 #define SC_CAN_ID_VEHICLE_STATE     0x100u   /* Vehicle_State (torque in byte 4) */
 #define SC_CAN_ID_MOTOR_CURRENT     0x301u   /* Motor_Current (RZC) */
 #define SC_CAN_ID_RELAY_STATUS      0x013u   /* SC_Relay_Status (SIL broadcast) */
+#define SC_CAN_ID_UDS_REQUEST       0x7E3u   /* HIL diagnostic request (Phase 5 SC alias) */
+#define SC_CAN_ID_UDS_RESPONSE      0x7EBu   /* HIL diagnostic response (Pi proxy route) */
 
 /* ==================================================================
  * CAN Mailbox Numbers (1-indexed, DCAN1 hardware)
@@ -118,7 +120,17 @@
  * ================================================================== */
 
 #define SC_CREEP_CURRENT_THRESH     500u   /* 500 mA — above this with zero torque = fault */
+/* Debounce: target-HW keeps 20ms to meet <50ms FTTI, but the SIL plant-sim
+ * motor model decays current over tau=0.5s when duty drops to 0, so for
+ * ~500ms after pedal release we see torque=0 AND current>500mA while the
+ * motor is physically spinning down. That cleanly fires creep guard
+ * during every cruise-loop ramp-down. Widen on POSIX only — real HW
+ * switches current much faster than the simulation's 1st-order decay. */
+#if defined(PLATFORM_POSIX) || defined(PLATFORM_HIL)
+#define SC_CREEP_DEBOUNCE_CYCLES   80u     /* 80 × 10ms = 800ms (SIL motor decay) */
+#else
 #define SC_CREEP_DEBOUNCE_CYCLES    2u     /* 2 × 10ms = 20ms debounce (< 50ms FTTI) */
+#endif
 
 /* ==================================================================
  * GIO Pin Assignments
@@ -127,12 +139,32 @@
 #define SC_GIO_PORT_A               0u
 #define SC_GIO_PORT_B               1u
 
+#define SC_PORT_RELAY               SC_GIO_PORT_A
 #define SC_PIN_RELAY                0u     /* GIO_A0: Kill relay output */
+#define SC_PORT_LED_CVC             SC_GIO_PORT_A
 #define SC_PIN_LED_CVC              1u     /* GIO_A1: CVC fault LED */
+#define SC_PORT_LED_FZC             SC_GIO_PORT_A
 #define SC_PIN_LED_FZC              2u     /* GIO_A2: FZC fault LED */
+
+#define SC_PORT_ETH_PHY             SC_GIO_PORT_A
+#define SC_PIN_ETH_PHY_PWRDOWN      3u     /* GIO_A3: DP83630 PWRDOWN/INTN */
+#define SC_PIN_ETH_PHY_RESET_N      4u     /* GIO_A4: DP83630 RESET_N */
+
+#ifdef SC_ETH_ENABLE
+#define SC_PORT_LED_RZC             SC_GIO_PORT_B
+#define SC_PIN_LED_RZC              6u     /* GIO_B6: RZC fault LED, ETH build */
+#define SC_PORT_LED_SYS             SC_GIO_PORT_B
+#define SC_PIN_LED_SYS              7u     /* GIO_B7: System fault LED, ETH build */
+#else
+#define SC_PORT_LED_RZC             SC_GIO_PORT_A
 #define SC_PIN_LED_RZC              3u     /* GIO_A3: RZC fault LED */
+#define SC_PORT_LED_SYS             SC_GIO_PORT_A
 #define SC_PIN_LED_SYS              4u     /* GIO_A4: System fault LED (amber) */
+#endif
+
+#define SC_PORT_WDI                 SC_GIO_PORT_A
 #define SC_PIN_WDI                  5u     /* GIO_A5: TPS3823 watchdog input */
+#define SC_PORT_LED_HB              SC_GIO_PORT_B
 #define SC_PIN_LED_HB               1u     /* GIO_B1: Heartbeat LED (onboard) */
 
 /* ==================================================================
@@ -265,6 +297,8 @@
  * ================================================================== */
 
 #define SC_MB_TX_STATUS              7u    /* DCAN1 mailbox 7: TX only, CAN ID 0x013 */
+#define SC_MB_UDS_REQUEST            8u    /* HIL-only RX mailbox for ISO-TP single-frame UDS */
+#define SC_MB_TX_UDS_RESPONSE        9u    /* HIL-only TX mailbox for ISO-TP single-frame UDS */
 
 /* ==================================================================
  * Torque Lookup Table Size

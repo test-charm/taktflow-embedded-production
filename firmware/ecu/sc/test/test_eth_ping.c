@@ -9,10 +9,14 @@
  *
  *          Build:  make -f firmware/platform/tms570/Makefile.tms570 eth-ping
  *          Flash:  make -f firmware/platform/tms570/Makefile.tms570 flash-eth-ping
- *          Test:   ping 192.168.1.200
+ *          Test:   ping <configured SC Ethernet test IP>
  *
- * @note    GIOA[3]=PHY_PWRDOWN (LOW=normal, HIGH=powerdown) — schematic pin 7
- *          GIOA[4]=PHY_RESET_N (HIGH=release, LOW=reset) — schematic pin 29
+ * @note    GIOA[3] (ball E1) = DP83630 PWRDOWN/INTN pin 7, ACTIVE LOW, with
+ *          2.2k pulldown RP11B on board (schematic SPRR397 sheet 12) — the
+ *          PHY boots held in power-down until GIOA[3] drives HIGH, and
+ *          BMCR bit 11 is OR'd/latched with this pin. MICR.INT_OE (reg
+ *          0x11 bit 0) disables the pin's power-down function (DS 5.9.1).
+ *          GIOA[4] (ball A6) = PHY RESET_N pin 29 (HIGH=release, LOW=reset)
  *          These pins conflict with SC LED assignments — this test is standalone.
  *
  * @note    Cache must be write-through for EMAC DMA coherency (TI E2E known issue).
@@ -24,9 +28,9 @@
 #include "HL_sci.h"
 #include "HL_reg_sci.h"
 #include "HL_emac.h"
-#include "HL_mdio.h"
-#include "HL_phy_dp83640.h"
 #include "HL_sys_vim.h"
+#include "sc_eth.h"
+#include "sc_eth_udp.h"
 
 /* ================================================================
  * HALCoGen notification stubs (HL_notification.c excluded to avoid
@@ -48,11 +52,32 @@ void canErrorNotification(void *node, uint32 notification) { (void)node; (void)n
  * Network Configuration
  * ================================================================ */
 
-/* TMS570 static IP: 192.168.1.200 */
-static const uint8 g_my_ip[4]  = { 192U, 168U, 1U, 200U };
+/* Public default uses TEST-NET-1. Override SC_ETH_TEST_IP* for a local bench. */
+#ifndef SC_ETH_TEST_IP0
+#define SC_ETH_TEST_IP0 192U
+#endif
+#ifndef SC_ETH_TEST_IP1
+#define SC_ETH_TEST_IP1 0U
+#endif
+#ifndef SC_ETH_TEST_IP2
+#define SC_ETH_TEST_IP2 2U
+#endif
+#ifndef SC_ETH_TEST_IP3
+#define SC_ETH_TEST_IP3 200U
+#endif
+
+static const uint8 g_my_ip[4]  = {
+    SC_ETH_TEST_IP0,
+    SC_ETH_TEST_IP1,
+    SC_ETH_TEST_IP2,
+    SC_ETH_TEST_IP3
+};
 
 /* MAC address — locally administered, unique on bench */
 static uint8 g_my_mac[6] = { 0x02U, 0x00U, 0x4BU, 0x57U, 0x01U, 0x00U };
+
+/* Limited broadcast used by the S-UDP-02 bench probe. */
+static const uint8 g_broadcast_ip[4] = { 255U, 255U, 255U, 255U };
 
 /* ================================================================
  * Ethernet Protocol Constants
@@ -65,15 +90,16 @@ static uint8 g_my_mac[6] = { 0x02U, 0x00U, 0x4BU, 0x57U, 0x01U, 0x00U };
 #define ARP_OP_REPLY    2U
 #define ICMP_ECHO_REQ   8U
 #define ICMP_ECHO_REPLY 0U
+#define UDP_PROBE_SRC_PORT 55000U
+#define UDP_PROBE_DST_PORT 55001U
+#define UDP_PROBE_DELAY_LOOPS 3000000U
 
 /* ================================================================
  * Global state
  * ================================================================ */
 
-static hdkif_t *g_hdkif = NULL;
-
 /* RX packet buffer — filled by emacRxNotification */
-static volatile uint8  g_rx_buf[1520];
+static uint8           g_rx_buf[1520];
 static volatile uint32 g_rx_len = 0U;
 static volatile uint32 g_rx_ready = 0U;
 
@@ -85,6 +111,8 @@ static volatile uint32 g_rx_count = 0U;
 static volatile uint32 g_tx_count = 0U;
 static volatile uint32 g_arp_count = 0U;
 static volatile uint32 g_icmp_count = 0U;
+static volatile uint32 g_udp_probe_tx_count = 0U;
+static uint32 g_udp_probe_seq = 0U;
 
 /* ================================================================
  * SCI (UART) — raw register access, same as working SC firmware
@@ -217,12 +245,6 @@ static void write_u16(uint8 *p, uint16 val)
     p[1] = (uint8)(val & 0xFFU);
 }
 
-static uint32 read_u32(const volatile uint8 *p)
-{
-    return ((uint32)p[0] << 24U) | ((uint32)p[1] << 16U) |
-           ((uint32)p[2] << 8U)  | (uint32)p[3];
-}
-
 /* ================================================================
  * ICMP checksum (RFC 1071)
  * ================================================================ */
@@ -259,24 +281,69 @@ static uint16 ip_checksum(const uint8 *hdr, uint32 hdr_len)
 
 static void eth_transmit(uint8 *frame, uint32 len)
 {
-    pbuf_t pbuf;
-
-    if (len < MIN_PKT_LEN + 14U) {
-        /* Pad to minimum Ethernet frame size */
-        uint32 i;
-        for (i = len; i < (MIN_PKT_LEN + 14U); i++) {
-            frame[i] = 0U;
-        }
-        len = MIN_PKT_LEN + 14U;
+    if ((len <= SC_ETH_FRAME_MAX_LEN) &&
+        (Sc_Eth_Tx(frame, (uint16)len) == E_OK)) {
+        g_tx_count++;
     }
+}
 
-    pbuf.payload = frame;
-    pbuf.len = (uint16)len;
-    pbuf.tot_len = (uint16)len;
-    pbuf.next = NULL;
+/* ================================================================
+ * S-UDP-02 UDP probe emitter
+ * ================================================================ */
 
-    (void)EMACTransmit(g_hdkif, &pbuf);
-    g_tx_count++;
+static void udp_probe_delay(void)
+{
+    volatile uint32 i;
+
+    for (i = 0U; i < UDP_PROBE_DELAY_LOOPS; i++) {
+        /* Busy wait to avoid overrunning the PC UDP receive buffer. */
+    }
+}
+
+static void udp_probe_init(void)
+{
+    sc_eth_udp_config_t config;
+    uint32 i;
+
+    for (i = 0U; i < SC_ETH_UDP_MAC_ADDR_LEN; i++) {
+        config.src_mac[i] = g_my_mac[i];
+        config.unicast_dst_mac[i] = 0xFFU;
+    }
+    for (i = 0U; i < SC_ETH_UDP_IPV4_ADDR_LEN; i++) {
+        config.src_ip[i] = g_my_ip[i];
+    }
+    config.src_port = UDP_PROBE_SRC_PORT;
+
+    Sc_EthUdp_Init(&config);
+}
+
+static void udp_probe_send(void)
+{
+    uint8 payload[16U];
+    uint32 seq = g_udp_probe_seq;
+
+    payload[0] = (uint8)'S';
+    payload[1] = (uint8)'U';
+    payload[2] = (uint8)'0';
+    payload[3] = (uint8)'2';
+    payload[4] = (uint8)((seq >> 24U) & 0xFFU);
+    payload[5] = (uint8)((seq >> 16U) & 0xFFU);
+    payload[6] = (uint8)((seq >> 8U) & 0xFFU);
+    payload[7] = (uint8)(seq & 0xFFU);
+    payload[8] = (uint8)(seq & 0xFFU);
+    payload[9] = (uint8)((~seq) & 0xFFU);
+    payload[10] = 0xA5U;
+    payload[11] = 0x5AU;
+    payload[12] = (uint8)'B';
+    payload[13] = (uint8)'E';
+    payload[14] = (uint8)'N';
+    payload[15] = (uint8)'C';
+
+    if (Sc_EthUdp_Send(g_broadcast_ip, UDP_PROBE_DST_PORT,
+                       payload, (uint16)sizeof(payload)) == E_OK) {
+        g_udp_probe_tx_count++;
+        g_udp_probe_seq++;
+    }
 }
 
 /* ================================================================
@@ -417,11 +484,11 @@ static void handle_icmp(const volatile uint8 *pkt, uint32 len)
         g_tx_buf[6U + i] = g_my_mac[i];
     }
 
-    /* IP: swap src/dst IP */
+    /* IP: swap src/dst IP (src @ offset 12, dst @ offset 16) */
     uint8 *tx_ip = &g_tx_buf[14];
     for (i = 0U; i < 4U; i++) {
-        tx_ip[16U + i] = g_my_ip[i];         /* src = us */
-        tx_ip[12U + i] = ip_hdr[12U + i];    /* dst = sender (already there from copy) */
+        tx_ip[12U + i] = g_my_ip[i];         /* src = us */
+        tx_ip[16U + i] = ip_hdr[12U + i];    /* dst = original sender */
     }
 
     /* IP: recalculate header checksum */
@@ -503,77 +570,22 @@ void emacTxNotification(hdkif_t *hdkif)
 }
 
 /* ================================================================
- * ECLK — 25 MHz reference clock for DP83630 PHY
+ * Polled RX — this test never enables VIM/IRQs, so emacRxNotification
+ * (ISR-driven) never fires. EMACReceive() alone only RECYCLES completed
+ * descriptors — it does not deliver data. Poll the descriptor chain
+ * ourselves: copy a completed frame out FIRST, then let EMACReceive
+ * re-arm the chain.
  * ================================================================ */
 
-#include "HL_reg_system.h"
-
-static void eclk_25mhz(void)
+static void eth_poll_rx(void)
 {
-    /* SYSPC1 = 1: ECLK pin in ECLK function mode (not GIO) */
-    systemREG1->SYSPC1 = 1U;
+    uint16 pkt_len = 0U;
 
-    /* ECPCNTL: divider=3 (VCLK1=75MHz / 3 = 25MHz), continue on suspend
-     * Bit 23: ECPCOS = 1 (continue clock during debug suspend)
-     * Bits 15:0: ECPDIV = 3-1 = 2 */
-    systemREG1->ECPCNTL = ((uint32)1U << 23U)
-                        | ((uint32)(3U - 1U) & 0xFFFFU);
-}
-
-/* ================================================================
- * PINMUX fix — route MDIO and MDCLK to balls G3 and V5
- *
- * HALCoGen sets G3=MIBSPI1NCS_2 and V5=MIBSPI3NCS_1, but these
- * balls must be MDIO and MDCLK for the EMAC to talk to the PHY.
- * Without this, EMACHWInit returns EMAC_ERR_CONNECT because MDIO
- * bus has no output path.
- * ================================================================ */
-
-#include "HL_pinmux.h"
-
-static void fix_mdio_pinmux(void)
-{
-    /* MDIO (F4) and MDCLK (T9) are PRIMARY functions on those balls
-     * and work by default — no override needed.
-     *
-     * However, HALCoGen's MII enable may have muxed G3/V5 to MDIO/MDCLK
-     * as a side effect, fighting the primary balls. Restore them to
-     * their defaults (MIBSPI chip selects) per the Hackster.io guide. */
-
-    /* Restore balls that MII enable incorrectly overrides.
-     * The key insight from Jan Cumps: after enabling MII in HALCoGen,
-     * uncheck signals on A14, B4, B11, D19, E18, F3, G3, G19, H18,
-     * H19, J18, J19, K19, N19, P1, R2, V5. Our HALCoGen project
-     * already has most of these correct. Just verify G3 and V5
-     * are NOT set to MDIO/MDCLK (they should be SPI chip selects). */
-
-    /* Nothing to do — our HALCoGen already has G3=MIBSPI1NCS_2 and
-     * V5=MIBSPI3NCS_1 (correct defaults). Primary balls F4/T9 handle
-     * MDIO/MDCLK automatically when EMAC module is enabled. */
-}
-
-/* ================================================================
- * PHY Release — GIOA[3]=reset, GIOA[4]=powerdown, then 200ms wait
- * ================================================================ */
-
-static void phy_release(void)
-{
-    volatile uint32 delay;
-
-    /* 1. Fix MDIO/MDCLK pin muxing (HALCoGen has them as SPI chip selects) */
-    fix_mdio_pinmux();
-
-    /* 2. Enable 25 MHz ECLK output — PHY needs this as reference clock */
-    eclk_25mhz();
-
-    /* 3. Match Jan Cumps' HALCoGen config: both GIOA[3] and GIOA[4] = OUTPUT HIGH.
-     *    gioInit() now sets them HIGH from boot (patched HL_gio.c).
-     *    Just reinforce here and wait for PHY to stabilize. */
-    gioPORTA->DIR |= (uint32)(1U << 3U) | (uint32)(1U << 4U);
-    gioPORTA->DSET = (uint32)(1U << 3U) | (uint32)(1U << 4U);
-
-    /* 4. Wait 200ms for PHY PLL lock */
-    for (delay = 0U; delay < 20000000U; delay++) {}
+    if (Sc_Eth_PollRx(g_rx_buf, (uint16)sizeof(g_rx_buf), &pkt_len) == TRUE) {
+        g_rx_len = (uint32)pkt_len;
+        g_rx_ready = 1U;
+        g_rx_count++;
+    }
 }
 
 /* ================================================================
@@ -582,8 +594,7 @@ static void phy_release(void)
 
 int main(void)
 {
-    uint32 emac_result;
-    extern hdkif_t hdkif_data[MAX_EMAC_INSTANCE];
+    Std_ReturnType eth_status;
 
     /* 1. System init — PLL to 300 MHz */
     systemInit();
@@ -593,147 +604,25 @@ int main(void)
     uart_init();
     uart_puts("\r\n=== TMS570 Ethernet Ping Test ===\r\n");
 
-    /* 3. Release PHY from reset/powerdown */
-    uart_puts("PHY: releasing reset... ");
-    phy_release();
-    uart_puts("done\r\n");
-
-    /* 4. MDIO diagnostics — read registers before EMACHWInit */
-    {
-        volatile uint32 *mdio = (volatile uint32 *)0xFCF78900U;
-        uart_puts("MDIO diag:\r\n");
-        uart_puts("  REVID=0x"); uart_put_hex8((uint8)(mdio[0] >> 24U));
-        uart_put_hex8((uint8)(mdio[0] >> 16U));
-        uart_put_hex8((uint8)(mdio[0] >> 8U));
-        uart_put_hex8((uint8)(mdio[0])); uart_puts("\r\n");
-
-        /* Init MDIO manually: enable, preamble, clkdiv=0x1F */
-        mdio[1] = 0x40000000U | 0x00100000U | 0x1FU;
-        volatile uint32 w;
-        for (w = 0U; w < 1000000U; w++) {}
-
-        uart_puts("  CTRL=0x"); uart_put_hex8((uint8)(mdio[1] >> 24U));
-        uart_put_hex8((uint8)(mdio[1] >> 16U));
-        uart_put_hex8((uint8)(mdio[1] >> 8U));
-        uart_put_hex8((uint8)(mdio[1])); uart_puts("\r\n");
-
-        uart_puts("  ALIVE=0x"); uart_put_hex8((uint8)(mdio[2] >> 24U));
-        uart_put_hex8((uint8)(mdio[2] >> 16U));
-        uart_put_hex8((uint8)(mdio[2] >> 8U));
-        uart_put_hex8((uint8)(mdio[2])); uart_puts("\r\n");
-
-        uart_puts("  LINK=0x"); uart_put_hex8((uint8)(mdio[3] >> 24U));
-        uart_put_hex8((uint8)(mdio[3] >> 16U));
-        uart_put_hex8((uint8)(mdio[3] >> 8U));
-        uart_put_hex8((uint8)(mdio[3])); uart_puts("\r\n");
-
-        /* GIOA DOUT state */
-        uart_puts("  GIOA_DIR=0x"); uart_put_hex8((uint8)(gioPORTA->DIR));
-        uart_puts(" DOUT=0x"); uart_put_hex8((uint8)(gioPORTA->DOUT));
-        uart_puts("\r\n");
-
-        /* ECLK state */
-        uart_puts("  SYSPC1=0x"); uart_put_hex8((uint8)(systemREG1->SYSPC1));
-        uart_puts(" ECPCNTL=0x"); uart_put_hex8((uint8)(systemREG1->ECPCNTL >> 16U));
-        uart_put_hex8((uint8)(systemREG1->ECPCNTL >> 8U));
-        uart_put_hex8((uint8)(systemREG1->ECPCNTL));
-        uart_puts("\r\n");
-    }
-
-    /* 5. Quick PHY check — do NOT toggle GPIOs before EMACHWInit */
-    {
-        volatile uint16 phyReg = 0U;
-        MDIOPhyRegRead(MDIO_0_BASE, EMAC_PHYADDRESS, 2U, &phyReg);
-        uart_puts("PHY ID1=0x");
-        uart_put_hex8((uint8)(phyReg >> 8U));
-        uart_put_hex8((uint8)(phyReg));
-        MDIOPhyRegRead(MDIO_0_BASE, EMAC_PHYADDRESS, 0U, &phyReg);
-        uart_puts(" BMCR=0x");
-        uart_put_hex8((uint8)(phyReg >> 8U));
-        uart_put_hex8((uint8)(phyReg));
-        uart_puts(" PWRDN=");
-        uart_puts((phyReg & 0x0800U) ? "YES" : "no");
-        uart_puts("\r\n");
-    }
-
-    /* 6. Initialize EMAC + PHY */
-    uart_puts("EMAC: init (MAC=");
+    /* 3. Initialize reusable Ethernet driver */
+    uart_puts("Ethernet: init (MAC=");
     {
         uint32 i;
         for (i = 0U; i < 6U; i++) {
-            if (i > 0U) uart_puts(":");
+            if (i > 0U) {
+                uart_puts(":");
+            }
             uart_put_hex8(g_my_mac[i]);
         }
     }
     uart_puts(")... ");
-
-    emac_result = EMACHWInit(g_my_mac);
-    if (emac_result != EMAC_ERR_OK) {
-        uart_puts("WARN (");
-        uart_put_dec(emac_result);
-        uart_puts(") — EMACHWInit returned error, but EMAC DMA is initialized.\r\n");
-
-        /* Dump diagnostic registers */
-        {
-            volatile uint32 *emac = (volatile uint32 *)0xFCF78000U;
-            uart_puts("  MACCONTROL=0x");
-            uart_put_hex8((uint8)(emac[0x104U/4U] >> 24U));
-            uart_put_hex8((uint8)(emac[0x104U/4U] >> 16U));
-            uart_put_hex8((uint8)(emac[0x104U/4U] >> 8U));
-            uart_put_hex8((uint8)(emac[0x104U/4U]));
-
-            volatile uint16 bmcr = 0U;
-            MDIOPhyRegRead(MDIO_0_BASE, EMAC_PHYADDRESS, 0U, &bmcr);
-            uart_puts(" BMCR=0x");
-            uart_put_hex8((uint8)(bmcr >> 8U));
-            uart_put_hex8((uint8)(bmcr));
-            uart_puts(" (pwrdn=");
-            uart_puts((bmcr & 0x0800U) ? "YES" : "no");
-            uart_puts(")\r\n");
-
-            /* If PWRDN still stuck, try one last clear and force-continue */
-            if (bmcr & 0x0800U) {
-                uart_puts("  Force-clearing PWRDN post-EMACHWInit...\r\n");
-                MDIOPhyRegWrite(MDIO_0_BASE, EMAC_PHYADDRESS, 0U,
-                                (uint16)(bmcr & ~0x0800U));
-                volatile uint32 d;
-                for (d = 0U; d < 3000000U; d++) {}
-                MDIOPhyRegRead(MDIO_0_BASE, EMAC_PHYADDRESS, 0U, &bmcr);
-                uart_puts("  BMCR now=0x");
-                uart_put_hex8((uint8)(bmcr >> 8U));
-                uart_put_hex8((uint8)(bmcr));
-                uart_puts("\r\n");
-            }
-        }
-        /* NOTE: GIOA[3] = DP83630 pin 7 = IO_VDD (power supply pin!)
-         * Do NOT drive LOW — it kills the PHY. Keep HIGH always.
-         * PWRDN is controlled by Energy Detect (EDCR 0x1E = 0x3F80).
-         * ED auto-powers-down when no cable connected.
-         * Connect Ethernet cable and the PHY should wake up. */
-        uart_puts("EDCR=0x");
-        {
-            volatile uint16 edcr = 0U;
-            MDIOPhyRegRead(MDIO_0_BASE, EMAC_PHYADDRESS, 0x1EU, &edcr);
-            uart_put_hex8((uint8)(edcr >> 8U));
-            uart_put_hex8((uint8)(edcr));
-            uart_puts(" (ED_EN=");
-            uart_puts(((edcr >> 8U) & 0x03U) ? "ON" : "off");
-            uart_puts(" ED_PWR=");
-            uart_puts((edcr & 0x0080U) ? "PWRDN" : "normal");
-            uart_puts(")\r\n");
-        }
-        uart_puts(">>> CONNECT ETHERNET CABLE — ED will auto-wake PHY <<<\r\n");
-        uart_puts("Continuing — will poll for link in main loop.\r\n");
-    } else {
+    eth_status = Sc_Eth_Init(g_my_mac);
+    if (eth_status == E_OK) {
         uart_puts("OK\r\n");
+    } else {
+        uart_puts("WARN - continuing with EMAC DMA initialized\r\n");
     }
-
-    /* 5. Enable RX/TX interrupts */
-    g_hdkif = &hdkif_data[0U];
-    EMACTxIntPulseEnable(g_hdkif->emac_base, g_hdkif->emac_ctrl_base,
-                         0U, EMAC_CHANNELNUMBER);
-    EMACRxIntPulseEnable(g_hdkif->emac_base, g_hdkif->emac_ctrl_base,
-                         0U, EMAC_CHANNELNUMBER);
+    udp_probe_init();
 
     uart_puts("IP:   ");
     uart_put_ip(g_my_ip);
@@ -750,13 +639,14 @@ int main(void)
     {
         volatile uint32 heartbeat = 0U;
         for (;;) {
+            /* Poll RX descriptors — copies one completed frame into
+             * g_rx_buf (sets g_rx_ready) and recycles the descriptors */
+            eth_poll_rx();
+
             if (g_rx_ready != 0U) {
                 process_packet(g_rx_buf, g_rx_len);
                 g_rx_ready = 0U;
             }
-
-            /* Call EMACReceive to process RX descriptors (polled mode) */
-            EMACReceive(g_hdkif);
 
             /* Periodic heartbeat every ~5 seconds */
             heartbeat++;
@@ -770,14 +660,16 @@ int main(void)
                 uart_put_dec(g_arp_count);
                 uart_puts(" icmp=");
                 uart_put_dec(g_icmp_count);
+                uart_puts(" udp=");
+                uart_put_dec(g_udp_probe_tx_count);
 
-                /* Check link status */
-                volatile uint16 bsr = 0U;
-                MDIOPhyRegRead(MDIO_0_BASE, EMAC_PHYADDRESS, 1U, &bsr);
                 uart_puts(" link=");
-                uart_puts((bsr & 0x0004U) ? "UP" : "DOWN");
+                uart_puts((Sc_Eth_LinkUp() == TRUE) ? "UP" : "DOWN");
                 uart_puts("\r\n");
             }
+
+            udp_probe_send();
+            udp_probe_delay();
         }
     }
 

@@ -18,6 +18,17 @@ import re
 import json
 import glob
 
+TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+from pipeline_diagnostics import (
+    DiagnosticSeverity,
+    PipelineDiagnostic,
+    PipelineDiagnosticError,
+    portable_path,
+)
+
 
 # ---------------------------------------------------------------------------
 # Parsers
@@ -29,7 +40,7 @@ def parse_defines(filepath):
     if not os.path.isfile(filepath):
         return defines
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
             # Match: #define NAME value  or  #define NAME (expr)
             m = re.match(
@@ -45,8 +56,17 @@ def parse_defines(filepath):
                         defines[name] = int(val)
                     else:
                         defines[name] = val
-                except ValueError:
-                    defines[name] = val
+                except ValueError as exc:
+                    diagnostic = PipelineDiagnostic(
+                        code="MODEL002",
+                        severity=DiagnosticSeverity.ERROR,
+                        source="C macro '%s' in '%s'" % (name, os.path.basename(filepath)),
+                        message="numeric literal '%s' is invalid: %s" % (val, exc),
+                        path=portable_path(filepath),
+                        line=line_number,
+                        column=line.find(name) + 1,
+                    )
+                    raise PipelineDiagnosticError([diagnostic]) from exc
     return defines
 
 
@@ -280,13 +300,17 @@ def extract_all(firmware_root):
 def main():
     if len(sys.argv) < 3:
         print("Usage: %s <firmware-root> <output-json>" % sys.argv[0])
-        sys.exit(1)
+        return 1
 
     firmware_root = sys.argv[1]
     output_path = sys.argv[2]
 
     print("Extracting ECU configurations from %s..." % firmware_root)
-    model = extract_all(firmware_root)
+    try:
+        model = extract_all(firmware_root)
+    except PipelineDiagnosticError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     # Summary
     total_signals = sum(
@@ -306,7 +330,8 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(model, f, indent=2)
     print("Written: %s" % output_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

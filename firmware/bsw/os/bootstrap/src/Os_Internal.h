@@ -39,6 +39,7 @@
 #define OS_DET_API_STOP_SCHED_TABLE       0x1Au
 #define OS_DET_API_NEXT_SCHED_TABLE       0x1Bu
 #define OS_DET_API_GET_SCHED_TABLE_STATUS 0x1Cu
+#define OS_DET_API_START_OS               0x1Du
 
 typedef struct {
     TaskStateType State;
@@ -93,6 +94,7 @@ extern Os_IocConfigType os_ioc_cfg[OS_MAX_IOCS];
 extern Os_IocControlBlockType os_ioc_cb[OS_MAX_IOCS];
 extern uint8 os_ioc_count;
 extern uint16 os_stack_budget_cfg[OS_MAX_TASKS];
+extern uintptr_t os_task_stack_top_cfg[OS_MAX_TASKS];
 extern Os_MemoryRegionControlType os_memory_region_cfg[OS_MAX_MEMORY_REGIONS];
 extern uint8 os_memory_region_count;
 extern Os_TrustedFunctionConfigType os_trusted_function_cfg[OS_MAX_TRUSTED_FUNCTIONS];
@@ -162,17 +164,30 @@ extern uint8 os_suspend_os_nesting;
 extern uint8 os_test_all_interrupts_disabled;
 extern uint8 os_test_os_interrupts_disabled;
 extern uint8 os_test_mp_loaded_count;
+#endif
 
+/* Config clear + per-area apply helpers (S-OS-10): shared by the
+ * production Os_Configure path and the Os_TestConfigure* wrappers. */
 void os_clear_task_cfg(void);
 void os_clear_resource_cfg(void);
 void os_clear_alarm_cfg(void);
 void os_clear_application_cfg(void);
 void os_clear_ioc_cfg(void);
 void os_clear_stack_cfg(void);
+void os_clear_task_stack_cfg(void);
 void os_clear_memory_region_cfg(void);
 void os_clear_trusted_function_cfg(void);
 void os_clear_sched_table_cfg(void);
-#endif
+StatusType os_cfg_apply_tasks(const Os_TaskConfigType* Config, uint8 TaskCount);
+StatusType os_cfg_apply_resources(const Os_ResourceConfigType* Config, uint8 ResourceCount);
+StatusType os_cfg_apply_alarms(const Os_AlarmConfigType* Config, uint8 AlarmCount);
+StatusType os_cfg_apply_applications(const Os_ApplicationConfigType* Config, uint8 ApplicationCount);
+StatusType os_cfg_apply_ioc(const Os_IocConfigType* Config, uint8 IocCount);
+StatusType os_cfg_apply_stacks(const Os_StackMonitorConfigType* Config, uint8 StackCount);
+StatusType os_cfg_apply_task_stacks(const Os_TaskStackConfigType* Config, uint8 TaskStackCount);
+StatusType os_cfg_apply_memory_regions(const Os_MemoryRegionConfigType* Config, uint8 RegionCount);
+StatusType os_cfg_apply_trusted_functions(const Os_TrustedFunctionConfigType* Config, uint8 TrustedFunctionCount);
+StatusType os_cfg_apply_schedule_tables(const Os_ScheduleTableConfigType* Config, uint8 TableCount);
 void os_reset_runtime_state(void);
 boolean os_is_valid_task(TaskType TaskID);
 boolean os_is_valid_resource(ResourceType ResID);
@@ -192,6 +207,9 @@ void os_report_service_error(uint8 ApiId, uint8 DetErrorId, StatusType Status);
 StatusType os_activate_task_internal(TaskType TaskID, boolean AllowPreemption);
 TaskType os_select_next_ready_task(void);
 void os_complete_running_task(void);
+#if defined(PLATFORM_STM32) || defined(PLATFORM_STM32L5) || defined(PLATFORM_TMS570)
+void os_terminate_switchback(void);
+#endif
 StatusType os_dispatch_one(void);
 StatusType os_run_ready_tasks(void);
 StatusType os_maybe_dispatch_preemption(void);

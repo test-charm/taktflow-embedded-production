@@ -41,6 +41,8 @@ class Pdu:
     direction: str = "TX"
     cycle_ms: int = 0
     timeout_ms: int = 0
+    tx_mode: str = ""      # "" = explicitly unspecified; else DIRECT/PERIODIC/NONE
+                           # (sidecar override > validated DBC send-type mapping)
     signals: list[Signal] = field(default_factory=list)
     e2e_protected: bool = False
     e2e_data_id: int | None = None
@@ -63,6 +65,7 @@ class Port:
     direction: str = "REQUIRED"
     interface_name: str = ""
     signal_name: str = ""
+    message_name: str = ""
     data_type: str = "uint32_t"
 
 
@@ -99,6 +102,28 @@ class Swc:
 
 
 @dataclass
+class EcuOsConfig:
+    """Per-ECU OSEK OS configuration from the sidecar `os:` section.
+
+    Backward-compatible: an absent `os:` section yields these defaults and
+    the Os generator still runs (S-OS-11 sidecar schema extension).
+    """
+
+    # Super-loop BSW slot periods (in RTE ticks) that become period-group
+    # tasks even when no runnable uses the period (plan section 1.1).
+    bsw_slot_periods: list[int] = field(default_factory=list)
+    # Stack budget per task (Os_StackMonitorConfigType.BudgetBytes).
+    default_task_stack_bytes: int = 1024
+    # Optional per-period override: {period_ticks: bytes}.
+    task_stack_bytes: dict[int, int] = field(default_factory=dict)
+    # OSEK task scheduling for period-group tasks: FULL (default) or NON.
+    scheduling: str = "FULL"
+    # Optional OS-Application grouping — emitted only when present.
+    # Each entry: {name: str, trusted: bool, tasks: [period|'idle', ...]}.
+    applications: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class Ecu:
     """Complete ECU model — populated by reader, consumed by generators."""
 
@@ -123,6 +148,7 @@ class Ecu:
     rte_aliases: dict[str, str] = field(default_factory=dict)
     rte_internal_signal_count: int = 0
     rte_internal_signals: list[str] = field(default_factory=list)
+    os: EcuOsConfig = field(default_factory=EcuOsConfig)
 
 
 @dataclass

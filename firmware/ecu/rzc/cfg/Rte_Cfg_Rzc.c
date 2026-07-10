@@ -15,30 +15,30 @@
  * Forward declarations for SWC runnables
  * ================================================================== */
 
-extern void Swc_Battery_MainFunction(void);
 extern void Swc_Battery_Init(void);
+extern void Swc_Battery_MainFunction(void);
 extern void Can_MainFunction_Read(void);
 extern void Com_MainFunction_Rx(void);
 extern void Com_MainFunction_Tx(void);
 extern void Can_MainFunction_BusOff(void);
-extern void Swc_CurrentMonitor_MainFunction(void);
 extern void Swc_CurrentMonitor_Init(void);
-extern void Swc_Encoder_MainFunction(void);
+extern void Swc_CurrentMonitor_MainFunction(void);
 extern void Swc_Encoder_Init(void);
+extern void Swc_Encoder_MainFunction(void);
 extern void Swc_Heartbeat_MainFunction(void);
-extern void Swc_Motor_MainFunction(void);
 extern void Swc_Motor_Init(void);
+extern void Swc_Motor_MainFunction(void);
 extern void Swc_RzcCom_Init(void);
 extern void Swc_RzcDcm_Init(void);
 extern void Swc_RzcNvm_Init(void);
-extern void Swc_RzcSafety_MainFunction(void);
 extern void Swc_RzcSafety_Init(void);
+extern void Swc_RzcSafety_MainFunction(void);
 extern void Swc_RzcScheduler_Init(void);
 extern void Swc_RzcSelfTest_Init(void);
-extern void Swc_RzcSensorFeeder_MainFunction(void);
 extern void Swc_RzcSensorFeeder_Init(void);
-extern void Swc_TempMonitor_MainFunction(void);
+extern void Swc_RzcSensorFeeder_MainFunction(void);
 extern void Swc_TempMonitor_Init(void);
+extern void Swc_TempMonitor_MainFunction(void);
 
 /* ==================================================================
  * Signal Configuration Table
@@ -256,17 +256,17 @@ static const Rte_SignalConfigType rzc_signal_config[RZC_SIG_COUNT] = {
 static const Rte_RunnableConfigType rzc_runnable_config[] = {
     /* func,                        periodMs, priority, seId */
     { Swc_CurrentMonitor_MainFunction,             1u,    11u, 0x00u },
-    { Swc_Encoder_MainFunction,                   10u,    10u, 0x02u },
-    { Swc_Motor_MainFunction,                     10u,    10u, 0x01u },
-    { Can_MainFunction_Read,                       1u,     9u, 0xFFu },
-    { Com_MainFunction_Rx,                        10u,     8u, 0xFFu },
+    { Can_MainFunction_Read,                       1u,    10u, 0xFFu },
+    { Swc_Encoder_MainFunction,                   10u,     9u, 0x02u },
+    { Swc_Motor_MainFunction,                     10u,     8u, 0x01u },
+    { Com_MainFunction_Rx,                        10u,     7u, 0xFFu },
     { Swc_RzcSensorFeeder_MainFunction,           10u,     6u, 0xFFu },
-    { Swc_Battery_MainFunction,                  100u,     4u, 0x04u },
-    { Com_MainFunction_Tx,                        10u,     4u, 0xFFu },
-    { Swc_TempMonitor_MainFunction,              100u,     4u, 0x03u },
+    { Com_MainFunction_Tx,                        10u,     5u, 0xFFu },
+    { Can_MainFunction_BusOff,                    10u,     4u, 0xFFu },
     { Swc_Heartbeat_MainFunction,                 50u,     3u, 0x05u },
-    { Can_MainFunction_BusOff,                    10u,     2u, 0xFFu },
-    { Swc_RzcSafety_MainFunction,                100u,     2u, 0x06u },
+    { Swc_Battery_MainFunction,                  100u,     2u, 0x04u },
+    { Swc_TempMonitor_MainFunction,              100u,     1u, 0x03u },
+    { Swc_RzcSafety_MainFunction,                100u,     0u, 0x06u },
 };
 
 #define RZC_RUNNABLE_COUNT  (sizeof(rzc_runnable_config) / sizeof(rzc_runnable_config[0]))

@@ -28,7 +28,13 @@
 #include "sc_selftest.h"
 #include "sc_gio.h"
 #include "sc_monitoring.h"     /* SWR-SC-029/030: SC_Status broadcast (GAP-1/2) */
+#include "sc_eth_telemetry.h"  /* S-UDP-03: QM Ethernet telemetry producer */
+#ifdef SC_ETH_ENABLE
+#include "sc_eth_rx_dispatch.h" /* S-XCP-02: QM UDP RX port dispatch */
+#include "sc_xcp_eth.h"        /* S-XCP-02: QM XCP-on-Ethernet slave */
+#endif
 #include "sc_state.h"         /* GAP-SC-006: authoritative state machine */
+#include "sc_uds_shim.h"
 
 /* SIL diagnostic logging — compile with -DSIL_DIAG to enable */
 #ifdef SIL_DIAG
@@ -47,25 +53,24 @@
 
 static void sc_configure_gpio(void)
 {
-    /* Port A outputs: A0=relay, A1=LED_CVC, A2=LED_FZC, A3=LED_RZC, A4=LED_SYS, A5=WDI */
-    gioSetDirection(SC_GIO_PORT_A, SC_PIN_RELAY,   1u);
-    gioSetDirection(SC_GIO_PORT_A, SC_PIN_LED_CVC, 1u);
-    gioSetDirection(SC_GIO_PORT_A, SC_PIN_LED_FZC, 1u);
-    gioSetDirection(SC_GIO_PORT_A, SC_PIN_LED_RZC, 1u);
-    gioSetDirection(SC_GIO_PORT_A, SC_PIN_LED_SYS, 1u);
-    gioSetDirection(SC_GIO_PORT_A, SC_PIN_WDI,     1u);
+    gioSetDirection(SC_PORT_RELAY,   SC_PIN_RELAY,   1u);
+    gioSetDirection(SC_PORT_LED_CVC, SC_PIN_LED_CVC, 1u);
+    gioSetDirection(SC_PORT_LED_FZC, SC_PIN_LED_FZC, 1u);
+    gioSetDirection(SC_PORT_LED_RZC, SC_PIN_LED_RZC, 1u);
+    gioSetDirection(SC_PORT_LED_SYS, SC_PIN_LED_SYS, 1u);
+    gioSetDirection(SC_PORT_WDI,     SC_PIN_WDI,     1u);
 
     /* Port B output: B1=Heartbeat LED */
-    gioSetDirection(SC_GIO_PORT_B, SC_PIN_LED_HB, 1u);
+    gioSetDirection(SC_PORT_LED_HB, SC_PIN_LED_HB, 1u);
 
     /* All pins LOW initially */
-    gioSetBit(SC_GIO_PORT_A, SC_PIN_RELAY,   0u);
-    gioSetBit(SC_GIO_PORT_A, SC_PIN_LED_CVC, 0u);
-    gioSetBit(SC_GIO_PORT_A, SC_PIN_LED_FZC, 0u);
-    gioSetBit(SC_GIO_PORT_A, SC_PIN_LED_RZC, 0u);
-    gioSetBit(SC_GIO_PORT_A, SC_PIN_LED_SYS, 0u);
-    gioSetBit(SC_GIO_PORT_A, SC_PIN_WDI,     0u);
-    gioSetBit(SC_GIO_PORT_B, SC_PIN_LED_HB,  0u);
+    gioSetBit(SC_PORT_RELAY,   SC_PIN_RELAY,   0u);
+    gioSetBit(SC_PORT_LED_CVC, SC_PIN_LED_CVC, 0u);
+    gioSetBit(SC_PORT_LED_FZC, SC_PIN_LED_FZC, 0u);
+    gioSetBit(SC_PORT_LED_RZC, SC_PIN_LED_RZC, 0u);
+    gioSetBit(SC_PORT_LED_SYS, SC_PIN_LED_SYS, 0u);
+    gioSetBit(SC_PORT_WDI,     SC_PIN_WDI,     0u);
+    gioSetBit(SC_PORT_LED_HB,  SC_PIN_LED_HB,  0u);
 }
 
 /* ==================================================================
@@ -87,9 +92,9 @@ static void sc_startup_fail_blink(uint8 failStep)
     for (;;) {
         /* Blink failStep times */
         for (blink = 0u; blink < failStep; blink++) {
-            gioSetBit(SC_GIO_PORT_A, SC_PIN_LED_SYS, 1u);
+            gioSetBit(SC_PORT_LED_SYS, SC_PIN_LED_SYS, 1u);
             for (delay = 0u; delay < 15000000u; delay++) { /* ~300ms at 300MHz */ }
-            gioSetBit(SC_GIO_PORT_A, SC_PIN_LED_SYS, 0u);
+            gioSetBit(SC_PORT_LED_SYS, SC_PIN_LED_SYS, 0u);
             for (delay = 0u; delay < 15000000u; delay++) { /* ~300ms at 300MHz */ }
         }
         /* Pause between blink groups */
@@ -107,8 +112,12 @@ int main(void)
 {
     uint8 startup_result;
     boolean all_checks_ok;
+#ifdef SC_DEBUG_PERIODIC
     uint16 dbg_tick_counter = 0u;  /* 5s periodic debug print */
+#endif
+#ifndef SC_ETH_ENABLE
     uint8 hb_blink_counter = 0u;  /* heartbeat LED blink (GIOB[6:7]) */
+#endif
 #ifdef SIL_DIAG
     uint16 sil_diag_tick = 0u;
 #endif
@@ -118,7 +127,9 @@ int main(void)
      *   Both stay ON  = CPU stuck before main
      *   Both go OFF   = main reached
      *   Both back ON  = system init done */
+#ifndef SC_ETH_ENABLE
     sc_het_led_off();
+#endif
 
     /* ---- 1. System initialization ---- */
     systemInit();           /* PLL to 300 MHz (TMS570: HALCoGen, POSIX: no-op) */
@@ -131,9 +142,11 @@ int main(void)
      * (b) sc_sci_init overrides PINMUX83 which muxInit() sets to GIOA[0]. */
     sc_sci_init();
 
-    /* gioInit() resets DIRB/DOUTB, turning off GIOB[6:7] user LEDs.
-     * Re-enable them so they stay ON as a "firmware running" indicator. */
+    /* In non-Ethernet builds, GIOB[6:7] remain bring-up indicators.
+     * In Ethernet builds, they are assigned to RZC/system fault LEDs. */
+#ifndef SC_ETH_ENABLE
     sc_het_led_on();
+#endif
     sc_sci_puts("=== SC Boot [" GIT_HASH "] ===\r\n");
     sc_sci_puts("main() reached OK\r\n");
 
@@ -150,7 +163,17 @@ int main(void)
     SC_LED_Init();
     SC_Watchdog_Init();
     SC_Monitoring_Init();       /* SWR-SC-030: SC_Status TX init */
+#ifdef SC_ETH_ENABLE
+    if (SC_EthTelemetry_Init() == E_OK) {
+        sc_sci_puts("ETH telemetry: OK\r\n");
+    } else {
+        sc_sci_puts("ETH telemetry: unavailable\r\n");
+    }
+    Sc_EthRx_Init();            /* S-XCP-02: UDP port dispatch table */
+    Sc_XcpEth_Init();           /* S-XCP-02: XCP-on-Ethernet slave (UDP 55002) */
+#endif
     SC_State_Init();            /* GAP-SC-006: state machine starts in INIT */
+    SC_UdsShim_Init();          /* HIL-only direct UDS shim for Phase 5 SC routing */
     /* ESM lockstep monitoring — define SC_ESM_ENABLED to activate.
      * WAIVER HIL-PF-008: Temporarily disabled because CCM-R5F (CPU lockstep
      * comparator) asserts a persistent ESM Group 2 error on the TMS570LC43x
@@ -205,6 +228,14 @@ int main(void)
         /* ---- Step 1: CAN Receive ---- */
         SC_CAN_Receive();
 
+        /* ---- Step 1a: HIL diagnostic shim ---- */
+        SC_UdsShim_Poll();
+
+#ifdef SC_ETH_ENABLE
+        /* ---- Step 1b: QM Ethernet RX dispatch (XCP-on-UDP slave) ---- */
+        Sc_EthRx_Poll();
+#endif
+
         /* ---- Step 2: Heartbeat Monitor ---- */
         SC_Heartbeat_Monitor();
 
@@ -248,8 +279,11 @@ int main(void)
         }
 #endif
 
-        /* ---- Step 4b: SC_Status Broadcast (500ms, SWR-SC-029/030) ---- */
+        /* ---- Step 4b: SC_Status Broadcast (SWR-SC-029/030) ---- */
         SC_Monitoring_Update();
+#ifdef SC_ETH_ENABLE
+        SC_EthTelemetry_Update();
+#endif
 
         /* ---- Step 5: LED Update ---- */
         SC_LED_Update();
@@ -258,6 +292,7 @@ int main(void)
          *   ESM error active → both solid ON (fault)
          *   SC_ESM_ENABLED   → alternating (lockstep monitored)
          *   ESM disabled     → both blink together (no lockstep) */
+#ifndef SC_ETH_ENABLE
         hb_blink_counter++;
         if (hb_blink_counter >= 100u) {
             hb_blink_counter = 0u;
@@ -277,6 +312,7 @@ int main(void)
         } else {
             sc_het_led_off();
         }
+#endif
 #endif
 
         /* ---- Step 6: Bus Silence Monitor ---- */
@@ -306,6 +342,11 @@ int main(void)
         }
 
         /* ---- Step 8b: Periodic debug status (every 5 seconds) ---- */
+        /* Opt-in only (DBGDUMP=1): the dump is ~270 chars mirrored to
+         * SCI3 at 9600 baud, which blocks the loop ~280 ms and swallows
+         * ~27 RTI ticks — measured as the 95.2 Hz telemetry cadence in
+         * the 2026-07-06 S-UDP-03 bench capture. Bring-up use only. */
+#ifdef SC_DEBUG_PERIODIC
         dbg_tick_counter++;
         if (dbg_tick_counter >= 500u) {  /* 500 * 10ms = 5s */
             dbg_tick_counter = 0u;
@@ -324,6 +365,7 @@ int main(void)
             /* DCAN ES/NEWDAT + CCM/ESM snapshot (MMIO on target, no-op on POSIX) */
             sc_hw_debug_periodic();
         }
+#endif /* SC_DEBUG_PERIODIC */
 
         /* ---- Step 9: Watchdog Feed ---- */
         SC_Watchdog_Feed(all_checks_ok);

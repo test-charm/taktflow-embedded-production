@@ -166,3 +166,41 @@ Before claiming SC3 coverage for a safety case, verify:
 | Version | Date | Author | Change |
 |---------|------|--------|--------|
 | 0.1 | 2026-03-15 | AI-assisted | Initial skeleton — assumptions of use, constraints, checklist |
+| 0.2 | 2026-07-07 | AI-assisted | Appended §9 (S-OS-30 STM32 hook implementation notes: TIM7, not TIM6) |
+| 0.3 | 2026-07-07 | AI-assisted | Appended §9 closure note: MemManage vector wired in OSEK builds (§9 item 2 interim state resolved) |
+
+## 9. S-OS-30 Implementation Notes (appended 2026-07-07)
+
+The STM32 SC3 port hooks were implemented on branch `feat/os-osek-migration`
+in `firmware/platform/stm32/src/Os_Port_Stm32_Sc3.c`. Two points where the
+implementation deviates from or sharpens the tables above (full
+reconciliation deferred to S-OS-51):
+
+1. **Budget timer is TIM7, not TIM6** (§2.3 table): TIM6 is the CubeMX HAL
+   timebase in the production images and is not available; the backbone
+   plan's implementation-order note records the hardware-validated pairing
+   as "STM32: DWT + TIM7 — BRINGUP-7 PASS". Expiry interrupt:
+   `TIM7_DAC_IRQHandler` (IRQ 55), NVIC priority 0x40. AOU-TP-03 therefore
+   applies to DWT CYCCNT **and TIM7** on STM32.
+2. **MemManage vector wiring is deferred**: the fault-handler body
+   (`Os_Port_Stm32_Sc3_MemManageHandler`) exists and is unit-tested, but
+   the `MemManage_Handler` vector symbol is still the CubeMX stub in
+   `firmware/ecu/cvc/cfg/Core/Src/stm32g4xx_it.c`. Until the
+   scheduler-cutover edit wires it, an MPU fault halts in the stub and
+   escalates via watchdog rather than reaching ProtectionHook
+   (interim fail-safe, not the specified reaction). Tracked as an S-OS
+   cutover item.
+
+**Closure of item 2 (appended 2026-07-07):** the interim state described in
+item 2 is resolved. In OSEK builds (`OSEK=1` -> `USE_OSEK`) the
+`MemManage_Handler` vector symbol is now provided by
+`firmware/platform/stm32/src/Os_Port_Stm32_Sc3.c` and routes into
+`Os_Port_Stm32_Sc3_MemManageHandler` ->
+`Os_MemProtFaultHandler` -> `ProtectionHook(E_OS_PROTECTION_MEMORY)` — the
+specified SC3 reaction. The CubeMX stub in
+`firmware/ecu/cvc/cfg/Core/Src/stm32g4xx_it.c` is compiled only when
+`USE_OSEK` is absent (same user-approved guard pattern as PendSV, commit
+d74a60e), so default (non-OSEK) builds are byte-identical to baseline.
+Verified: default cvc/fzc/rzc images byte-identical sizes
+(39480/37780/36880 text); OSEK=1 images link for all three; full OS test
+runner 32/32 suites PASS (488 tests).
