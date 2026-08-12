@@ -271,9 +271,10 @@ int main(int argc, char** argv)
     uint32_t torque_request_pct;
     uint32_t torque_direction;
 
-    if (argc != 5 && argc != 6) {
-        fprintf(stderr, "usage: %s <sensor1_pct> <sensor2_pct> <vehicle_state> <cycles> [spi_fault_sensor]\n", argv[0]);
+    if (argc != 5 && argc != 6 && argc != 8 && argc != 9) {
+        fprintf(stderr, "usage: %s <sensor1_pct> <sensor2_pct> <vehicle_state> <cycles> [spi_fault_sensor] [recover_s1_pct recover_s2_pct recover_cycles]\n", argv[0]);
         fprintf(stderr, "  spi_fault_sensor: -1=none (default), 0=sensor1 SPI fault, 1=sensor2 SPI fault\n");
+        fprintf(stderr, "  When recover_s1/s2/cycles are present, a recovery phase runs after the main loop.\n");
         return 2;
     }
 
@@ -282,8 +283,20 @@ int main(int argc, char** argv)
     vehicle_state = (uint32_t)strtoul(argv[3], NULL, 10);
     cycles = (uint32_t)strtoul(argv[4], NULL, 10);
 
-    if (argc >= 6) {
+    /* Optional SPI fault injection (arg 6) */
+    if (argc >= 6 && argc != 8) {
         mock_spi_fault_sensor = (int32_t)strtol(argv[5], NULL, 10);
+    }
+
+    /* Optional recovery phase parameters (last 3 args: recover_s1, recover_s2, recover_cycles) */
+    uint32_t recover_cycles = 0u;
+    uint32_t recover_s1_pct = 0u;
+    uint32_t recover_s2_pct = 0u;
+    if (argc >= 8) {
+        int recover_arg_start = (argc == 9) ? 6 : 5;
+        recover_s1_pct = (uint32_t)strtoul(argv[recover_arg_start], NULL, 10);
+        recover_s2_pct = (uint32_t)strtoul(argv[recover_arg_start + 1], NULL, 10);
+        recover_cycles = (uint32_t)strtoul(argv[recover_arg_start + 2], NULL, 10);
     }
 
     mock_pedal_raw_0_base = percent_to_raw(sensor1_pct);
@@ -299,6 +312,19 @@ int main(int argc, char** argv)
     pedal_config.latchClearCycles = CVC_PEDAL_LATCH_CLEAR_CYCLES;
     pedal_config.rampLimit = CVC_PEDAL_RAMP_LIMIT;
 
+    /* Dither amplitude for stuck-detection avoidance (default 16).
+     * Set CVC_PEDAL_DITHER=0 (or < stuckThreshold=10) to enable stuck testing. */
+    uint16_t dither_amplitude = 16u;
+    /* argv[5] is reserved for spi_fault_sensor when argc==6 or argc==9.
+     * When there's no spi_fault and recovery phase (argc==8), argv[5:7] are recovery args.
+     * We accept dither_amplitude via env var CVC_PEDAL_DITHER for cleanness. */
+    {
+        const char* dither_env = getenv("CVC_PEDAL_DITHER");
+        if (dither_env != NULL) {
+            dither_amplitude = (uint16_t)strtoul(dither_env, NULL, 10);
+        }
+    }
+
     Swc_Pedal_Init(&pedal_config);
     Swc_CvcCom_Init();
 
@@ -308,7 +334,7 @@ int main(int argc, char** argv)
          * exhibit small jitter; this keeps the harness representative while
          * still using the unmodified ASW implementation. */
         {
-            uint16_t dither = (uint16_t)((i & 0x01u) ? 16u : 0u);
+            uint16_t dither = (uint16_t)((i & 0x01u) ? dither_amplitude : 0u);
             mock_pedal_raw_0 = (uint16_t)(mock_pedal_raw_0_base + dither);
             mock_pedal_raw_1 = (uint16_t)(mock_pedal_raw_1_base + dither);
         }
@@ -316,19 +342,27 @@ int main(int argc, char** argv)
         Swc_CvcCom_TransmitSchedule(i * 10u);
     }
 
+    /* ---- Recovery phase (optional, for zero-torque latch lifecycle testing) ---- */
+    if (recover_cycles > 0u) {
+        mock_pedal_raw_0_base = percent_to_raw(recover_s1_pct);
+        mock_pedal_raw_1_base = percent_to_raw(recover_s2_pct);
+        for (i = 0u; i < recover_cycles; i++) {
+            uint16_t dither = (uint16_t)((i & 0x01u) ? dither_amplitude : 0u);
+            mock_pedal_raw_0 = (uint16_t)(mock_pedal_raw_0_base + dither);
+            mock_pedal_raw_1 = (uint16_t)(mock_pedal_raw_1_base + dither);
+            Swc_Pedal_MainFunction();
+            Swc_CvcCom_TransmitSchedule((cycles + i) * 10u);
+        }
+    }
+
     pedal_fault = mock_rte_signals[CVC_SIG_PEDAL_FAULT];
     pedal_position = mock_rte_signals[CVC_SIG_PEDAL_POSITION];
     torque_request_pct = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
     torque_direction = mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION];
 
-    printf("{\"inputs\":{\"sensor1Pct\":%u,\"sensor2Pct\":%u,\"vehicleState\":%u,\"cycles\":%u},"
-           "\"outputs\":{\"pedalPosition\":%u,\"pedalFaultCode\":%u,\"pedalFaultName\":\"%s\","
+    printf("{\"outputs\":{\"pedalPosition\":%u,\"pedalFaultCode\":%u,\"pedalFaultName\":\"%s\","
            "\"torqueRequestPct\":%u,\"torqueDirection\":%u,"
            "\"comSignals\":{\"torqueRequestCommandPct\":%u}}}\n",
-           (unsigned)sensor1_pct,
-           (unsigned)sensor2_pct,
-           (unsigned)vehicle_state,
-           (unsigned)cycles,
            (unsigned)pedal_position,
            (unsigned)pedal_fault,
            fault_name(pedal_fault),

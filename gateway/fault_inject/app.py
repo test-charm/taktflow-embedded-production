@@ -83,9 +83,22 @@ class TestRunBody(BaseModel):
 class CvcPedalTorqueBody(BaseModel):
     sensor1Pct: int
     sensor2Pct: int
-    vehicleState: str
-    cycles: int
-    spiFaultSensor: int | None = None  # 0=sensor1 SPI fault, 1=sensor2 SPI fault, None=no fault
+    vehicleState: str | None = None   # None → use server-side stored state
+    cycles: int | None = None         # None → use server-side stored state
+    spiFaultSensor: int | None = None # None → use server-side stored state
+    recoverSensor1Pct: int | None = None  # recovery phase: sensor 1 percentage
+    recoverSensor2Pct: int | None = None  # recovery phase: sensor 2 percentage
+    recoverCycles: int | None = None      # recovery phase: cycles to run
+    ditherAmplitude: int | None = None    # 0=no dither (stuck-test), None=default 16
+
+
+# Server-side state store for Given/When separation.
+# Mutated by /pedal-torque/setup, read by /pedal-torque when fields are absent.
+_stored_vehicle_state: int = 1          # default: RUN
+_stored_cycles: int = 100               # default: 100 cycles
+_stored_spi_fault_sensor: int | None = None  # default: no fault
+_stored_dither_amplitude: int | None = None  # default: use harness built-in (16)
+_stored_recover_cycles: int | None = None    # default: no recovery phase
 
 
 # Test runner instance (initialized on startup)
@@ -374,6 +387,42 @@ if not os.path.exists(_index_path):
 <p>No coverage data collected yet. Run a pedal-torque test first.</p>
 </body></html>""")
 app.mount("/coverage", StaticFiles(directory=_COVERAGE_HTML_DIR, html=True), name="coverage")
+
+
+class PedalSetupBody(BaseModel):
+    vehicleState: str | None = None
+    cycles: int | None = None
+    spiFaultSensor: int | None = None
+    ditherAmplitude: int | None = None
+    recoverCycles: int | None = None
+    resetSpiFault: bool = False
+    resetDither: bool = False
+    resetRecover: bool = False
+
+
+@app.post("/api/test/asw/cvc/pedal-torque/setup")
+def setup_pedal_state(body: PedalSetupBody):
+    """Store pedal test state for subsequent calls that omit fields."""
+    global _stored_vehicle_state, _stored_cycles, _stored_spi_fault_sensor, _stored_dither_amplitude, _stored_recover_cycles
+    if body.vehicleState is not None:
+        _stored_vehicle_state = _vehicle_state_value(body.vehicleState)
+    if body.cycles is not None:
+        _stored_cycles = body.cycles
+    if body.resetSpiFault:
+        _stored_spi_fault_sensor = None
+    if body.resetDither:
+        _stored_dither_amplitude = None
+    if body.resetRecover:
+        _stored_recover_cycles = None
+    if body.spiFaultSensor is not None:
+        _stored_spi_fault_sensor = body.spiFaultSensor
+    if body.ditherAmplitude is not None:
+        _stored_dither_amplitude = body.ditherAmplitude
+    if body.recoverCycles is not None:
+        _stored_recover_cycles = body.recoverCycles
+    return {"storedVehicleState": body.vehicleState, "storedCycles": _stored_cycles,
+            "storedSpiFaultSensor": _stored_spi_fault_sensor, "storedDitherAmplitude": _stored_dither_amplitude,
+            "storedRecoverCycles": _stored_recover_cycles}
 
 
 def _trigger_scenario(name: str):
@@ -721,12 +770,17 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
     """
     sensor1 = _validate_percent("sensor1Pct", body.sensor1Pct)
     sensor2 = _validate_percent("sensor2Pct", body.sensor2Pct)
-    cycles = _validate_cycles(body.cycles)
-    vehicle_state = _vehicle_state_value(body.vehicleState)
+    cycles = _validate_cycles(body.cycles) if body.cycles is not None else _stored_cycles
+    vehicle_state = _vehicle_state_value(body.vehicleState) if body.vehicleState is not None else _stored_vehicle_state
+    spi_fault = body.spiFaultSensor if body.spiFaultSensor is not None else _stored_spi_fault_sensor
+    dither = body.ditherAmplitude if body.ditherAmplitude is not None else _stored_dither_amplitude
+    recover_cycles = body.recoverCycles if body.recoverCycles is not None else _stored_recover_cycles
 
     try:
         env = os.environ.copy()
         env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_pedal_%p.profraw")
+        if dither is not None:
+            env["CVC_PEDAL_DITHER"] = str(dither)
         harness_args = [
             _CVC_PEDAL_HARNESS,
             str(sensor1),
@@ -734,8 +788,12 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
             str(vehicle_state),
             str(cycles),
         ]
-        if body.spiFaultSensor is not None:
-            harness_args.append(str(body.spiFaultSensor))
+        if spi_fault is not None:
+            harness_args.append(str(spi_fault))
+        if recover_cycles is not None and recover_cycles > 0:
+            harness_args.append(str(body.recoverSensor1Pct or 0))
+            harness_args.append(str(body.recoverSensor2Pct or 0))
+            harness_args.append(str(recover_cycles))
         completed = subprocess.run(
             harness_args,
             check=True,

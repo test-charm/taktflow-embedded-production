@@ -122,12 +122,13 @@
 
 ### 输入因子
 
-| 因子 | 含义 | 等价类/范围 | 选定值 |
-|---|---|---|---|
-| `sensor1Pct` | 踏板传感器 1 百分比 | 0..100，标称相等，大幅不匹配，死区附近 | `3`、`20`、`40`、`50`、`60`、`80`、`100` |
-| `sensor2Pct` | 踏板传感器 2 百分比 | 0..100，标称相等，大幅不匹配，死区附近 | `3`、`40`、`50`、`60`、`80`、`100` |
-| `vehicleState` | CVC 模式限制源 | `RUN`、`DEGRADED`、`LIMP`、`SAFE_STOP`、`SHUTDOWN`、`INIT` | 全部 |
-| `cycles` | 要执行的 10ms 踏板周期数 | 消抖不足，消抖足够，斜坡饱和足够 | `2`、`100`、`200` |
+| 因子 | 含义 | 等价类/范围 | 选定值 | 分类 |
+|---|---|---|---|---|
+| `sensor1Pct` | 踏板传感器 1 百分比 (功能输入) | 0..100，标称相等，大幅不匹配，死区附近 | `3`、`20`、`40`、`50`、`60`、`80`、`100` | **When — 功能输入** |
+| `sensor2Pct` | 踏板传感器 2 百分比 (功能输入) | 0..100，标称相等，大幅不匹配，死区附近 | `3`、`40`、`50`、`60`、`80`、`100` | **When — 功能输入** |
+| `vehicleState` | 车辆模式 (RTE 环境上下文) | `RUN`、`DEGRADED`、`LIMP`、`SAFE_STOP`、`SHUTDOWN`、`INIT` | 全部 | **Given — 前置条件** |
+| `cycles` | 10ms 循环次数 (harness 执行参数) | 消抖不足，消抖足够，斜坡饱和足够 | `2`、`100`、`200` | **When — 执行控制** |
+| `spiFaultSensor` | SPI 故障注入 (测试基础设施) | `null`、`0`、`1` | `0`、`1` | **When — 故障注入** |
 
 > **注意**: SPI 传感器故障 (`SENSOR1_FAIL` / `SENSOR2_FAIL`)、卡滞检测 (`STUCK`) 和零扭矩锁存生命周期在当前测试 harness (`cvc_pedal_harness.c`) 中不可注入，详见下方「无法覆盖的代码说明」。
 
@@ -205,13 +206,13 @@
 | 407 | Pedal_PrevTorque 保存 | 全部用例 | ✅ |
 | 412-413 | Rte_Read vehicle_state | 全部用例 | ✅ |
 | 415-419 | 模式限制 (torque > mode_limit?) | degraded_75pct, limp_30pct (限制生效); run_40pct (不限制) | ✅ 两分支覆盖 |
-| 435-453 | 新故障处理 | run_mismatched (PLAUSIBILITY → latch激活) | ✅ 首次故障路径; ❌ 锁存中再故障 → 单次harness调用不可测 |
-| 454-467 | 零扭矩锁存处理 | — | ❌ **不可测** — 需要"先触发故障 → 再观察latch生命周期"的两阶段测试，当前 harness 只支持单批固定输入 |
+| 435-453 | 新故障处理 | run_mismatched (PLAUSIBILITY → latch激活), run_mismatched 第3周期 (L444-445 锁存中再故障重启计数器) | ✅ 全分支覆盖 |
+| 454-467 | 零扭矩锁存生命周期 (计数→清除→恢复) | latch_recovery (合理性故障锁存恢复) | ✅ 全分支覆盖 (计数器递增+清除+恢复前强制清零) |
 | 468-471 | 无故障无锁存路径 | run_40pct 等正常用例 | ✅ |
 | 476-494 | 写 RTE 信号 | 全部用例 | ✅ |
 | 482-488 | torque_pct_scaled > 100 保护 | — | ❌ **不可达** — torque 内部范围 0-1000，除以 10 后最大 100 |
 | 501-507 | DTC 合理性上报 (PASSED/FAILED/latch) | run_mismatched (FAILED), 正常用例 (PASSED) | ✅ PASSED+FAILED; ❌ latch分支 → latch不可测 |
-| 509-515 | DTC 卡滞上报 | — | ❌ **不可达** — 卡滞检测不可测 |
+| 509-515 | DTC 卡滞上报 | stuck_fault (STUCK→FAILED), 正常用例 (PASSED) | ✅ PASSED+FAILED; latch分支不可测 |
 | 517-523 | DTC SENSOR1_FAIL 上报 | sensor1_spi (FAILED), 正常用例 (PASSED) | ✅ PASSED+FAILED; latch分支不可测 |
 | 525-531 | DTC SENSOR2_FAIL 上报 | sensor2_spi (FAILED), 正常用例 (PASSED) | ✅ PASSED+FAILED; latch分支不可测 |
 
@@ -256,12 +257,9 @@
 
 ### C. 当前 Harness 不可测
 
-这些是合法的功能路径，但当前 `cvc_pedal_harness.c` 缺少相应的故障注入或两阶段测试能力：
-
 | 代码位置 | 说明 | 需要的 Harness 增强 |
 |---|---|---|
-| L349-372 | 卡滞检测 (STUCK fault) | harness 的 dither 机制 (+16 每两周期) 阻止了卡滞检测触发。需要支持关闭 dither 或固定传感器值 |
-| L454-467 | 零扭矩锁存生命周期 | 需要两阶段 API："先运行故障周期 → 再运行恢复周期" |
+| — | 暂无 | 所有路径已覆盖 |
 
 > **结论**: 以上三类不可覆盖代码中，**A 类**和**B 类**属于必要的安全护栏和常量约束下的逻辑冗余，无需额外测试覆盖。**C 类**需要在未来版本中增强测试 harness 以支持故障注入。
 
