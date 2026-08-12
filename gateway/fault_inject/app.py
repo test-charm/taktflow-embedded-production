@@ -24,6 +24,8 @@ import paho.mqtt.client as paho_mqtt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .scenarios import (
@@ -355,6 +357,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Coverage report static files ---
+# .gcda files are written to /app/build (where .o files were compiled).
+# We copy .gcno there and point lcov at the same directory.
+# HTML report goes to /app/coverage/html (bind-mounted to host).
+_COVERAGE_DIR = "/app/build"
+_COVERAGE_HTML_DIR = os.path.join("/app/coverage", "html")
+os.makedirs(_COVERAGE_HTML_DIR, exist_ok=True)
+# Placeholder index so the static mount doesn't 404 before first report
+_index_path = os.path.join(_COVERAGE_HTML_DIR, "index.html")
+if not os.path.exists(_index_path):
+    with open(_index_path, "w") as _f:
+        _f.write("""<!DOCTYPE html><html><body>
+<h1>CVC Pedal Torque Request — Coverage Report</h1>
+<p>No coverage data collected yet. Run a pedal-torque test first.</p>
+</body></html>""")
+app.mount("/coverage", StaticFiles(directory=_COVERAGE_HTML_DIR, html=True), name="coverage")
+
 
 def _trigger_scenario(name: str):
     """Trigger a scenario by name (used by the test runner).
@@ -643,15 +662,70 @@ def test_result():
     return _test_runner.last_result
 
 
+def _generate_coverage_html():
+    """Run LLVM coverage tools + genhtml to produce HTML coverage report."""
+    profdata_bin = "/usr/bin/llvm-profdata"
+    llvmcov_bin = "/usr/bin/llvm-cov"
+    genhtml_bin = "/usr/bin/genhtml"
+    if not all(os.path.exists(b) for b in [profdata_bin, llvmcov_bin, genhtml_bin]):
+        log.warning("llvm-profdata/llvm-cov/genhtml not found — skipping coverage")
+        return
+
+    info_file = os.path.join(_COVERAGE_DIR, "coverage.info")
+    profdata_file = os.path.join(_COVERAGE_DIR, "merged.profdata")
+
+    # Step 1: Merge all .profraw files
+    profraw_files = [os.path.join(_COVERAGE_DIR, f)
+                     for f in os.listdir(_COVERAGE_DIR) if f.endswith(".profraw")]
+    if not profraw_files:
+        log.warning("No .profraw files found in %s", _COVERAGE_DIR)
+        return
+    subprocess.run(
+        [profdata_bin, "merge", "-sparse", "-o", profdata_file] + profraw_files,
+        capture_output=True, text=True, timeout=30,
+    )
+    # Step 2: Export to lcov format via llvm-cov
+    # llvm-cov export uses the binary to resolve source paths and naturally
+    # includes header-file coverage (unlike gcov which only tracks .c files).
+    result = subprocess.run(
+        [llvmcov_bin, "export", _CVC_PEDAL_HARNESS,
+         "-instr-profile=" + profdata_file, "-format=lcov",
+         "-ignore-filename-regex=/app/fault_inject/.*",
+         "-ignore-filename-regex=/app/firmware/bsw/.*",
+         "-ignore-filename-regex=/usr/.*"],
+        capture_output=True, text=True, timeout=30,
+    )
+    with open(info_file, "w") as f:
+        f.write(result.stdout)
+
+    # Step 3: Generate HTML
+    subprocess.run(
+        [genhtml_bin, info_file, "--output-directory", _COVERAGE_HTML_DIR,
+         "--title", "Taktflow ASW Coverage Report",
+         "--prefix", "/app",
+         "--rc", "branch_coverage=1", "--legend",
+         "--ignore-errors", "unsupported,deprecated,inconsistent,corrupt"],
+        capture_output=True, text=True, timeout=30,
+    )
+    log.info("Coverage HTML report written to %s", _COVERAGE_HTML_DIR)
+
+
 @app.post("/api/test/asw/cvc/pedal-torque")
 def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
-    """Execute the real CVC pedal ASW chain in a native test harness."""
+    """Execute the real CVC pedal ASW chain in a native test harness.
+
+    Coverage data (.gcda) is written to /app/coverage/ and accumulated
+    across calls. The merged HTML report is generated on demand via the
+    GET /coverage endpoint (triggered automatically by doLast in gradle).
+    """
     sensor1 = _validate_percent("sensor1Pct", body.sensor1Pct)
     sensor2 = _validate_percent("sensor2Pct", body.sensor2Pct)
     cycles = _validate_cycles(body.cycles)
     vehicle_state = _vehicle_state_value(body.vehicleState)
 
     try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_pedal_%p.profraw")
         completed = subprocess.run(
             [
                 _CVC_PEDAL_HARNESS,
@@ -664,6 +738,8 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
             capture_output=True,
             text=True,
             timeout=10,
+            cwd=_COVERAGE_DIR,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail="CVC pedal harness not found") from exc
@@ -673,10 +749,31 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
         detail = exc.stderr.strip() if exc.stderr else exc.stdout.strip()
         raise HTTPException(status_code=500, detail=detail or "CVC pedal harness failed") from exc
 
+    # HTML coverage report is generated on demand via the GET endpoint,
+    # not per-call — this lets .gcda data accumulate across all scenarios
+    # before producing a single merged report.
+
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC pedal harness returned invalid JSON") from exc
+
+
+@app.get("/api/test/asw/cvc/pedal-torque/coverage")
+def get_coverage_html():
+    """Generate and serve the merged HTML coverage report.
+
+    Regenerates from all accumulated .gcda data so the report reflects
+    every scenario that has run since the container started.
+    """
+    _generate_coverage_html()
+    index_path = os.path.join(_COVERAGE_HTML_DIR, "index.html")
+    if not os.path.exists(index_path):
+        raise HTTPException(
+            status_code=503,
+            detail="Coverage report generation failed. Check container logs.",
+        )
+    return FileResponse(index_path, media_type="text/html")
 
 
 def main():

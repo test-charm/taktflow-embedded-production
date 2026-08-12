@@ -62,6 +62,9 @@ dependencies {
 
 task cucumber(type: JavaExec) {
     dependsOn assemble, testClasses
+    doFirst {
+        mkdir("${project.buildDir}/coverage")
+    }
     main = "io.cucumber.core.cli.Main"
     classpath = configurations.cucumberRuntime + sourceSets.main.output + sourceSets.test.output
     environment "SPRING_PROFILES_ACTIVE", "test"
@@ -70,6 +73,32 @@ task cucumber(type: JavaExec) {
             '--glue', 'org.testcharm',
             '--glue', 'demo.testcharm',
             project.hasProperty('file') ? project.file : 'src/test/resources']
+    doLast {
+        def containerName = "docker-fault-inject-1"
+        def coverageUrl = "http://127.0.0.1:8091/api/test/asw/cvc/pedal-torque/coverage"
+        println "[coverage] Triggering report generation in ${containerName} ..."
+        try {
+            // Step 1: Call GET endpoint to trigger lcov+genhtml inside container
+            new URL(coverageUrl).text
+        } catch (Exception e) {
+            println "[coverage] WARNING: GET ${coverageUrl} failed (${e.message})"
+        }
+        // Step 2: Copy generated report from container to host
+        try {
+            def destDir = "${project.buildDir}/coverage"
+            def copyCmd = ["docker", "cp", "${containerName}:/app/coverage/html/.", destDir]
+            def proc = copyCmd.execute()
+            proc.waitFor()
+            if (proc.exitValue() == 0) {
+                println "[coverage] Report copied → ${destDir}/index.html"
+            } else {
+                println "[coverage] WARNING: docker cp failed — ${proc.err.text}"
+                println "[coverage] Run manually: docker cp ${containerName}:/app/coverage/html/. ${destDir}"
+            }
+        } catch (Exception e) {
+            println "[coverage] WARNING: Could not copy coverage report (${e.message})"
+        }
+    }
 }
 
 tasks.bootWar { enabled = false }

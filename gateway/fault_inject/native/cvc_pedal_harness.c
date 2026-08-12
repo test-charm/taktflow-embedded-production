@@ -12,6 +12,89 @@
 #include "IoHwAb.h"
 #include "Dem.h"
 
+/* ---- BSW stubs for linking all CVC SWC files ---- */
+#include "E2E_Sm.h"
+#include "PduR.h"
+#include "BswM.h"
+#include "Dio.h"
+#include "NvM.h"
+#include "WdgM.h"
+
+void E2E_Sm_Init(E2E_SmStateType* sm)                 { (void)sm; }
+E2E_SmStatusType E2E_Sm_Check(const E2E_SmConfigType* cfg,
+                               E2E_SmStateType* sm,
+                               E2E_CheckStatusType status)
+                                                       { (void)cfg; (void)sm; (void)status; return 0u; }
+Std_ReturnType BswM_RequestMode(BswM_RequesterIdType id, BswM_ModeType mode)
+                                                       { (void)id; (void)mode; return E_OK; }
+uint8 Dio_FlipChannel(uint8 ch)                        { (void)ch; return 0u; }
+Std_ReturnType WdgM_CheckpointReached(WdgM_SupervisedEntityIdType seid)
+                                                       { (void)seid; return E_OK; }
+uint16 Nvm_ComputeCalCrc(void)                         { return 0u; }
+uint16 Nvm_ComputeDtcCrc(void)                         { return 0u; }
+void NVIC_SystemReset(void)                            { /* no-op in harness */ }
+
+/* Ssd1306 stubs for Swc_Dashboard */
+#include "Ssd1306.h"
+Std_ReturnType Ssd1306_Init(void)                       { return E_OK; }
+void           Ssd1306_Clear(void)                      { }
+void           Ssd1306_SetCursor(uint8 page, uint8 col) { (void)page; (void)col; }
+Std_ReturnType Ssd1306_WriteString(const char* s)       { (void)s; return E_OK; }
+
+/* SelfTest_Hw stubs */
+#include "Swc_SelfTest.h"
+boolean SelfTest_Hw_RamPattern(void)     { return TRUE; }
+boolean SelfTest_Hw_NvmCheck(void)       { return TRUE; }
+boolean SelfTest_Hw_CanLoopback(void)    { return TRUE; }
+boolean SelfTest_Hw_SpiLoopback(void)    { return TRUE; }
+boolean SelfTest_Hw_CanaryCheck(void)    { return TRUE; }
+boolean SelfTest_Hw_MpuVerify(void)      { return TRUE; }
+boolean SelfTest_Hw_OledAck(void)        { return TRUE; }
+
+/* CvcDcm stubs */
+#include "Swc_CvcDcm.h"
+void*   CvcDcm_FindDid(uint16 did)            { (void)did; return NULL_PTR; }
+boolean CvcDcm_IsServiceSupported(uint8 sid)  { (void)sid; return FALSE; }
+
+/* ---- Additional BSW stubs for FZC / RZC / BCM / SC ECUs ---- */
+#include "Pwm.h"
+#include "Can.h"
+#include "Uart.h"
+
+Std_ReturnType Ssd1306_Hw_I2cWrite(uint8 addr, const uint8* data, uint8 len)
+                                                             { (void)addr; (void)data; (void)len; return E_OK; }
+Std_ReturnType IoHwAb_ReadBrakePosition(uint16* pos)         { if (pos) *pos = 0u; return E_OK; }
+Std_ReturnType IoHwAb_ReadSteeringAngle(uint16* angle)       { if (angle) *angle = 0u; return E_OK; }
+Std_ReturnType IoHwAb_ReadEncoderCount(uint32* count)        { if (count) *count = 0u; return E_OK; }
+Std_ReturnType IoHwAb_ReadEncoderDirection(uint8* dir)       { if (dir) *dir = 0u; return E_OK; }
+Std_ReturnType IoHwAb_SetMotorPWM(uint8 dir, uint16 duty)    { (void)dir; (void)duty; return E_OK; }
+Std_ReturnType IoHwAb_ReadBatteryVoltage(uint16* mv)         { if (mv) *mv = 0u; return E_OK; }
+Std_ReturnType IoHwAb_ReadMotorCurrent(uint16* ma)           { if (ma) *ma = 0u; return E_OK; }
+Std_ReturnType IoHwAb_ReadMotorTemp(uint16* c)               { if (c) *c = 0u; return E_OK; }
+Std_ReturnType IoHwAb_ReadMotorTemp2(uint16* c)              { if (c) *c = 0u; return E_OK; }
+
+void           Pwm_SetDutyCycle(uint8 ch, uint16 duty)       { (void)ch; (void)duty; }
+void           Dio_WriteChannel(uint8 ch, uint8 level)       { (void)ch; (void)level; }
+Std_ReturnType Uart_ReadRxData(uint8* buf, uint8 len, uint8* read)
+                                                             { if (read) *read = 0u; (void)buf; (void)len; return E_OK; }
+Can_StateType  Can_GetControllerMode(uint8 ctrl)             { (void)ctrl; return 0u; }
+Std_ReturnType Can_GetErrorCounters(uint8 ctrl, uint8* tec, uint8* rec)
+                                                             { if (tec) *tec = 0u; if (rec) *rec = 0u; (void)ctrl; return E_OK; }
+Std_ReturnType Can_GetControllerErrorState(uint8 ctrl, uint8* state)
+                                                             { if (state) *state = 0u; (void)ctrl; return E_OK; }
+Std_ReturnType NvM_ReadBlock(NvM_BlockIdType id, void* buf)  { (void)id; (void)buf; return E_NOT_OK; }
+Std_ReturnType NvM_WriteBlock(NvM_BlockIdType id, const void* buf)
+                                                             { (void)id; (void)buf; return E_NOT_OK; }
+void           WdgM_MainFunction(void)                        { }
+
+/* SC-internal cross-dependencies (stubs for excluded SC files) */
+uint8  SC_Relay_IsKilled(void)              { return 0u; }
+uint8  SC_Relay_GetKillReason(void)         { return 0u; }
+uint8  SC_Plausibility_IsFaulted(void)      { return 0u; }
+uint8  SC_Heartbeat_IsTimedOut(uint8 id)    { (void)id; return 0u; }
+uint8  SC_Heartbeat_IsContentFault(uint8 id) { (void)id; return 0u; }
+Std_ReturnType SC_CAN_TransmitStatus(uint8 ecu, uint8 status) { (void)ecu; (void)status; return E_OK; }
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 #define MOCK_COM_MAX_SIGNALS 256u
 
@@ -129,6 +212,27 @@ void Dem_ReportErrorStatus(Dem_EventIdType EventId, Dem_EventStatusType EventSta
 {
     (void)EventId;
     (void)EventStatus;
+}
+
+Std_ReturnType Dem_GetEventStatus(Dem_EventIdType EventId, uint8* StatusPtr)
+{
+    if (StatusPtr != NULL_PTR) { *StatusPtr = 0u; }
+    (void)EventId;
+    return E_OK;
+}
+
+Std_ReturnType Dem_ClearAllDTCs(void) { return E_OK; }
+
+Std_ReturnType IoHwAb_ReadEStop(uint8* State)
+{
+    if (State != NULL_PTR) { *State = 0u; }
+    return E_OK;
+}
+
+Com_SignalQualityType Com_GetRxPduQuality(PduIdType RxPduId)
+{
+    (void)RxPduId;
+    return 0u;
 }
 
 uint8 Swc_VehicleState_GetState(void)
