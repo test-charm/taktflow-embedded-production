@@ -1,0 +1,75 @@
+buildscript {
+    repositories {
+        maven {
+            url "https://mirrors.huaweicloud.com/repository/maven"
+        }
+        maven {
+            url "https://plugins.gradle.org/m2/"
+        }
+    }
+    dependencies {
+        classpath("org.springframework.boot:spring-boot-gradle-plugin:2.4.4")
+        classpath "io.spring.gradle:dependency-management-plugin:1.0.10.RELEASE"
+        classpath "gradle.plugin.com.github.viswaramamoorthy:gradle-util-plugins:0.1.0-RELEASE"
+    }
+}
+
+apply plugin: 'io.spring.dependency-management'
+apply plugin: 'java'
+apply plugin: 'org.springframework.boot'
+apply plugin: 'war'
+apply plugin: "com.github.ManifestClasspath"
+
+repositories {
+    maven {
+        url "https://mirrors.huaweicloud.com/repository/maven"
+    }
+    mavenCentral()
+}
+
+configurations {
+    providedRuntime
+    cucumberRuntime {
+        extendsFrom testImplementation
+    }
+}
+
+sourceCompatibility = '17'
+targetCompatibility = '17'
+
+ext {
+    set('jfactoryDal', '1.0.0-alpha.21')
+}
+
+dependencies {
+    testAnnotationProcessor('org.projectlombok:lombok:1.18.32')
+    testImplementation('org.projectlombok:lombok:1.18.32')
+    testImplementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    testImplementation('org.springframework.boot:spring-boot-starter-test')
+    testImplementation("mysql:mysql-connector-java:8.0.13")
+    testImplementation("io.cucumber:cucumber-java:7.30.0")
+    testImplementation("io.cucumber:cucumber-spring:7.30.0")
+    testImplementation group: 'org.mock-server', name: 'mockserver-client-java', version: '5.13.2'
+    testImplementation "org.test-charm:jfactory:${jfactoryDal}"
+    testImplementation "org.test-charm:jfactory-cucumber:${jfactoryDal}"
+    testImplementation "org.test-charm:jfactory-repo-jpa:${jfactoryDal}"
+    testImplementation "org.test-charm:RESTful-cucumber:${jfactoryDal}"
+    testImplementation "org.test-charm:DAL-java:${jfactoryDal}"
+    testImplementation "org.test-charm:DAL-extension-basic:${jfactoryDal}"
+    testImplementation 'commons-fileupload:commons-fileupload:1.5'
+
+}
+
+task cucumber(type: JavaExec) {
+    dependsOn assemble, testClasses
+    main = "io.cucumber.core.cli.Main"
+    classpath = configurations.cucumberRuntime + sourceSets.main.output + sourceSets.test.output
+    environment "SPRING_PROFILES_ACTIVE", "test"
+    jvmArgs "-Dfile.encoding=UTF-8", "-Dsun.jnu.encoding=utf-8"
+    args = ['--plugin', 'pretty',
+            '--glue', 'org.testcharm',
+            '--glue', 'demo.testcharm',
+            project.hasProperty('file') ? project.file : 'src/test/resources']
+}
+
+tasks.bootWar { enabled = false }

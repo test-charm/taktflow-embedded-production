@@ -417,6 +417,16 @@ boolean dcan1_get_mailbox_data(uint8 mbIndex, uint8* data, uint8* dlc)
 #endif
 }
 
+boolean dcan1_get_diag_request(uint8* data, uint8* dlc)
+{
+    (void)data;
+    (void)dlc;
+    /* The POSIX SC build does not model the dedicated UDS mailbox path.
+     * Keep the symbol available so SC_CAN_GetDiagRequest links cleanly and
+     * report "no request pending" in SIL. */
+    return FALSE;
+}
+
 /* ==================================================================
  * CAN TX — send a frame on SocketCAN (SIL relay broadcast)
  * ================================================================== */

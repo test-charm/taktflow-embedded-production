@@ -84,7 +84,10 @@ ifeq ($(TARGET),sc)
 # --- SC: bare-metal TMS570, no AUTOSAR BSW ---
 CFLAGS += -I$(PLAT)/include -I$(ECU)/sc/include
 SC_SRCS = $(wildcard $(ECU)/sc/src/*.c) $(PLAT)/src/sc_hw_posix.c
-APP_SRCS = $(filter-out %_tms570.c %startup.S,$(SC_SRCS))
+# sc_os_cfg.c is an OSEK/bootstrap configuration stub. The current POSIX SC
+# build runs the cooperative main loop directly and does not link the
+# bootstrap OS objects that provide Os_Internal.h globals / APIs.
+APP_SRCS = $(filter-out %_tms570.c %startup.S %/sc_os_cfg.c,$(SC_SRCS))
 else
 # --- AUTOSAR BSW ECUs ---
 CFLAGS += $(BSW_INC) -I$(ECU)/$(TARGET)/include -I$(ECU)/$(TARGET)/cfg -I$(ECU)/$(TARGET)/cfg/platform_posix

@@ -84,3 +84,6 @@ tools/bench/*.local.toml
 tools/bench/*.csv
 tools/bench/__pycache__/
 tools/xtask/Cargo.lock
+
+# asdf
+.tool-versions

@@ -16,6 +16,7 @@ Runs on FAULT_PORT (default 8091).
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 
@@ -77,8 +78,52 @@ class TestRunBody(BaseModel):
     tests: list[str] | None = None
 
 
+class CvcPedalTorqueBody(BaseModel):
+    sensor1Pct: int
+    sensor2Pct: int
+    vehicleState: str
+    cycles: int
+
+
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
+_CVC_PEDAL_HARNESS = "/app/bin/cvc_pedal_harness"
+
+
+def _vehicle_state_value(name: str) -> int:
+    states = {
+        "INIT": 0,
+        "RUN": 1,
+        "DEGRADED": 2,
+        "LIMP": 3,
+        "SAFE_STOP": 4,
+        "SHUTDOWN": 5,
+    }
+    key = name.strip().upper()
+    if key not in states:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported vehicleState '{name}'",
+        )
+    return states[key]
+
+
+def _validate_percent(name: str, value: int) -> int:
+    if value < 0 or value > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} must be within 0..100",
+        )
+    return value
+
+
+def _validate_cycles(cycles: int) -> int:
+    if cycles <= 0 or cycles > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="cycles must be within 1..1000",
+        )
+    return cycles
 
 
 def _publish_lock_state() -> None:
@@ -596,6 +641,42 @@ def test_result():
     if _test_runner is None or _test_runner.last_result is None:
         return {"state": "idle", "results": []}
     return _test_runner.last_result
+
+
+@app.post("/api/test/asw/cvc/pedal-torque")
+def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
+    """Execute the real CVC pedal ASW chain in a native test harness."""
+    sensor1 = _validate_percent("sensor1Pct", body.sensor1Pct)
+    sensor2 = _validate_percent("sensor2Pct", body.sensor2Pct)
+    cycles = _validate_cycles(body.cycles)
+    vehicle_state = _vehicle_state_value(body.vehicleState)
+
+    try:
+        completed = subprocess.run(
+            [
+                _CVC_PEDAL_HARNESS,
+                str(sensor1),
+                str(sensor2),
+                str(vehicle_state),
+                str(cycles),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC pedal harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC pedal harness timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() if exc.stderr else exc.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC pedal harness failed") from exc
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC pedal harness returned invalid JSON") from exc
 
 
 def main():

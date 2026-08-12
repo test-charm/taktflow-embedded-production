@@ -1,0 +1,35 @@
+package demo.testcharm;
+
+import org.testcharm.cucumber.restful.RestfulStep;
+import org.testcharm.dal.Assertions;
+import io.cucumber.java.Before;
+import io.cucumber.spring.CucumberContextConfiguration;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.context.SpringBootContextLoader;
+import org.springframework.test.context.ContextConfiguration;
+
+import javax.annotation.PostConstruct;
+
+@ContextConfiguration(classes = {CucumberConfiguration.class}, loader = SpringBootContextLoader.class)
+@CucumberContextConfiguration
+public class ApplicationSteps {
+    private static final String CLIENT_ID = "taktflow-e2e-tests";
+
+    @Value("${testcharm.dal.dumpinput:true}")
+    private boolean dalDumpInput;
+
+    @Before
+    public void disableDALDump() {
+        Assertions.dumpInput(dalDumpInput);
+        restfulStep.header("X-Client-Id", CLIENT_ID);
+    }
+
+    @Autowired
+    private RestfulStep restfulStep;
+
+    @PostConstruct
+    public void setBaseUrl() {
+        restfulStep.setBaseUrl("http://127.0.0.1:8091");
+    }
+}
