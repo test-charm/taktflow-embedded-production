@@ -1,67 +1,67 @@
-# ASW E2E Mechanism — CVC Pedal to Torque_Request
+# ASW E2E 机制 — CVC 踏板到 Torque_Request
 
-## Goal
+## 目标
 
-This document explains how the current end-to-end test for the CVC ASW layer works.
+本文档解释当前 CVC ASW 层端到端测试的工作原理。
 
-The target is not the dashboard test runner or a system-level SIL scenario.  
-The target is the **CVC application-layer signal path**:
+目标不是仪表盘测试运行器或系统级 SIL 场景。  
+目标是 **CVC 应用层信号路径**：
 
 ```text
-Pedal Sensor 1/2
+踏板传感器 1/2
   → Swc_Pedal_MainFunction
-  → RTE torque / fault signals
+  → RTE 扭矩/故障信号
   → Swc_CvcCom_TransmitSchedule
-  → Torque_Request command signal
+  → Torque_Request 命令信号
 ```
 
-This is intentionally closer to the `panda` style:
+这有意更接近 `panda` 风格：
 
-- test from a readable feature file,
-- drive a dedicated test adapter,
-- execute real production C code,
-- assert ASW-facing outputs directly.
+- 从可读的 feature 文件测试，
+- 驱动专用测试适配器，
+- 执行真实的生产 C 代码，
+- 直接断言 ASW 面向输出。
 
 ---
 
-## Files
+## 文件
 
-### Feature and design
+### Feature 和设计
 
 - `e2e-tests/src/test/resources/features/cvc_pedal_torque_request.feature`
 - `e2e-tests/src/test/resources/test-design/cvc-pedal-torque-request-e2e.md`
 
-### API / harness
+### API / 测试框架
 
 - `gateway/fault_inject/app.py`
 - `gateway/fault_inject/native/cvc_pedal_harness.c`
 - `gateway/fault_inject/Dockerfile`
 
-### Production C code executed by the harness
+### 测试框架执行的生产 C 代码
 
 - `firmware/ecu/cvc/src/Swc_Pedal.c`
 - `firmware/ecu/cvc/src/Swc_CvcCom.c`
 
 ---
 
-## High-level architecture
+## 高层架构
 
 ```text
 [Cucumber feature]
   → [RESTful-cucumber POST]
   → [/api/test/asw/cvc/pedal-torque]
-  → [native c harness]
-  → [real CVC production C files]
-  → [JSON result]
-  → [DAL assertion]
+  → [原生 C 测试框架]
+  → [真实 CVC 生产 C 文件]
+  → [JSON 结果]
+  → [DAL 断言]
 ```
 
-More concretely:
+更具体地：
 
 ```text
 e2e-tests
   └─ POST /api/test/asw/cvc/pedal-torque
-       └─ fault_inject FastAPI endpoint
+       └─ fault_inject FastAPI 端点
             └─ subprocess.run("/app/bin/cvc_pedal_harness ...")
                  └─ Swc_Pedal.c
                  └─ Swc_CvcCom.c
@@ -70,35 +70,35 @@ e2e-tests
 
 ---
 
-## Why this is ASW E2E instead of system E2E
+## 为什么这是 ASW E2E 而非系统 E2E
 
-The current mechanism does **not** rely on:
+当前机制**不**依赖：
 
-- dashboard `run-sync` wrappers,
-- full SIL scenario orchestration,
-- multi-ECU state transitions,
-- MQTT verdict monitoring,
-- CAN bus observation to infer internal behavior.
+- 仪表盘 `run-sync` 包装器，
+- 完整的 SIL 场景编排，
+- 多 ECU 状态转换，
+- MQTT 判定监控，
+- 通过 CAN 总线观察推断内部行为。
 
-Instead it directly exercises:
+而是直接执行：
 
-1. **Pedal input handling**
-2. **Plausibility logic**
-3. **Ramp / torque mapping**
-4. **Vehicle-state mode limiting**
-5. **Torque_Request signal bridging into Com**
+1. **踏板输入处理**
+2. **合理性逻辑**
+3. **斜坡/扭矩映射**
+4. **车辆状态模式限制**
+5. **Torque_Request 信号桥接到 Com**
 
-So the test subject is the **ASW behavior itself**, not the dashboard API.
+因此测试对象是 **ASW 行为本身**，而非仪表盘 API。
 
 ---
 
-## Request/response contract
+## 请求/响应契约
 
-### Test endpoint
+### 测试端点
 
 `POST /api/test/asw/cvc/pedal-torque`
 
-### Request body
+### 请求体
 
 ```json
 {
@@ -109,7 +109,7 @@ So the test subject is the **ASW behavior itself**, not the dashboard API.
 }
 ```
 
-### Response body
+### 响应体
 
 ```json
 {
@@ -134,16 +134,16 @@ So the test subject is the **ASW behavior itself**, not the dashboard API.
 
 ---
 
-## Native harness implementation
+## 原生测试框架实现
 
-The native harness is `gateway/fault_inject/native/cvc_pedal_harness.c`.
+原生测试框架位于 `gateway/fault_inject/native/cvc_pedal_harness.c`。
 
-It links directly against the real production sources:
+它直接链接真实的生产源代码：
 
 - `Swc_Pedal.c`
 - `Swc_CvcCom.c`
 
-and provides minimal test doubles for:
+并为以下接口提供最小测试替身：
 
 - `IoHwAb_ReadPedalAngle`
 - `Rte_Read`
@@ -153,191 +153,191 @@ and provides minimal test doubles for:
 - `Dem_ReportErrorStatus`
 - `Swc_VehicleState_GetState`
 
-### Important point
+### 重要说明
 
-This is **not** a hand-reimplemented pedal algorithm.  
-The pedal logic is still executed by the real `Swc_Pedal_MainFunction`.
+这**不是**手工重新实现的踏板算法。  
+踏板逻辑仍然由真实的 `Swc_Pedal_MainFunction` 执行。
 
-The harness only provides:
+测试框架仅提供：
 
-1. input injection,
-2. required surrounding interfaces,
-3. result extraction.
+1. 输入注入，
+2. 所需的外围接口，
+3. 结果提取。
 
 ---
 
-## How pedal inputs are represented
+## 踏板输入如何表示
 
-The feature sends percentages (`0..100`).  
-The harness converts them to the raw 14-bit values expected by the production pedal SWC.
+feature 发送百分比（`0..100`）。  
+测试框架将其转换为生产踏板 SWC 期望的原始 14 位值。
 
 ```text
-sensor percent
-  → 14-bit raw AS5048A-style value
+传感器百分比
+  → 14 位原始 AS5048A 风格值
   → IoHwAb_ReadPedalAngle
   → Swc_Pedal_MainFunction
 ```
 
-This keeps the test readable while still entering the production code at the real abstraction level.
+这使测试保持可读性，同时仍在真实的抽象级别进入生产代码。
 
 ---
 
-## Why the harness adds a tiny input dither
+## 为什么测试框架添加微小的输入抖动
 
-`Swc_Pedal.c` contains a real **stuck sensor detector**.  
-If the harness feeds a perfectly constant raw value for too many cycles, the production code correctly classifies it as `STUCK`.
+`Swc_Pedal.c` 包含真实的**卡滞传感器检测器**。  
+如果测试框架在太多周期内输入完全恒定的原始值，生产代码会正确地将其分类为 `STUCK`。
 
-Real sensors usually have tiny natural jitter, so the harness adds a very small deterministic dither between cycles:
+真实传感器通常有微小的自然抖动，因此测试框架在周期之间添加非常小的确定性抖动：
 
 ```text
-base raw value
-  → base + 0
-  → base + 16
-  → base + 0
-  → base + 16
+基准原始值
+  → 基准 + 0
+  → 基准 + 16
+  → 基准 + 0
+  → 基准 + 16
   ...
 ```
 
-This is not changing the production logic.  
-It only prevents the test fixture from accidentally modeling an unrealistically perfect frozen sensor.
+这不会改变生产逻辑。  
+它只是防止测试夹具意外地模拟不切实际的完美冻结传感器。
 
 ---
 
-## Execution model
+## 执行模型
 
-The request executes these steps:
+请求执行以下步骤：
 
 ```text
-[Validate JSON inputs]
-  → [Map vehicleState string to enum]
-  → [Launch native harness binary]
-  → [Run N pedal cycles]
-  → [Collect RTE + Com outputs]
-  → [Return JSON]
+[验证 JSON 输入]
+  → [将 vehicleState 字符串映射为枚举]
+  → [启动原生测试框架二进制]
+  → [运行 N 个踏板周期]
+  → [收集 RTE + Com 输出]
+  → [返回 JSON]
 ```
 
-Inside the harness:
+测试框架内部：
 
 ```text
-[Init config/state]
+[初始化配置/状态]
   → [Swc_Pedal_Init]
   → [Swc_CvcCom_Init]
-  → repeat cycles:
-       [set pedal raw values]
+  → 重复周期：
+       [设置踏板原始值]
        [Swc_Pedal_MainFunction]
        [Swc_CvcCom_TransmitSchedule]
-  → [serialize outputs]
+  → [序列化输出]
 ```
 
 ---
 
-## Assertions currently covered
+## 当前覆盖的断言
 
-The feature currently validates 3 representative behaviors:
+feature 目前验证 3 种代表性行为：
 
-| Scenario | What it proves |
+| 场景 | 证明内容 |
 |---|---|
-| matching inputs in `RUN` | nominal pedal-to-torque generation |
-| mismatched inputs in `RUN` | plausibility fault zeros torque |
-| full pedal in `DEGRADED` | vehicle-state limit caps torque to 75% |
+| `RUN` 下匹配输入 | 标称踏板到扭矩生成 |
+| `RUN` 下不匹配输入 | 合理性故障将扭矩归零 |
+| `DEGRADED` 下满踏板 | 车辆状态限制将扭矩上限设为 75% |
 
-This gives first-pass coverage over:
+这提供了对以下方面的首次覆盖：
 
-- normal path
-- safety fault path
-- degraded mode limiting path
+- 正常路径
+- 安全故障路径
+- 降级模式限制路径
 
 ---
 
-## Build mechanism
+## 构建机制
 
-The harness binary is compiled into the `fault-inject` image during Docker build.
+测试框架二进制在 Docker 构建期间编译到 `fault-inject` 镜像中。
 
-The relevant Dockerfile steps:
+相关的 Dockerfile 步骤：
 
-1. install `gcc` and `libc6-dev`
-2. copy `firmware/`
-3. compile `cvc_pedal_harness.c` together with `Swc_Pedal.c` and `Swc_CvcCom.c`
-4. expose the binary as:
+1. 安装 `gcc` 和 `libc6-dev`
+2. 复制 `firmware/`
+3. 将 `cvc_pedal_harness.c` 与 `Swc_Pedal.c` 和 `Swc_CvcCom.c` 一起编译
+4. 将二进制暴露为：
 
 ```text
 /app/bin/cvc_pedal_harness
 ```
 
-At runtime, the FastAPI endpoint invokes that binary with `subprocess.run(...)`.
+运行时，FastAPI 端点使用 `subprocess.run(...)` 调用该二进制。
 
 ---
 
-## Relationship to SIL
+## 与 SIL 的关系
 
-This test does **not** require the full dashboard verdict runner, but it still reuses the `fault-inject` service as the stable HTTP host for test-only APIs.
+此测试**不需要**完整的仪表盘判定运行器，但它仍复用 `fault-inject` 服务作为测试专用 API 的稳定 HTTP 宿主。
 
-So the layering is:
+因此分层为：
 
 ```text
-SIL infrastructure
-  └─ fault_inject service
-       └─ ASW test-only API
-            └─ native harness
-                 └─ production CVC ASW code
+SIL 基础设施
+  └─ fault_inject 服务
+       └─ ASW 测试专用 API
+            └─ 原生测试框架
+                 └─ 生产 CVC ASW 代码
 ```
 
-That means:
+这意味着：
 
-- we keep the existing SIL environment,
-- but the actual assertion target is much narrower and more ASW-specific.
+- 我们保留现有的 SIL 环境，
+- 但实际的断言目标更窄且更 ASW 特定。
 
 ---
 
-## Why this approach was chosen
+## 为什么选择这种方法
 
-Compared with wrapping existing system tests:
+与包装现有系统测试相比：
 
-| Option | Result |
+| 选项 | 结果 |
 |---|---|
-| wrap dashboard runner | tests API/system orchestration |
-| assert CAN/MQTT only | black-box, less ASW-specific |
-| native ASW harness behind test API | direct, readable, production-code focused |
+| 包装仪表盘运行器 | 测试 API/系统编排 |
+| 仅断言 CAN/MQTT | 黑盒，ASW 特定性较差 |
+| 测试 API 后的原生 ASW 框架 | 直接、可读、聚焦生产代码 |
 
-The current approach was chosen because it is the best match for the requested:
+选择当前方法是因为它最匹配以下要求：
 
-- **simple but representative**
-- **ASW-focused**
-- **panda-like E2E style**
-
----
-
-## Current limitations
-
-1. The harness currently covers only the **CVC pedal -> Torque_Request** chain.
-2. It does not yet verify:
-   - full CAN frame packing,
-   - E2E CRC fields,
-   - multi-ECU reactions,
-   - plant response.
-3. Those belong to higher layers and should stay in SIL/HIL tests.
-
-This split is intentional:
-
-- **ASW E2E** checks logic and signal outputs,
-- **SIL/HIL** check networked/system behavior.
+- **简单但有代表性**
+- **聚焦 ASW**
+- **类 panda E2E 风格**
 
 ---
 
-## Recommended next extensions
+## 当前限制
 
-After this first ASW E2E, the next good candidates are:
+1. 测试框架目前仅覆盖 **CVC 踏板 -> Torque_Request** 链。
+2. 尚未验证：
+   - 完整 CAN 帧打包，
+   - E2E CRC 字段，
+   - 多 ECU 反应，
+   - plant 响应。
+3. 这些属于更高层级，应保留在 SIL/HIL 测试中。
 
-1. `Pedal fault latch clear`
-2. `VehicleState mode = SAFE_STOP -> torque = 0`
-3. `CVC EStop -> VehicleState transition`
-4. `Battery / overtemp -> CVC mode limiting interaction`
+这种划分是有意的：
 
-These can reuse the same pattern:
+- **ASW E2E** 检查逻辑和信号输出，
+- **SIL/HIL** 检查网络/系统行为。
+
+---
+
+## 推荐的后续扩展
+
+在此首个 ASW E2E 之后，下一个好的候选是：
+
+1. `踏板故障锁存清除`
+2. `车辆状态模式 = SAFE_STOP -> 扭矩 = 0`
+3. `CVC 紧急停止 -> 车辆状态转换`
+4. `电池/过温 -> CVC 模式限制交互`
+
+这些可以复用相同的模式：
 
 ```text
 feature
-  → test-only API
-  → native harness
-  → production C modules
+  → 测试专用 API
+  → 原生测试框架
+  → 生产 C 模块
 ```

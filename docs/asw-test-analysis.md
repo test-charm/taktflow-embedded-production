@@ -1,17 +1,17 @@
-# ASW Existing Test Analysis
+# ASW 现有测试分析
 
-## Scope
+## 范围
 
-This document summarizes the current test landscape around the AUTOSAR-style ASW layer in this repository, with emphasis on:
+本文档总结了本仓库中围绕 AUTOSAR 风格 ASW 层的当前测试全景，重点关注：
 
-1. what test layers already exist,
-2. how each test layer works,
-3. what inputs/outputs each layer validates,
-4. which ASW functions already have direct tests,
-5. which ASW functions are only covered indirectly by integration/SIL/HIL/PIL tests,
-6. where the main gaps are if we want to add `panda/e2e-tests`-style ASW end-to-end tests.
+1. 已有哪些测试层级，
+2. 各测试层级的工作原理，
+3. 各层级验证的输入/输出，
+4. 哪些 ASW 函数已有直接测试，
+5. 哪些 ASW 函数仅通过集成/SIL/HIL/PIL 测试间接覆盖，
+6. 如果要增加 `panda/e2e-tests` 风格的 ASW 端到端测试，主要缺口在哪里。
 
-The analysis is based on the current repository structure under:
+分析基于以下目录中的当前仓库结构：
 
 - `firmware/ecu/*/src`
 - `firmware/ecu/*/test`
@@ -25,417 +25,417 @@ The analysis is based on the current repository structure under:
 
 ---
 
-## Executive summary
+## 执行摘要
 
-The repository already has **broad test coverage**, but the coverage is distributed across several layers:
+本仓库已有**广泛的测试覆盖**，但覆盖分布在多个层级：
 
-- **ASW/SWC unit tests**: strong coverage for most ECU application components
-- **BSW unit tests**: substantial coverage for Com/E2E/Det/WdgM/IoHwAb/Rte and related services
-- **BSW integration tests**: real module-chain tests through Com/PduR/CanIf/E2E
-- **POSIX/vCAN integration tests**: multi-ECU process-level tests
-- **SIL/HIL/PIL tests**: scenario and bench tests that validate CAN-visible behavior, timing, fault reaction, and diagnostics
+- **ASW/SWC 单元测试**：对大多数 ECU 应用组件有较强覆盖
+- **BSW 单元测试**：对 Com/E2E/Det/WdgM/IoHwAb/Rte 及相关服务有大量覆盖
+- **BSW 集成测试**：通过 Com/PduR/CanIf/E2E 的真实模块链测试
+- **POSIX/vCAN 集成测试**：多 ECU 进程级测试
+- **SIL/HIL/PIL 测试**：验证 CAN 可见行为、时序、故障响应和诊断的场景及台架测试
 
-What is **missing today** is not test volume, but a **`panda/e2e-tests`-style ASW-facing test adapter layer**:
+**目前缺失的**不是测试量，而是一个 **`panda/e2e-tests` 风格的 ASW 适配层**：
 
-- no `.feature` + step-definition style BDD layer,
-- no JNA/native test shim for ASW internals,
-- no ASW-oriented DSL that expresses functional behavior as `Given/When/Then`.
+- 没有 `.feature` + 步骤定义风格的 BDD 层，
+- 没有针对 ASW 内部的 JNA/原生测试 shim，
+- 没有以 `Given/When/Then` 表达功能行为的 ASW 领域特定语言。
 
-In other words, the repo already validates many **effects** of ASW behavior, but it does not yet offer a unified **readable ASW E2E harness** comparable to `panda/e2e-tests`.
-
----
-
-## Current test inventory
-
-| Layer | Location | Count | Primary purpose |
-|---|---|---:|---|
-| ECU ASW/SWC unit tests | `firmware/ecu/*/test/` | 69 files | Directly validate application components with Unity + mocks |
-| BSW unit tests | `test/unit/bsw/` | 40 files | Validate individual BSW modules and generated negative/full-path cases |
-| BSW integration tests | `test/framework/test_int_*.c` | 11 files | Validate real module chains such as E2E -> Com -> PduR -> CanIf |
-| POSIX multi-ECU integration | `test/integration/` | 8 files | Run POSIX ECU binaries on `vcan0` and validate bus-visible integration behavior |
-| SIL scenario tests | `test/sil/scenarios/` | 16 YAML scenarios | Multi-ECU Docker/software-in-the-loop system scenarios |
-| SIL hop-by-hop tests | `test/sil/*.py` | 4 Python tests | Follow specific signal/fault chains step by step |
-| HIL scenario/tests | `test/hil/scenarios/`, `test/hil/test_*.py` | 37 YAML + 11 Python | Validate physical ECU behavior on real CAN and mixed benches |
-| PIL scenarios | `test/pil/scenarios/` | 5 YAML scenarios | Validate one real DUT with injected peer heartbeats/environment |
-| MIL | `test/mil/` | skeleton only | Directory exists, but no comparable executable MIL suite was found |
+换句话说，仓库已经验证了 ASW 行为的许多**效果**，但尚未提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**。
 
 ---
 
-## Comparison with `panda/e2e-tests`
+## 当前测试清单
 
-The reference project `panda/e2e-tests` is structurally different:
+| 层级 | 位置 | 数量 | 主要目的 |
+|---|---:|---|
+| ECU ASW/SWC 单元测试 | `firmware/ecu/*/test/` | 69 个文件 | 使用 Unity + mock 直接验证应用组件 |
+| BSW 单元测试 | `test/unit/bsw/` | 40 个文件 | 验证单个 BSW 模块及生成的负向/全路径用例 |
+| BSW 集成测试 | `test/framework/test_int_*.c` | 11 个文件 | 验证真实模块链，如 E2E -> Com -> PduR -> CanIf |
+| POSIX 多 ECU 集成 | `test/integration/` | 8 个文件 | 在 `vcan0` 上运行 POSIX ECU 二进制，验证总线可见的集成行为 |
+| SIL 场景测试 | `test/sil/scenarios/` | 16 个 YAML 场景 | 多 ECU Docker/软件在环系统场景 |
+| SIL 逐跳测试 | `test/sil/*.py` | 4 个 Python 测试 | 逐步跟踪特定信号/故障链 |
+| HIL 场景/测试 | `test/hil/scenarios/`, `test/hil/test_*.py` | 37 个 YAML + 11 个 Python | 在真实 CAN 和混合台架上验证物理 ECU 行为 |
+| PIL 场景 | `test/pil/scenarios/` | 5 个 YAML 场景 | 验证一个真实 DUT，注入模拟的对等心跳/环境 |
+| MIL | `test/mil/` | 仅有骨架 | 目录存在，但未找到可比较的可执行 MIL 套件 |
 
-| Aspect | `panda/e2e-tests` | Current repository |
+---
+
+## 与 `panda/e2e-tests` 的对比
+
+参考项目 `panda/e2e-tests` 在结构上有显著不同：
+
+| 方面 | `panda/e2e-tests` | 当前仓库 |
 |---|---|---|
-| Test expression | Java + Cucumber `.feature` + step definitions | C/Unity, Python scripts, YAML scenarios |
-| ASW/internal access | JNA/native library adapter (`BodyPandaClient`, `PandaClient`) | Mostly black-box or mock-based access; no equivalent ASW adapter layer |
-| Scenario style | BDD business-readable steps | CAN/system/fault oriented test scripts and YAML |
-| Internal assertions | Easy to assert internal state via native shim | Usually inferred via mocks, CAN traffic, DTCs, states, or process behavior |
-| Current scale | 47 feature files / 392 scenarios | More infrastructure variety, less ASW-readable BDD presentation |
+| 测试表达 | Java + Cucumber `.feature` + 步骤定义 | C/Unity、Python 脚本、YAML 场景 |
+| ASW/内部访问 | JNA/原生库适配器（`BodyPandaClient`、`PandaClient`） | 主要是黑盒或基于 mock 的访问；无等效的 ASW 适配层 |
+| 场景风格 | BDD 业务可读步骤 | 面向 CAN/系统/故障的测试脚本和 YAML |
+| 内部断言 | 通过原生 shim 轻松断言内部状态 | 通常通过 mock、CAN 流量、DTC、状态或进程行为推断 |
+| 当前规模 | 47 个 feature 文件 / 392 个场景 | 基础设施种类更多，但 ASW 可读的 BDD 呈现较少 |
 
-**Implication:** this repo already has strong validation infrastructure, but if the goal is “ASW end-to-end tests similar to `panda/e2e-tests`”, the missing piece is a **new harness style**, not a lack of lower-level tests.
+**含义：** 本仓库已有强大的验证基础设施，但如果目标是"类似于 `panda/e2e-tests` 的 ASW 端到端测试"，缺失的部分是**新的测试框架风格**，而不是底层测试的不足。
 
 ---
 
-## Detailed explanation of each current test layer
+## 各测试层级的详细说明
 
-### 1. ECU ASW/SWC unit tests
+### 1. ECU ASW/SWC 单元测试
 
-These are the closest existing tests to the AUTOSAR ASW layer. They typically:
+这是最接近 AUTOSAR ASW 层的现有测试。它们通常：
 
-- compile a single SWC or application module,
-- replace RTE/IoHwAb/Com/Dem/BswM/Dio/Pwm/etc. with mocks,
-- feed the SWC controlled inputs,
-- validate output writes, state transitions, faults, or actuator commands.
+- 编译单个 SWC 或应用模块，
+- 用 mock 替换 RTE/IoHwAb/Com/Dem/BswM/Dio/Pwm 等，
+- 向 SWC 输入受控的输入，
+- 验证输出写入、状态转换、故障或执行器命令。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `firmware/ecu/*/test/test_*.c` |
-| **Examples** | `firmware/ecu/cvc/test/test_Swc_VehicleState_asild.c`, `firmware/ecu/fzc/test/test_Swc_Steering_asild.c`, `firmware/ecu/rzc/test/test_Swc_Motor_asild.c` |
-| **Typical inputs** | mocked `Rte_Read()` values, fake sensor values, fault bits, heartbeat status, command timeouts, CAN-related shadow data, simulated hardware readbacks |
-| **Typical outputs** | `Rte_Write()` values, `Com_SendSignal()` payloads, `Dem_ReportErrorStatus()` calls, `BswM_RequestMode()` calls, `Pwm_SetDutyCycle()`/`Dio_WriteChannel()` actuator outputs |
-| **Validation points** | state machine transitions, plausibility checks, output clamping, timeout handling, derating, watchdog gating, heartbeat handling, DTC escalation, scheduler tables |
+| **位置** | `firmware/ecu/*/test/test_*.c` |
+| **示例** | `firmware/ecu/cvc/test/test_Swc_VehicleState_asild.c`、`firmware/ecu/fzc/test/test_Swc_Steering_asild.c`、`firmware/ecu/rzc/test/test_Swc_Motor_asild.c` |
+| **典型输入** | 模拟的 `Rte_Read()` 值、虚假传感器值、故障位、心跳状态、命令超时、CAN 相关影子数据、模拟的硬件回读 |
+| **典型输出** | `Rte_Write()` 值、`Com_SendSignal()` 载荷、`Dem_ReportErrorStatus()` 调用、`BswM_RequestMode()` 调用、`Pwm_SetDutyCycle()`/`Dio_WriteChannel()` 执行器输出 |
+| **验证点** | 状态机转换、合理性检查、输出钳位、超时处理、降额、看门狗门控、心跳处理、DTC 升级、调度器表 |
 
-**Concrete examples**
+**具体示例**
 
 1. `test_Swc_VehicleState_asild.c`
-   - **Input**: pedal fault, CAN timeout, E-stop, SC kill, motor/brake/steering faults, battery state
-   - **Output**: vehicle state, heartbeat mode mirror, BswM mode requests, DEM reports
-   - **Checks**: INIT/RUN/DEGRADED/LIMP/SAFE_STOP/SHUTDOWN transitions and latching behavior
+   - **输入**：踏板故障、CAN 超时、紧急停止、SC 切断、电机/制动/转向故障、电池状态
+   - **输出**：车辆状态、心跳模式镜像、BswM 模式请求、DEM 报告
+   - **检查**：INIT/RUN/DEGRADED/LIMP/SAFE_STOP/SHUTDOWN 转换及锁存行为
 
 2. `test_Swc_Steering_asild.c`
-   - **Input**: steering command, measured steering angle, timeout, SPI read failure, vehicle mode
-   - **Output**: PWM duty, disable pins, steering fault signal, DEM event
-   - **Checks**: angle-to-PWM mapping, range checks, rate limiting, return-to-center, fault latch clearing
+   - **输入**：转向命令、实测转向角度、超时、SPI 读取失败、车辆模式
+   - **输出**：PWM 占空比、禁用引脚、转向故障信号、DEM 事件
+   - **检查**：角度到 PWM 映射、范围检查、速率限制、回中、故障锁存清除
 
 3. `test_Swc_Motor_asild.c`
-   - **Input**: torque command, estop, vehicle state, overcurrent/temp flags, timeout
-   - **Output**: H-bridge PWM duty, motor direction, enable pins, torque echo, motor fault code
-   - **Checks**: torque limiting, shoot-through prevention, dead-time, command timeout recovery, safe-state behavior
+   - **输入**：扭矩命令、紧急停止、车辆状态、过流/温度标志、超时
+   - **输出**：H 桥 PWM 占空比、电机方向、使能引脚、扭矩回显、电机故障码
+   - **检查**：扭矩限制、直通防护、死区时间、命令超时恢复、安全状态行为
 
-### 2. BSW unit tests
+### 2. BSW 单元测试
 
-These tests target standalone BSW modules and generated negative/full-path tests.
+这些测试针对独立的 BSW 模块和生成的负向/全路径测试。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/unit/bsw/` |
-| **Examples** | `test_E2E_asild.c`, `test_Com_asild.c`, `test_CanIf_asild.c`, `test_WdgM_asild.c`, `test_XCP_security_generated.c` |
-| **Typical inputs** | API calls, PDUs, signal IDs, timers/counters, invalid parameters, generated corner-case vectors |
-| **Typical outputs** | return codes, updated internal state, protected/check results, routed PDU contents, DET/DEM notifications |
-| **Validation points** | AUTOSAR service behavior, error handling, negative cases, timeout handling, E2E CRC/state-machine behavior, generated boundary cases |
+| **位置** | `test/unit/bsw/` |
+| **示例** | `test_E2E_asild.c`、`test_Com_asild.c`、`test_CanIf_asild.c`、`test_WdgM_asild.c`、`test_XCP_security_generated.c` |
+| **典型输入** | API 调用、PDU、信号 ID、定时器/计数器、无效参数、生成的边界用例向量 |
+| **典型输出** | 返回码、更新的内部状态、保护/检查结果、路由后的 PDU 内容、DET/DEM 通知 |
+| **验证点** | AUTOSAR 服务行为、错误处理、负向用例、超时处理、E2E CRC/状态机行为、生成的边界用例 |
 
-**Concrete examples**
+**具体示例**
 
 1. `test_E2E_asild.c`
-   - **Input**: payload bytes, DataId, alive counters, intentionally corrupted frames
-   - **Output**: E2E protect/check status
-   - **Checks**: CRC validity, alive counter delta rules, error detection behavior
+   - **输入**：载荷字节、DataId、存活计数器、故意损坏的帧
+   - **输出**：E2E 保护/检查状态
+   - **检查**：CRC 有效性、存活计数器增量规则、错误检测行为
 
 2. `test_Com_asild.c`
-   - **Input**: signal write/read requests and PDU timing behavior
-   - **Output**: signal shadow values, TX/RX handling results
-   - **Checks**: packing/unpacking, periodic behavior, timeout/quality handling
+   - **输入**：信号写/读请求和 PDU 定时行为
+   - **输出**：信号影子值、TX/RX 处理结果
+   - **检查**：打包/解包、周期性行为、超时/质量处理
 
 3. `test_WdgM_asild.c`
-   - **Input**: checkpoint progress / timeout conditions
-   - **Output**: supervision state and reaction
-   - **Checks**: alive/deadline supervision and fault escalation
+   - **输入**：检查点进度 / 超时条件
+   - **输出**：监控状态和反应
+   - **检查**：存活/截止时间监控和故障升级
 
-### 3. BSW integration tests
+### 3. BSW 集成测试
 
-These tests link multiple real BSW modules together and only mock the minimum hardware edge.
+这些测试将多个真实的 BSW 模块链接在一起，只模拟最小的硬件边界。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/framework/test_int_*.c` |
-| **Examples** | `test_int_e2e_chain_asild.c`, `test_int_dem_to_dcm_asilc.c`, `test_int_wdgm_supervision_asild.c`, `test_int_safe_state_asild.c` |
-| **Typical inputs** | protected payloads, simulated CAN loopback, fault injection, mode requests, watchdog misses |
-| **Typical outputs** | routed RX signals, safe-state mode changes, DCM-visible DTC behavior, bus-off handling |
-| **Validation points** | module-to-module interfaces, real dataflow across BSW layers, Dem/DCM linkage, WdgM/BswM reaction chains |
+| **位置** | `test/framework/test_int_*.c` |
+| **示例** | `test_int_e2e_chain_asild.c`、`test_int_dem_to_dcm_asilc.c`、`test_int_wdgm_supervision_asild.c`、`test_int_safe_state_asild.c` |
+| **典型输入** | 受保护的载荷、模拟的 CAN 环回、故障注入、模式请求、看门狗未命中 |
+| **典型输出** | 路由后的 RX 信号、安全状态模式变更、DCM 可见的 DTC 行为、总线关闭处理 |
+| **验证点** | 模块间接口、跨 BSW 层的真实数据流、Dem/DCM 联动、WdgM/BswM 反应链 |
 
-**Concrete example: `test_int_e2e_chain_asild.c`**
+**具体示例：`test_int_e2e_chain_asild.c`**
 
-- **Input**: payload protected by E2E, sent through Com -> CanIf, captured by mocked `Can_Write()`, then looped back via `CanIf_RxIndication()`
-- **Output**: RX signal available in Com receive side
-- **Checks**: full E2E -> Com -> PduR -> CanIf roundtrip and receive-side validation
+- **输入**：经 E2E 保护的载荷，通过 Com -> CanIf 发送，由模拟的 `Can_Write()` 捕获，然后通过 `CanIf_RxIndication()` 环回
+- **输出**：RX 信号在 Com 接收侧可用
+- **检查**：完整的 E2E -> Com -> PduR -> CanIf 往返及接收侧验证
 
-### 4. POSIX/vCAN integration tests
+### 4. POSIX/vCAN 集成测试
 
-These tests run ECU binaries as POSIX processes and observe integration behavior on `vcan0`.
+这些测试将 ECU 二进制作为 POSIX 进程运行，观察在 `vcan0` 上的集成行为。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/integration/` |
-| **Examples** | `layer4/test_cvc_full.py`, `layer5/test_cvc_fzc_dual.py`, `layer5/test_cvc_fzc_full.py`, `layer6/test_sc_integration.py` |
-| **Typical inputs** | ECU process start/stop, raw CAN traffic on `vcan0`, process kill/restart, timing collection |
-| **Typical outputs** | CAN IDs on the bus, E2E headers, alive counters, periodic message rates, process survival after peer loss |
-| **Validation points** | TX presence, DLC correctness, E2E/DataId presence, bus timing, inter-ECU behavior after peer failure |
+| **位置** | `test/integration/` |
+| **示例** | `layer4/test_cvc_full.py`、`layer5/test_cvc_fzc_dual.py`、`layer5/test_cvc_fzc_full.py`、`layer6/test_sc_integration.py` |
+| **典型输入** | ECU 进程启动/停止、`vcan0` 上的原始 CAN 流量、进程 kill/重启、时序采集 |
+| **典型输出** | 总线上的 CAN ID、E2E 头部、存活计数器、周期性消息速率、对等节点丢失后进程存活状态 |
+| **验证点** | TX 存在性、DLC 正确性、E2E/DataId 存在性、总线时序、对等节点故障后的 ECU 间行为 |
 
-**Concrete examples**
+**具体示例**
 
 1. `test_cvc_full.py`
-   - **Input**: run only `cvc_posix`
-   - **Output**: CVC heartbeat, vehicle state, torque, steer, brake, body command, virtual sensor frames
-   - **Checks**: TX presence, E2E DataId, alive increment, message rates, standalone degraded behavior
+   - **输入**：仅运行 `cvc_posix`
+   - **输出**：CVC 心跳、车辆状态、扭矩、转向、制动、车身命令、虚拟传感器帧
+   - **检查**：TX 存在性、E2E DataId、存活计数器递增、消息速率、独立降级行为
 
 2. `test_cvc_fzc_dual.py`
-   - **Input**: run `cvc_posix` + `fzc_posix`, then kill CVC
-   - **Output**: shared heartbeats, steering command/status traffic, FZC continued survival
-   - **Checks**: bidirectional communication, FZC heartbeat persistence after CVC death
+   - **输入**：运行 `cvc_posix` + `fzc_posix`，然后终止 CVC
+   - **输出**：共享心跳、转向命令/状态流量、FZC 持续存活
+   - **检查**：双向通信、CVC 终止后 FZC 心跳持续性
 
 3. `test_sc_integration.py`
-   - **Input**: run SC with other ECU processes, then kill one peer
-   - **Output**: `SC_Status` 0x013, heartbeat monitoring reaction
-   - **Checks**: SC E2E, peer heartbeat visibility, SC fault observation
+   - **输入**：与其它 ECU 进程一起运行 SC，然后终止一个对等节点
+   - **输出**：`SC_Status` 0x013、心跳监控反应
+   - **检查**：SC E2E、对等心跳可见性、SC 故障观察
 
-### 5. SIL scenario tests
+### 5. SIL 场景测试
 
-These are the current highest-value fully software-based system tests.
+这是当前最高价值的全软件系统测试。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/sil/scenarios/*.yaml`, `test/sil/run_sil.sh`, `test/sil/verdict_checker.py` |
-| **Examples** | `sil_003_emergency_stop.yaml`, `sil_009_e2e_corruption.yaml`, `sil_006_battery_undervoltage.yaml` |
-| **Typical inputs** | YAML `setup`/`steps`: state wait, scenario injection, raw CAN injection, Docker stop/start, fault API / MQTT actions |
-| **Typical outputs** | CAN messages, vehicle state transitions, motor RPM, DTC broadcasts, MQTT-visible effects, result logs |
-| **Validation points** | end-to-end safety chains, fault reaction latency, safe-state transitions, ECU recovery, E2E rejection, DTC confirmation |
+| **位置** | `test/sil/scenarios/*.yaml`、`test/sil/run_sil.sh`、`test/sil/verdict_checker.py` |
+| **示例** | `sil_003_emergency_stop.yaml`、`sil_009_e2e_corruption.yaml`、`sil_006_battery_undervoltage.yaml` |
+| **典型输入** | YAML `setup`/`steps`：状态等待、场景注入、原始 CAN 注入、Docker 停止/启动、故障 API / MQTT 操作 |
+| **典型输出** | CAN 消息、车辆状态转换、电机 RPM、DTC 广播、MQTT 可见效果、结果日志 |
+| **验证点** | 端到端安全链、故障响应延迟、安全状态转换、ECU 恢复、E2E 拒绝、DTC 确认 |
 
-**Concrete examples**
+**具体示例**
 
 1. `sil_003_emergency_stop.yaml`
-   - **Input**: normal drive setup + E-stop injection
-   - **Output**: SAFE_STOP state, E-stop broadcast 0x001, zero torque, steering center, motor shutdown, ongoing heartbeats
-   - **Checks**: full ASIL-D safety chain from CVC detection through multi-ECU reaction
+   - **输入**：正常驾驶设置 + 紧急停止注入
+   - **输出**：SAFE_STOP 状态、紧急停止广播 0x001、零扭矩、转向居中、电机关闭、持续心跳
+   - **检查**：从 CVC 检测到多 ECU 反应的完整 ASIL-D 安全链
 
 2. `sil_009_e2e_corruption.yaml`
-   - **Input**: stop CVC and inject corrupted 0x100 frames
-   - **Output**: RZC rejects frames, motor does not move, DTC 0xE601 broadcast, vehicle returns to RUN after restart
-   - **Checks**: Com-layer E2E rejection and Dem escalation
+   - **输入**：停止 CVC 并注入损坏的 0x100 帧
+   - **输出**：RZC 拒绝帧、电机不移动、DTC 0xE601 广播、重启后车辆返回 RUN
+   - **检查**：Com 层 E2E 拒绝和 Dem 升级
 
 3. `sil_006_battery_undervoltage.yaml`
-   - **Input**: sustained low-voltage simulation
-   - **Output**: battery state change, CVC mode reaction, safe handling
-   - **Checks**: end-to-end undervoltage handling
+   - **输入**：持续的低压模拟
+   - **输出**：电池状态变化、CVC 模式反应、安全处理
+   - **检查**：端到端低压处理
 
-### 6. SIL hop-by-hop tests
+### 6. SIL 逐跳测试
 
-These Python tests are narrower than the YAML scenarios and focus on one signal chain at a time.
+这些 Python 测试比 YAML 场景更窄，每次关注一个信号链。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/sil/test_battery_chain.py`, `test/sil/test_overtemp_hops.py`, `test/sil/test_vsm_fault_transitions.py` |
-| **Examples** | battery, overtemperature, vehicle-state-machine fault transitions |
-| **Typical inputs** | MQTT injections, bus polling, state reset/recovery |
-| **Typical outputs** | decoded CAN signal values, DTCs, state transitions |
-| **Validation points** | each hop in the signal path, intermediate observability, negative tests before fault injection |
+| **位置** | `test/sil/test_battery_chain.py`、`test/sil/test_overtemp_hops.py`、`test/sil/test_vsm_fault_transitions.py` |
+| **示例** | 电池、过温、车辆状态机故障转换 |
+| **典型输入** | MQTT 注入、总线轮询、状态重置/恢复 |
+| **典型输出** | 解码后的 CAN 信号值、DTC、状态转换 |
+| **验证点** | 信号路径中的每一跳、中间可观察性、故障注入前的负向测试 |
 
-### 7. HIL tests
+### 7. HIL 测试
 
-These validate behavior on physical ECUs or mixed physical/vECU benches.
+验证物理 ECU 或混合物理/vECU 台架上的行为。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/hil/test_*.py`, `test/hil/scenarios/*.yaml`, `test/hil/hil_runner.py` |
-| **Examples** | `test_hil_e2e.py`, `test_hil_uds.py`, `test_hil_scheduler.py`, `test_hil_body.py` |
-| **Typical inputs** | real CAN bus traffic on `can0`, UDS requests, MQTT or test-bench injection, physical startup behavior |
-| **Typical outputs** | live CAN frames, UDS responses, timing statistics, DTC broadcasts, ECU mode/state changes |
-| **Validation points** | real bus timing, CRC correctness on actual frames, diagnostic stacks on hardware, mixed-bench interactions |
+| **位置** | `test/hil/test_*.py`、`test/hil/scenarios/*.yaml`、`test/hil/hil_runner.py` |
+| **示例** | `test_hil_e2e.py`、`test_hil_uds.py`、`test_hil_scheduler.py`、`test_hil_body.py` |
+| **典型输入** | `can0` 上的真实 CAN 总线流量、UDS 请求、MQTT 或测试台架注入、物理启动行为 |
+| **典型输出** | 实时 CAN 帧、UDS 响应、时序统计、DTC 广播、ECU 模式/状态变更 |
+| **验证点** | 真实总线时序、实际帧上的 CRC 正确性、硬件诊断栈、混合台架交互 |
 
-**Concrete examples**
+**具体示例**
 
 1. `test_hil_e2e.py`
-   - **Input**: observe physical `Vehicle_State` and heartbeat frames
-   - **Output**: live frame bytes and alive counters
-   - **Checks**: CRC-8 and alive counter progression on real hardware
+   - **输入**：观察物理 `Vehicle_State` 和心跳帧
+   - **输出**：实时帧字节和存活计数器
+   - **检查**：真实硬件上的 CRC-8 和存活计数器递增
 
 2. `test_hil_uds.py`
-   - **Input**: ISO-TP/UDS requests to physical CVC/FZC/RZC
-   - **Output**: ECU responses on 0x7E8/0x7E9/0x7EA
-   - **Checks**: tester present, session control, DID reads, ECU reset, diagnostic interoperability
+   - **输入**：向物理 CVC/FZC/RZC 发送 ISO-TP/UDS 请求
+   - **输出**：0x7E8/0x7E9/0x7EA 上的 ECU 响应
+   - **检查**：测试仪存在、会话控制、DID 读取、ECU 复位、诊断互操作性
 
 3. `test_hil_scheduler.py`
-   - **Input**: collect real frame timestamps
-   - **Output**: timing statistics
-   - **Checks**: mean period, jitter, missed-tick style gaps, cross-ECU phase diversity
+   - **输入**：采集真实帧时间戳
+   - **输出**：时序统计
+   - **检查**：平均周期、抖动、丢帧式间隙、跨 ECU 相位多样性
 
-### 8. PIL tests
+### 8. PIL 测试
 
-PIL validates one real ECU as DUT while the harness simulates its peers.
+PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
-| Item | Details |
+| 项目 | 详情 |
 |---|---|
-| **Where** | `test/pil/scenarios/*.yaml`, `test/pil/pil_runner.py`, `test/pil/heartbeat_injector.py` |
-| **Examples** | `pil_005_cvc_e2e_integrity.yaml` |
-| **Typical inputs** | injected peer heartbeats, DUT selection, scenario steps, CAN observation |
-| **Typical outputs** | DUT heartbeat/state/command frames, E2E correctness, state transitions |
-| **Validation points** | one-ECU behavior under controlled network simulation, heartbeat timeout handling, E2E integrity |
+| **位置** | `test/pil/scenarios/*.yaml`、`test/pil/pil_runner.py`、`test/pil/heartbeat_injector.py` |
+| **示例** | `pil_005_cvc_e2e_integrity.yaml` |
+| **典型输入** | 注入的对等心跳、DUT 选择、场景步骤、CAN 观察 |
+| **典型输出** | DUT 心跳/状态/命令帧、E2E 正确性、状态转换 |
+| **验证点** | 受控网络模拟下的单 ECU 行为、心跳超时处理、E2E 完整性 |
 
-**Concrete example: `pil_005_cvc_e2e_integrity.yaml`**
+**具体示例：`pil_005_cvc_e2e_integrity.yaml`**
 
-- **Input**: wait for CVC RUN state and observe 0x010/0x100/0x101/0x102/0x103
-- **Output**: multiple consecutive TX frames from physical DUT
-- **Checks**: E2E CRC validity and alive-counter increment across critical CVC messages
+- **输入**：等待 CVC RUN 状态并观察 0x010/0x100/0x101/0x102/0x103
+- **输出**：物理 DUT 的多个连续 TX 帧
+- **检查**：关键 CVC 消息上的 E2E CRC 有效性和存活计数器递增
 
 ### 9. MIL
 
-`test/mil/` currently contains a placeholder overview and folders, but the repository does not currently expose a comparable executable MIL test suite for ASW behavior.
+`test/mil/` 目前包含占位概述和文件夹，但仓库当前未提供针对 ASW 行为的可比较可执行 MIL 测试套件。
 
-**Practical meaning:** MIL is presently not a usable starting point for ASW E2E expansion.
-
----
-
-## ASW coverage summary by ECU
-
-| ECU | Source files in `src/` | Direct ASW test files | Coverage note |
-|---|---:|---:|---|
-| BCM | 6 | 5 | Strong direct SWC coverage; `bcm_main.c` is only indirect |
-| CVC | 14 | 13 | Strong direct SWC coverage; `main.c` is mainly integration/SIL/HIL covered |
-| FZC | 13 | 11 | Strong direct coverage; `Swc_FzcSensorFeeder.c` and `main.c` are indirect |
-| ICU | 3 | 4 | Good practical coverage; some tests target CAN/main helpers not split into separate source files |
-| RZC | 14 | 13 | Strong direct coverage; `Swc_RzcSensorFeeder.c` and `main.c` are indirect |
-| SC | 19 | 17 | Good direct coverage but several runtime glue files are only indirectly covered |
-| TCU | 5 | 6 | Good direct coverage; CAN/main helpers are tested even when not split into standalone files |
+**实际意义：** MIL 目前不是 ASW E2E 扩展的可用起点。
 
 ---
 
-## ASW function-to-test mapping
+## 按 ECU 的 ASW 覆盖摘要
 
-The tables below focus on **application-layer functions/components**, not generated cfg files.
+| ECU | `src/` 中的源文件 | 直接 ASW 测试文件 | 覆盖说明 |
+|---:|---:|---:|---|
+| BCM | 6 | 5 | 直接 SWC 覆盖强；`bcm_main.c` 仅间接覆盖 |
+| CVC | 14 | 13 | 直接 SWC 覆盖强；`main.c` 主要由集成/SIL/HIL 覆盖 |
+| FZC | 13 | 11 | 直接覆盖强；`Swc_FzcSensorFeeder.c` 和 `main.c` 为间接覆盖 |
+| ICU | 3 | 4 | 实际覆盖良好；部分测试针对 CAN/main 辅助函数，未拆分为独立源文件 |
+| RZC | 14 | 13 | 直接覆盖强；`Swc_RzcSensorFeeder.c` 和 `main.c` 为间接覆盖 |
+| SC | 19 | 17 | 直接覆盖良好，但多个运行时胶水文件仅间接覆盖 |
+| TCU | 5 | 6 | 直接覆盖良好；CAN/main 辅助函数即使未拆分为独立文件也有测试 |
+
+---
+
+## ASW 函数到测试的映射
+
+以下表格关注**应用层函数/组件**，而非生成的 cfg 文件。
 
 ### BCM
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_BcmCan.c` | BCM CAN init, state RX, command RX, status TX | `test_Swc_BcmCan_qm.c` | `test_hil_body.py` | vehicle/body CAN frames, init parameters | RX parsing, TX heartbeat/body status, init behavior |
-| `Swc_BcmMain.c` | BCM 10ms main loop | `test_Swc_BcmMain_qm.c` | `test_hil_body.py` | periodic loop invocation, pending CAN data | loop scheduling, process/transmit order |
-| `Swc_DoorLock.c` | manual/auto door locking | `test_Swc_DoorLock_qm.c` | indirect via BCM main/body tests | lock/unlock requests, vehicle state | lock state changes and auto-lock logic |
-| `Swc_Indicators.c` | turn/hazard logic | `test_Swc_Indicators_qm.c` | indirect via BCM main/body tests | turn/hazard requests, timing | flash pattern and hazard precedence |
-| `Swc_Lights.c` | headlamp/tail-light control | `test_Swc_Lights_qm.c` | indirect via BCM main/body tests | lighting commands and state | lamp output selection |
-| `bcm_main.c` | BCM entry point | none | `test_hil_body.py`, SIL startup scenarios | process startup and main-loop lifecycle | bring-up and bench-visible interaction only |
+| `Swc_BcmCan.c` | BCM CAN 初始化、状态 RX、命令 RX、状态 TX | `test_Swc_BcmCan_qm.c` | `test_hil_body.py` | 车辆/车身 CAN 帧、初始化参数 | RX 解析、TX 心跳/车身状态、初始化行为 |
+| `Swc_BcmMain.c` | BCM 10ms 主循环 | `test_Swc_BcmMain_qm.c` | `test_hil_body.py` | 周期性循环调用、待处理 CAN 数据 | 循环调度、处理/发送顺序 |
+| `Swc_DoorLock.c` | 手动/自动门锁 | `test_Swc_DoorLock_qm.c` | 通过 BCM 主/车身测试间接覆盖 | 锁定/解锁请求、车辆状态 | 锁状态变化和自动锁逻辑 |
+| `Swc_Indicators.c` | 转向/危险灯逻辑 | `test_Swc_Indicators_qm.c` | 通过 BCM 主/车身测试间接覆盖 | 转向/危险灯请求、时序 | 闪烁模式和危险灯优先级 |
+| `Swc_Lights.c` | 前照灯/尾灯控制 | `test_Swc_Lights_qm.c` | 通过 BCM 主/车身测试间接覆盖 | 灯光命令和状态 | 灯具输出选择 |
+| `bcm_main.c` | BCM 入口点 | 无 | `test_hil_body.py`、SIL 启动场景 | 进程启动和主循环生命周期 | 仅启动和台架可见交互 |
 
 ### CVC
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Ssd1306.c` | OLED driver | `test_Ssd1306_qm.c` | indirect via `test_Swc_Dashboard_qm.c` | init/render/clear calls | display buffer/I2C-oriented behavior |
-| `Swc_CanMonitor.c` | CAN loss detection and recovery | `test_Swc_CanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`, heartbeat/integration tests | timeout/bus-loss conditions | fault detection and recovery path |
-| `Swc_CvcCom.c` | CVC RX/TX + E2E bridge | `test_Swc_CvcCom_asild.c` | `test_cvc_full.py`, `test_cvc_fzc_full.py`, SIL startup/E2E scenarios | RX frames, scheduling ticks, RTE values | signal routing, E2E-protected TX, periodic transmit |
-| `Swc_CvcDcm.c` | UDS/DID/DTC routing | `test_Swc_CvcDcm_qm.c` | `test_hil_uds.py` | UDS service requests | DID responses, DTC exposure, service dispatch |
-| `Swc_Dashboard.c` | OLED dashboard rendering | `test_Swc_Dashboard_qm.c` | indirect via startup/display paths | vehicle state, speed, faults | rendered state/fault presentation |
-| `Swc_EStop.c` | E-stop debounce, latch, broadcast | `test_Swc_EStop_asilb.c` | `sil_003_emergency_stop.yaml` | GPIO/button-like E-stop signal | latch, CAN 0x001, safe-state trigger |
-| `Swc_Heartbeat.c` | heartbeat TX/RX monitor | `test_Swc_Heartbeat_asilc.c` | `test_cvc_full.py`, `test_hil_heartbeat.py`, `pil_005_cvc_e2e_integrity.yaml` | peer heartbeat status, periodic tick | heartbeat payload, timeout detection, alive counter |
-| `Swc_Nvm.c` | DTC persistence/calibration NVM | `test_Swc_Nvm_asild.c` | indirect via DCM/fault scenarios | stored fault/calibration records | persistence/restore behavior |
-| `Swc_Pedal.c` | dual pedal processing and torque map | `test_Swc_Pedal_asild.c` | `sil_002_pedal_ramp.yaml` | pedal sensor values, plausibility faults, mode limits | torque request, fault detection, clamping |
-| `Swc_Scheduler.c` | runnable table and timing config | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py` | scheduler table contents / periods | runnable configuration correctness |
-| `Swc_SelfTest.c` | startup self-test sequence | `test_Swc_SelfTest_asild.c` | `test_hil_selftest.py`, startup SIL/HIL flows | self-test prereqs and failures | pass/fail sequencing and gating |
-| `Swc_VehicleState.c` | authoritative CVC VSM | `test_Swc_VehicleState_asild.c` | `test_vsm_fault_transitions.py`, `test_hil_vsm.py`, SIL battery/overtemp/E-stop scenarios | faults, comm loss, E-stop, battery, peer state | state transitions, latching, mode outputs |
-| `Swc_Watchdog.c` | external watchdog feed gate | `test_Swc_Watchdog_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`, `test_hil_wdgm.py` | alive conditions / missing conditions | WDI feed enable/disable and fault gating |
-| `main.c` | CVC entry point and periodic loop | none | `test_cvc_full.py`, SIL startup/power-cycle scenarios, HIL/PIL startup paths | process/board startup | end-to-end bring-up and periodic behavior |
+| `Ssd1306.c` | OLED 驱动 | `test_Ssd1306_qm.c` | 通过 `test_Swc_Dashboard_qm.c` 间接覆盖 | 初始化/渲染/清除调用 | 显示缓冲区/I2C 面向行为 |
+| `Swc_CanMonitor.c` | CAN 丢失检测和恢复 | `test_Swc_CanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、心跳/集成测试 | 超时/总线丢失条件 | 故障检测和恢复路径 |
+| `Swc_CvcCom.c` | CVC RX/TX + E2E 桥接 | `test_Swc_CvcCom_asild.c` | `test_cvc_full.py`、`test_cvc_fzc_full.py`、SIL 启动/E2E 场景 | RX 帧、调度节拍、RTE 值 | 信号路由、E2E 保护 TX、周期性发送 |
+| `Swc_CvcDcm.c` | UDS/DID/DTC 路由 | `test_Swc_CvcDcm_qm.c` | `test_hil_uds.py` | UDS 服务请求 | DID 响应、DTC 暴露、服务分发 |
+| `Swc_Dashboard.c` | OLED 仪表盘渲染 | `test_Swc_Dashboard_qm.c` | 通过启动/显示路径间接覆盖 | 车辆状态、速度、故障 | 渲染后的状态/故障呈现 |
+| `Swc_EStop.c` | 紧急停止消抖、锁存、广播 | `test_Swc_EStop_asilb.c` | `sil_003_emergency_stop.yaml` | GPIO/按钮式紧急停止信号 | 锁存、CAN 0x001、安全状态触发 |
+| `Swc_Heartbeat.c` | 心跳 TX/RX 监控 | `test_Swc_Heartbeat_asilc.c` | `test_cvc_full.py`、`test_hil_heartbeat.py`、`pil_005_cvc_e2e_integrity.yaml` | 对等心跳状态、周期性节拍 | 心跳载荷、超时检测、存活计数器 |
+| `Swc_Nvm.c` | DTC 持久化/校准 NVM | `test_Swc_Nvm_asild.c` | 通过 DCM/故障场景间接覆盖 | 存储的故障/校准记录 | 持久化/恢复行为 |
+| `Swc_Pedal.c` | 双踏板处理和扭矩映射 | `test_Swc_Pedal_asild.c` | `sil_002_pedal_ramp.yaml` | 踏板传感器值、合理性故障、模式限制 | 扭矩请求、故障检测、钳位 |
+| `Swc_Scheduler.c` | 可运行实体表和时序配置 | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py` | 调度器表内容/周期 | 可运行实体配置正确性 |
+| `Swc_SelfTest.c` | 启动自检序列 | `test_Swc_SelfTest_asild.c` | `test_hil_selftest.py`、启动 SIL/HIL 流程 | 自检前提条件和失败 | 通过/失败顺序和门控 |
+| `Swc_VehicleState.c` | 权威 CVC VSM | `test_Swc_VehicleState_asild.c` | `test_vsm_fault_transitions.py`、`test_hil_vsm.py`、SIL 电池/过温/紧急停止场景 | 故障、通信丢失、紧急停止、电池、对等状态 | 状态转换、锁存、模式输出 |
+| `Swc_Watchdog.c` | 外部看门狗喂狗门控 | `test_Swc_Watchdog_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py` | 存活条件/缺失条件 | WDI 喂狗使能/禁用和故障门控 |
+| `main.c` | CVC 入口点和周期性循环 | 无 | `test_cvc_full.py`、SIL 启动/电源循环场景、HIL/PIL 启动路径 | 进程/板卡启动 | 端到端启动和周期性行为 |
 
 ### FZC
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_Brake.c` | brake servo control | `test_Swc_Brake_asild.c` | `sil_003_emergency_stop.yaml`, `test_cvc_fzc_full.py` | brake command, mode, motor-cutoff conditions | PWM/servo behavior, clamp/safe-state handling |
-| `Swc_Buzzer.c` | warning buzzer patterns | `test_Swc_Buzzer_qm.c` | indirect via FZC main | zone/state warning conditions | tone/pattern behavior |
-| `Swc_FzcCanMonitor.c` | FZC CAN loss detection | `test_Swc_FzcCanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`, integration heartbeat tests | bus-off/silence/error conditions | fault detection / degraded path |
-| `Swc_FzcCom.c` | FZC RX/TX + E2E | `test_Swc_FzcCom_asild.c` | `test_cvc_fzc_dual.py`, `test_cvc_fzc_full.py`, HIL body/heartbeat | peer command frames, local status signals | routing, E2E DataId, TX status frames |
-| `Swc_FzcDcm.c` | FZC diagnostics | `test_Swc_FzcDcm_qm.c` | `test_hil_uds.py` | UDS requests | service handling and DID behavior |
-| `Swc_FzcNvm.c` | FZC DTC/calibration persistence | `test_Swc_FzcNvm_asild.c` | indirect via diag/safety flows | stored calibration and DTC records | persistence behavior |
-| `Swc_FzcSafety.c` | local safety aggregation/watchdog | `test_Swc_FzcSafety_asild.c` | HIL watchdog/self-test flows | local faults, watchdog, self-test status | aggregated fault behavior and safety reaction |
-| `Swc_FzcScheduler.c` | runnable timing configuration | `test_Swc_FzcScheduler_asild.c` | `test_hil_scheduler.py`, `hil_061_scheduler_cross_ecu.yaml` | schedule table definitions | period/priority/WCET correctness |
-| `Swc_FzcSensorFeeder.c` | plant-sim virtual sensors -> IoHwAb | none | `sil_008_sensor_disagreement.yaml`, `sil_011_steering_sensor_failure.yaml` | injected virtual sensor data | indirect steering/lidar behavior only |
-| `Swc_Heartbeat.c` | FZC heartbeat | `test_Swc_Heartbeat_asilc.c` | `test_cvc_fzc_dual.py`, `test_hil_heartbeat.py`, scheduler HIL tests | periodic tick, fault bitmask | 50ms heartbeat payload and cadence |
-| `Swc_Lidar.c` | TFMini obstacle detection | `test_Swc_Lidar_asilc.c` | `test_cvc_fzc_full.py`, SIL sensor scenarios | lidar frames / obstacle distances | frame parsing, zones, fault handling, CAN status |
-| `Swc_Steering.c` | steering servo control | `test_Swc_Steering_asild.c` | `sil_008_sensor_disagreement.yaml`, `sil_011_steering_sensor_failure.yaml`, `test_cvc_fzc_dual.py` | steering command, measured angle, timeout, SPI fault | PWM mapping, rate limit, RTC, fault latching |
-| `main.c` | FZC entry point | none | `test_cvc_fzc_dual.py`, `test_cvc_fzc_full.py`, SIL/HIL startup flows | process startup | bring-up and integrated operation |
+| `Swc_Brake.c` | 刹车伺服控制 | `test_Swc_Brake_asild.c` | `sil_003_emergency_stop.yaml`、`test_cvc_fzc_full.py` | 刹车命令、模式、电机切断条件 | PWM/伺服行为、钳位/安全状态处理 |
+| `Swc_Buzzer.c` | 警告蜂鸣器模式 | `test_Swc_Buzzer_qm.c` | 通过 FZC main 间接覆盖 | 区域/状态警告条件 | 音调/模式行为 |
+| `Swc_FzcCanMonitor.c` | FZC CAN 丢失检测 | `test_Swc_FzcCanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、集成心跳测试 | 总线关闭/静默/错误条件 | 故障检测/降级路径 |
+| `Swc_FzcCom.c` | FZC RX/TX + E2E | `test_Swc_FzcCom_asild.c` | `test_cvc_fzc_dual.py`、`test_cvc_fzc_full.py`、HIL 车身/心跳 | 对等命令帧、本地状态信号 | 路由、E2E DataId、TX 状态帧 |
+| `Swc_FzcDcm.c` | FZC 诊断 | `test_Swc_FzcDcm_qm.c` | `test_hil_uds.py` | UDS 请求 | 服务处理和 DID 行为 |
+| `Swc_FzcNvm.c` | FZC DTC/校准持久化 | `test_Swc_FzcNvm_asild.c` | 通过诊断/安全流程间接覆盖 | 存储的校准和 DTC 记录 | 持久化行为 |
+| `Swc_FzcSafety.c` | 本地安全聚合/看门狗 | `test_Swc_FzcSafety_asild.c` | HIL 看门狗/自检流程 | 本地故障、看门狗、自检状态 | 聚合故障行为和安全反应 |
+| `Swc_FzcScheduler.c` | 可运行实体时序配置 | `test_Swc_FzcScheduler_asild.c` | `test_hil_scheduler.py`、`hil_061_scheduler_cross_ecu.yaml` | 调度器表定义 | 周期/优先级/WCET 正确性 |
+| `Swc_FzcSensorFeeder.c` | plant-sim 虚拟传感器 -> IoHwAb | 无 | `sil_008_sensor_disagreement.yaml`、`sil_011_steering_sensor_failure.yaml` | 注入的虚拟传感器数据 | 仅间接转向/激光雷达行为 |
+| `Swc_Heartbeat.c` | FZC 心跳 | `test_Swc_Heartbeat_asilc.c` | `test_cvc_fzc_dual.py`、`test_hil_heartbeat.py`、调度器 HIL 测试 | 周期性节拍、故障位掩码 | 50ms 心跳载荷和节奏 |
+| `Swc_Lidar.c` | TFMini 障碍物检测 | `test_Swc_Lidar_asilc.c` | `test_cvc_fzc_full.py`、SIL 传感器场景 | 激光雷达帧/障碍物距离 | 帧解析、区域、故障处理、CAN 状态 |
+| `Swc_Steering.c` | 转向伺服控制 | `test_Swc_Steering_asild.c` | `sil_008_sensor_disagreement.yaml`、`sil_011_steering_sensor_failure.yaml`、`test_cvc_fzc_dual.py` | 转向命令、实测角度、超时、SPI 故障 | PWM 映射、速率限制、RTC、故障锁存 |
+| `main.c` | FZC 入口点 | 无 | `test_cvc_fzc_dual.py`、`test_cvc_fzc_full.py`、SIL/HIL 启动流程 | 进程启动 | 启动和集成操作 |
 
 ### ICU
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_Dashboard.c` | instrument cluster display/gauges | `test_Swc_Dashboard_qm.c` | `test_hil_body.py` | vehicle state, battery/current, fault summaries | dashboard text/gauge presentation |
-| `Swc_DtcDisplay.c` | DTC circular buffer display logic | `test_Swc_DtcDisplay_qm.c` | indirect via ICU main/body flows | incoming DTC data | buffering and display list behavior |
-| `icu_main.c` | ICU main entry point, CAN, 50ms loop | `test_Swc_IcuMain_qm.c`, `test_Swc_IcuCan_qm.c` | `test_hil_body.py` | startup, CAN init, loop tick | bench-visible startup and gauge update loop |
+| `Swc_Dashboard.c` | 仪表盘显示/仪表 | `test_Swc_Dashboard_qm.c` | `test_hil_body.py` | 车辆状态、电池/电流、故障摘要 | 仪表盘文本/仪表呈现 |
+| `Swc_DtcDisplay.c` | DTC 循环缓冲区显示逻辑 | `test_Swc_DtcDisplay_qm.c` | 通过 ICU main/车身流程间接覆盖 | 传入的 DTC 数据 | 缓冲和显示列表行为 |
+| `icu_main.c` | ICU 主入口点、CAN、50ms 循环 | `test_Swc_IcuMain_qm.c`、`test_Swc_IcuCan_qm.c` | `test_hil_body.py` | 启动、CAN 初始化、循环节拍 | 台架可见的启动和仪表更新循环 |
 
 ### RZC
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_Battery.c` | battery voltage monitoring | `test_Swc_Battery_qm.c` | `test_battery_chain.py`, `test_hil_battery.py`, `sil_006_battery_undervoltage.yaml` | battery voltage samples / injected low-voltage conditions | averaged voltage, CAN 0x303, state reaction |
-| `Swc_CurrentMonitor.c` | motor current sampling/filtering | `test_Swc_CurrentMonitor_asila.c` | `sil_007_overcurrent_motor.yaml`, `test_hil_overtemp.py` | current sensor samples / fault thresholds | averaged current, overcurrent indication |
-| `Swc_Encoder.c` | speed/RPM and stall logic | `test_Swc_Encoder_asilc.c` | indirect via motor chain tests | encoder pulses / direction | RPM, direction, stall detection |
-| `Swc_Heartbeat.c` | RZC heartbeat | `test_Swc_Heartbeat_asilc.c` | `test_hil_heartbeat.py`, integration/scheduler tests | periodic tick and fault mask | 50ms heartbeat payload and timing |
-| `Swc_Motor.c` | H-bridge motor control | `test_Swc_Motor_asild.c` | `sil_007_overcurrent_motor.yaml`, `sil_003_emergency_stop.yaml`, `test_hil_overtemp.py` | torque command, estop, overcurrent/temp, vehicle state | PWM duty, direction, enable, safe-state shutdown |
-| `Swc_RzcCom.c` | RZC RX/TX + E2E | `test_Swc_RzcCom_asild.c` | `sil_009_e2e_corruption.yaml`, startup/system bus tests | peer command frames, local status values | routing, E2E check/protect, timeout handling |
-| `Swc_RzcDcm.c` | RZC diagnostics | `test_Swc_RzcDcm_qm.c` | `test_hil_uds.py` | UDS requests | DID and diagnostic responses |
-| `Swc_RzcNvm.c` | DTC persistence/freeze-frame | `test_Swc_RzcNvm_asild.c` | indirect via DTC flows | stored DTC and freeze-frame records | CRC/persistence behavior |
-| `Swc_RzcSafety.c` | local safety/watchdog/CAN-loss monitor | `test_Swc_RzcSafety_asild.c` | `test_hil_wdgm.py`, heartbeat/loss scenarios | watchdog and local faults | safe reaction and fault aggregation |
-| `Swc_RzcScheduler.c` | scheduler table | `test_Swc_RzcScheduler_asild.c` | `test_hil_scheduler.py` | runnable definitions | timing/priority correctness |
-| `Swc_RzcSelfTest.c` | startup self-test | `test_Swc_RzcSelfTest_asild.c` | `test_hil_selftest.py` | startup check conditions | self-test gate and failure handling |
-| `Swc_RzcSensorFeeder.c` | virtual sensor feeder for SIL | none | `test_battery_chain.py`, `test_overtemp_hops.py`, `sil_006_battery_undervoltage.yaml`, `sil_010_overtemp_motor.yaml` | injected virtual battery/temp/current values | indirect downstream SWC behavior only |
-| `Swc_TempMonitor.c` | NTC temperature monitoring / derating | `test_Swc_TempMonitor_asila.c` | `test_overtemp_hops.py`, `test_hil_overtemp.py`, `sil_010_overtemp_motor.yaml` | temperature samples and thresholds | stepped derating, overtemp fault/output |
-| `main.c` | RZC entry point | none | SIL/HIL startup flows and integration tests | startup/periodic loop | bring-up and integrated operation |
+| `Swc_Battery.c` | 电池电压监控 | `test_Swc_Battery_qm.c` | `test_battery_chain.py`、`test_hil_battery.py`、`sil_006_battery_undervoltage.yaml` | 电池电压采样/注入的低压条件 | 平均电压、CAN 0x303、状态反应 |
+| `Swc_CurrentMonitor.c` | 电机电流采样/滤波 | `test_Swc_CurrentMonitor_asila.c` | `sil_007_overcurrent_motor.yaml`、`test_hil_overtemp.py` | 电流传感器采样/故障阈值 | 平均电流、过流指示 |
+| `Swc_Encoder.c` | 速度/RPM 和堵转逻辑 | `test_Swc_Encoder_asilc.c` | 通过电机链测试间接覆盖 | 编码器脉冲/方向 | RPM、方向、堵转检测 |
+| `Swc_Heartbeat.c` | RZC 心跳 | `test_Swc_Heartbeat_asilc.c` | `test_hil_heartbeat.py`、集成/调度器测试 | 周期性节拍和故障掩码 | 50ms 心跳载荷和时序 |
+| `Swc_Motor.c` | H 桥电机控制 | `test_Swc_Motor_asild.c` | `sil_007_overcurrent_motor.yaml`、`sil_003_emergency_stop.yaml`、`test_hil_overtemp.py` | 扭矩命令、紧急停止、过流/温度、车辆状态 | PWM 占空比、方向、使能、安全状态关断 |
+| `Swc_RzcCom.c` | RZC RX/TX + E2E | `test_Swc_RzcCom_asild.c` | `sil_009_e2e_corruption.yaml`、启动/系统总线测试 | 对等命令帧、本地状态值 | 路由、E2E 检查/保护、超时处理 |
+| `Swc_RzcDcm.c` | RZC 诊断 | `test_Swc_RzcDcm_qm.c` | `test_hil_uds.py` | UDS 请求 | DID 和诊断响应 |
+| `Swc_RzcNvm.c` | DTC 持久化/冻结帧 | `test_Swc_RzcNvm_asild.c` | 通过 DTC 流程间接覆盖 | 存储的 DTC 和冻结帧记录 | CRC/持久化行为 |
+| `Swc_RzcSafety.c` | 本地安全/看门狗/CAN 丢失监控 | `test_Swc_RzcSafety_asild.c` | `test_hil_wdgm.py`、心跳/丢失场景 | 看门狗和本地故障 | 安全反应和故障聚合 |
+| `Swc_RzcScheduler.c` | 调度器表 | `test_Swc_RzcScheduler_asild.c` | `test_hil_scheduler.py` | 可运行实体定义 | 时序/优先级正确性 |
+| `Swc_RzcSelfTest.c` | 启动自检 | `test_Swc_RzcSelfTest_asild.c` | `test_hil_selftest.py` | 启动检查条件 | 自检门控和失败处理 |
+| `Swc_RzcSensorFeeder.c` | SIL 虚拟传感器馈线 | 无 | `test_battery_chain.py`、`test_overtemp_hops.py`、`sil_006_battery_undervoltage.yaml`、`sil_010_overtemp_motor.yaml` | 注入的虚拟电池/温度/电流值 | 仅间接下游 SWC 行为 |
+| `Swc_TempMonitor.c` | NTC 温度监控/降额 | `test_Swc_TempMonitor_asila.c` | `test_overtemp_hops.py`、`test_hil_overtemp.py`、`sil_010_overtemp_motor.yaml` | 温度采样和阈值 | 阶梯降额、过温故障/输出 |
+| `main.c` | RZC 入口点 | 无 | SIL/HIL 启动流程和集成测试 | 启动/周期性循环 | 启动和集成操作 |
 
 ### SC
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `sc_can.c` | listen-only CAN driver | `test_sc_can_asild.c` | `test_sc_integration.py`, HIL heartbeat/E2E | CAN frames and driver states | RX path, listen-only behavior |
-| `sc_e2e.c` | SC-side E2E CRC validation | `test_sc_e2e_asild.c` | `test_hil_e2e.py`, `sil_009_e2e_corruption.yaml` | frame bytes / corrupted E2E data | CRC check validity |
-| `sc_esm.c` | ESM lockstep error handler | `test_sc_esm_asilc.c` | indirect via SC runtime | ESM fault conditions | lockstep error response |
-| `sc_eth.c` | bench Ethernet driver | `test_sc_eth.c` | bench telemetry flows | descriptor/frame input | descriptor parsing and bounds |
-| `sc_eth_rx_dispatch.c` | UDP RX dispatch | none | `test_sc_xcp_eth.c` | UDP packet classification | indirect dispatch/XCP path |
-| `sc_eth_telemetry.c` | UDP telemetry producer | `test_sc_eth_telemetry.c` | bench telemetry flows | runtime telemetry state | telemetry frame contents |
-| `sc_eth_udp.c` | IPv4/UDP encoder | `test_sc_eth_udp.c` | bench telemetry/XCP flows | payload and endpoint data | Ethernet/IPv4/UDP encoding |
-| `sc_heartbeat.c` | peer heartbeat supervision | `test_sc_heartbeat_asilc.c` | `test_sc_integration.py`, `test_hil_heartbeat.py` | peer heartbeat presence/loss | timeout detection and supervision state |
-| `sc_led.c` | fault LED panel | `test_sc_led_qm.c` | indirect via SC fault flows | SC fault state | LED output pattern |
-| `sc_main.c` | SC cooperative main loop | `test_sc_main_asild.c` | `test_sc_integration.py`, `sil_005_watchdog_timeout_cvc.yaml` | startup sequence and main-loop hooks | initialization order and loop behavior |
-| `sc_monitoring.c` | SC_Status broadcast | none | `test_sc_integration.py` | internal SC monitoring state | 0x013 payload visibility and E2E on system bus |
-| `sc_os_cfg.c` | OSEK task/alarm config | none | indirect via SC startup/timing | periodic task/alarm config | only indirectly exercised |
-| `sc_plausibility.c` | torque-vs-current cross-check | `test_sc_plausibility_asilc.c` | indirect via safety scenarios | torque/current combinations | plausibility failure handling |
-| `sc_relay.c` | kill-relay control | `test_sc_relay_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`, `test_sc_integration.py` | relay request / fault state | relay energize/de-energize logic |
-| `sc_selftest.c` | startup/runtime self-test | `test_sc_selftest_asild.c` | SC startup sequences | self-test conditions | startup/runtime self-test handling |
-| `sc_startup.S` | TMS570 startup assembly | none | no clear dedicated test found | boot/startup context | currently not directly unit tested |
-| `sc_state.c` | SC runtime state machine | `test_sc_state_asild.c` | `test_sc_integration.py` | peer failure / fault combinations | SC mode transitions |
-| `sc_uds_shim.c` | HIL-only UDS shim | none | no clear dedicated HIL test found | diagnostic alias traffic | currently not directly covered |
-| `sc_watchdog.c` | external watchdog feed control | `test_sc_watchdog_asild.c` | `test_hil_wdgm.py` | watchdog conditions | feed enable/disable behavior |
-| `sc_xcp_eth.c` | XCP-over-Ethernet slave | `test_sc_xcp_eth.c` | bench telemetry/XCP flows | UDP/XCP commands | minimal XCP service path |
+| `sc_can.c` | 仅监听 CAN 驱动 | `test_sc_can_asild.c` | `test_sc_integration.py`、HIL 心跳/E2E | CAN 帧和驱动状态 | RX 路径、仅监听行为 |
+| `sc_e2e.c` | SC 侧 E2E CRC 验证 | `test_sc_e2e_asild.c` | `test_hil_e2e.py`、`sil_009_e2e_corruption.yaml` | 帧字节/损坏的 E2E 数据 | CRC 检查有效性 |
+| `sc_esm.c` | ESM 锁步错误处理器 | `test_sc_esm_asilc.c` | 通过 SC 运行时间接覆盖 | ESM 故障条件 | 锁步错误响应 |
+| `sc_eth.c` | 台架以太网驱动 | `test_sc_eth.c` | 台架遥测流程 | 描述符/帧输入 | 描述符解析和边界 |
+| `sc_eth_rx_dispatch.c` | UDP RX 分发 | 无 | `test_sc_xcp_eth.c` | UDP 数据包分类 | 间接分发/XCP 路径 |
+| `sc_eth_telemetry.c` | UDP 遥测生产者 | `test_sc_eth_telemetry.c` | 台架遥测流程 | 运行时遥测状态 | 遥测帧内容 |
+| `sc_eth_udp.c` | IPv4/UDP 编码器 | `test_sc_eth_udp.c` | 台架遥测/XCP 流程 | 载荷和端点数据 | 以太网/IPv4/UDP 编码 |
+| `sc_heartbeat.c` | 对等心跳监控 | `test_sc_heartbeat_asilc.c` | `test_sc_integration.py`、`test_hil_heartbeat.py` | 对等心跳存在/丢失 | 超时检测和监控状态 |
+| `sc_led.c` | 故障 LED 面板 | `test_sc_led_qm.c` | 通过 SC 故障流程间接覆盖 | SC 故障状态 | LED 输出模式 |
+| `sc_main.c` | SC 协作式主循环 | `test_sc_main_asild.c` | `test_sc_integration.py`、`sil_005_watchdog_timeout_cvc.yaml` | 启动序列和主循环钩子 | 初始化顺序和循环行为 |
+| `sc_monitoring.c` | SC_Status 广播 | 无 | `test_sc_integration.py` | 内部 SC 监控状态 | 系统总线上的 0x013 载荷可见性和 E2E |
+| `sc_os_cfg.c` | OSEK 任务/告警配置 | 无 | 通过 SC 启动/时序间接覆盖 | 周期性任务/告警配置 | 仅间接执行 |
+| `sc_plausibility.c` | 扭矩-电流交叉检查 | `test_sc_plausibility_asilc.c` | 通过安全场景间接覆盖 | 扭矩/电流组合 | 合理性失败处理 |
+| `sc_relay.c` | 切断继电器控制 | `test_sc_relay_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_sc_integration.py` | 继电器请求/故障状态 | 继电器吸合/断开逻辑 |
+| `sc_selftest.c` | 启动/运行时自检 | `test_sc_selftest_asild.c` | SC 启动序列 | 自检条件 | 启动/运行时自检处理 |
+| `sc_startup.S` | TMS570 启动汇编 | 无 | 未找到明确的专用测试 | 引导/启动上下文 | 当前未直接单元测试 |
+| `sc_state.c` | SC 运行时状态机 | `test_sc_state_asild.c` | `test_sc_integration.py` | 对等故障/故障组合 | SC 模式转换 |
+| `sc_uds_shim.c` | 仅 HIL UDS shim | 无 | 未找到明确的专用 HIL 测试 | 诊断别名流量 | 当前未直接覆盖 |
+| `sc_watchdog.c` | 外部看门狗喂狗控制 | `test_sc_watchdog_asild.c` | `test_hil_wdgm.py` | 看门狗条件 | 喂狗使能/禁用行为 |
+| `sc_xcp_eth.c` | XCP-over-Ethernet 从站 | `test_sc_xcp_eth.c` | 台架遥测/XCP 流程 | UDP/XCP 命令 | 最小 XCP 服务路径 |
 
 ### TCU
 
-| Component | Function | Direct tests | Indirect/system tests | Inputs under test | Outputs / validation points |
+| 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_DataAggregator.c` | cache latest CAN values with timeout | `test_Swc_DataAggregator_qm.c` | indirect via TCU main/body flows | incoming CAN samples and timeout gaps | cache freshness and timeout behavior |
-| `Swc_DtcStore.c` | in-memory DTC store | `test_Swc_DtcStore_qm.c` | indirect via diagnostics flows | DTC insert/query/update operations | DTC management correctness |
-| `Swc_Obd2Pids.c` | OBD-II PID handler | `test_Swc_Obd2Pids_qm.c` | indirect via TCU diagnostic flows | PID requests | correct OBD-II response building |
-| `Swc_UdsServer.c` | UDS server dispatch | `test_Swc_UdsServer_qm.c` | indirect via TCU main/diagnostic paths | UDS service requests | ISO 14229 service dispatch |
-| `tcu_main.c` | TCU entry point and 10ms loop | `test_Swc_TcuMain_qm.c`, `test_Swc_TcuCan_qm.c` | `test_hil_body.py` | startup, CAN init, main loop | periodic loop and CAN-facing startup behavior |
+| `Swc_DataAggregator.c` | 缓存最新 CAN 值并带超时 | `test_Swc_DataAggregator_qm.c` | 通过 TCU main/车身流程间接覆盖 | 传入的 CAN 采样和超时间隔 | 缓存新鲜度和超时行为 |
+| `Swc_DtcStore.c` | 内存 DTC 存储 | `test_Swc_DtcStore_qm.c` | 通过诊断流程间接覆盖 | DTC 插入/查询/更新操作 | DTC 管理正确性 |
+| `Swc_Obd2Pids.c` | OBD-II PID 处理器 | `test_Swc_Obd2Pids_qm.c` | 通过 TCU 诊断流程间接覆盖 | PID 请求 | OBD-II 响应构建正确性 |
+| `Swc_UdsServer.c` | UDS 服务端分发 | `test_Swc_UdsServer_qm.c` | 通过 TCU main/诊断路径间接覆盖 | UDS 服务请求 | ISO 14229 服务分发 |
+| `tcu_main.c` | TCU 入口点和 10ms 循环 | `test_Swc_TcuMain_qm.c`、`test_Swc_TcuCan_qm.c` | `test_hil_body.py` | 启动、CAN 初始化、主循环 | 周期性循环和 CAN 面向启动行为 |
 
 ---
 
-## Main ASW coverage gaps
+## 主要 ASW 覆盖缺口
 
-### 1. No `panda`-style ASW adapter layer
+### 1. 缺少 `panda` 风格的 ASW 适配层
 
-Current tests are either:
+当前测试要么是：
 
-- mock-heavy unit tests, or
-- black-box CAN/system tests.
+- 重度 mock 的单元测试，要么是
+- 黑盒 CAN/系统测试。
 
-What is missing is a middle layer that can:
+缺失的是一个中间层，能够：
 
-- call ASW entry points in a scenario-friendly way,
-- inject internal state without re-implementing a full ECU harness,
-- assert internal ASW-visible outputs with readable BDD steps.
+- 以场景友好的方式调用 ASW 入口点，
+- 注入内部状态而不重新实现完整的 ECU 框架，
+- 用可读的 BDD 步骤断言内部的 ASW 可见输出。
 
-### 2. Components covered only indirectly
+### 2. 仅间接覆盖的组件
 
-The main indirect-only ASW/runtime pieces are:
+主要的仅间接覆盖的 ASW/运行时部分为：
 
 - `bcm_main.c`
-- `firmware/ecu/*/src/main.c` entrypoints for CVC/FZC/RZC
+- `firmware/ecu/*/src/main.c` CVC/FZC/RZC 入口点
 - `Swc_FzcSensorFeeder.c`
 - `Swc_RzcSensorFeeder.c`
 - `sc_eth_rx_dispatch.c`
@@ -444,48 +444,48 @@ The main indirect-only ASW/runtime pieces are:
 - `sc_startup.S`
 - `sc_uds_shim.c`
 
-These are exercised mainly through integration/SIL/HIL, not through a direct ASW-facing harness.
+这些主要通过集成/SIL/HIL 执行，而非通过直接的 ASW 适配测试框架。
 
-### 3. MIL is not currently usable as an ASW-E2E base
+### 3. MIL 目前无法作为 ASW-E2E 的基础
 
-`test/mil/` exists, but it does not currently provide a runnable model-level verification layer comparable to the rest of the stack.
+`test/mil/` 存在，但目前不提供与其它层级可比的、可运行的模型级验证层。
 
-### 4. Current end-to-end validation is mostly CAN-visible, not ASW-readable
+### 4. 当前端到端验证主要是 CAN 可见的，而非 ASW 可读的
 
-The existing SIL/HIL/PIL layers are strong at validating:
+现有 SIL/HIL/PIL 层在验证以下方面很强：
 
-- CAN frames,
-- timing,
-- fault response,
-- DTCs,
-- system mode transitions.
+- CAN 帧，
+- 时序，
+- 故障响应，
+- DTC，
+- 系统模式转换。
 
-They are weaker at expressing:
+在表达以下方面较弱：
 
-- fine-grained ASW behavior in readable business/functional steps,
-- internal SWC state evolution,
-- reusable per-feature scenario vocabulary.
+- 以可读的业务/功能步骤描述细粒度的 ASW 行为，
+- 内部 SWC 状态演变，
+- 可复用的按功能场景词汇。
 
 ---
 
-## Practical conclusion for future ASW E2E work
+## 未来 ASW E2E 工作的实践结论
 
-If the next goal is to add **ASW end-to-end tests similar to `panda/e2e-tests`**, the best way to think about the current baseline is:
+如果下一个目标是增加**类似于 `panda/e2e-tests` 的 ASW 端到端测试**，理解当前基线的最佳方式是：
 
-1. **Do not replace the current test stack.**  
-   It already covers unit, integration, SIL, HIL, and PIL concerns well.
+1. **不要替换当前测试栈。**  
+   它已经很好地覆盖了单元、集成、SIL、HIL 和 PIL 关注点。
 
-2. **Add a new ASW-oriented harness on top of it.**  
-   The missing layer is a readable scenario/adapter layer, not lower-level verification.
+2. **在其之上增加新的 ASW 适配框架。**  
+   缺失的层是可读的场景/适配层，而非底层验证。
 
-3. **Start from the best already-covered ASW domains.**  
-   Good first candidates are:
-   - CVC: `Swc_Pedal`, `Swc_VehicleState`, `Swc_EStop`, `Swc_CvcCom`
-   - FZC: `Swc_Steering`, `Swc_Brake`, `Swc_Lidar`
-   - RZC: `Swc_Motor`, `Swc_Battery`, `Swc_TempMonitor`, `Swc_RzcCom`
+3. **从已有最佳 ASW 覆盖的领域开始。**  
+   良好的首选候选是：
+   - CVC：`Swc_Pedal`、`Swc_VehicleState`、`Swc_EStop`、`Swc_CvcCom`
+   - FZC：`Swc_Steering`、`Swc_Brake`、`Swc_Lidar`
+   - RZC：`Swc_Motor`、`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
 
-4. **Use existing SIL/HIL scenarios as behavioral references.**  
-   Especially:
+4. **使用现有 SIL/HIL 场景作为行为参考。**  
+   尤其是：
    - `sil_003_emergency_stop.yaml`
    - `sil_009_e2e_corruption.yaml`
    - `sil_006_battery_undervoltage.yaml`
@@ -494,4 +494,4 @@ If the next goal is to add **ASW end-to-end tests similar to `panda/e2e-tests`**
    - `test_hil_uds.py`
    - `test_hil_scheduler.py`
 
-These already define the system-level acceptance behavior that an ASW-readable E2E layer should reuse rather than duplicate.
+这些已定义了系统级验收行为，ASW 可读的 E2E 层应当复用而非重复定义。
