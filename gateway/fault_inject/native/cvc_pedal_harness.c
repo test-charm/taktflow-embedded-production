@@ -104,6 +104,7 @@ static uint16_t mock_pedal_raw_0;
 static uint16_t mock_pedal_raw_1;
 static uint16_t mock_pedal_raw_0_base;
 static uint16_t mock_pedal_raw_1_base;
+static int32_t  mock_spi_fault_sensor = -1;  /**< -1=none, 0=sensor1, 1=sensor2 */
 
 static uint16_t percent_to_raw(uint32_t pct)
 {
@@ -134,6 +135,11 @@ static const char* fault_name(uint32_t fault)
 Std_ReturnType IoHwAb_ReadPedalAngle(uint8 SensorId, uint16* Angle)
 {
     if (Angle == NULL_PTR) {
+        return E_NOT_OK;
+    }
+    /* SPI fault injection: return E_NOT_OK for the specified sensor */
+    if ((int32_t)SensorId == mock_spi_fault_sensor) {
+        *Angle = 0u;
         return E_NOT_OK;
     }
     if (SensorId == 0u) {
@@ -265,8 +271,9 @@ int main(int argc, char** argv)
     uint32_t torque_request_pct;
     uint32_t torque_direction;
 
-    if (argc != 5) {
-        fprintf(stderr, "usage: %s <sensor1_pct> <sensor2_pct> <vehicle_state> <cycles>\n", argv[0]);
+    if (argc != 5 && argc != 6) {
+        fprintf(stderr, "usage: %s <sensor1_pct> <sensor2_pct> <vehicle_state> <cycles> [spi_fault_sensor]\n", argv[0]);
+        fprintf(stderr, "  spi_fault_sensor: -1=none (default), 0=sensor1 SPI fault, 1=sensor2 SPI fault\n");
         return 2;
     }
 
@@ -274,6 +281,10 @@ int main(int argc, char** argv)
     sensor2_pct = (uint32_t)strtoul(argv[2], NULL, 10);
     vehicle_state = (uint32_t)strtoul(argv[3], NULL, 10);
     cycles = (uint32_t)strtoul(argv[4], NULL, 10);
+
+    if (argc >= 6) {
+        mock_spi_fault_sensor = (int32_t)strtol(argv[5], NULL, 10);
+    }
 
     mock_pedal_raw_0_base = percent_to_raw(sensor1_pct);
     mock_pedal_raw_1_base = percent_to_raw(sensor2_pct);

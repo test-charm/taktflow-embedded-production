@@ -85,6 +85,7 @@ class CvcPedalTorqueBody(BaseModel):
     sensor2Pct: int
     vehicleState: str
     cycles: int
+    spiFaultSensor: int | None = None  # 0=sensor1 SPI fault, 1=sensor2 SPI fault, None=no fault
 
 
 # Test runner instance (initialized on startup)
@@ -726,14 +727,17 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
     try:
         env = os.environ.copy()
         env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_pedal_%p.profraw")
+        harness_args = [
+            _CVC_PEDAL_HARNESS,
+            str(sensor1),
+            str(sensor2),
+            str(vehicle_state),
+            str(cycles),
+        ]
+        if body.spiFaultSensor is not None:
+            harness_args.append(str(body.spiFaultSensor))
         completed = subprocess.run(
-            [
-                _CVC_PEDAL_HARNESS,
-                str(sensor1),
-                str(sensor2),
-                str(vehicle_state),
-                str(cycles),
-            ],
+            harness_args,
             check=True,
             capture_output=True,
             text=True,
