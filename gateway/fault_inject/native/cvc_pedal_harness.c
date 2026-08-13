@@ -360,9 +360,9 @@ int main(int argc, char** argv)
     torque_request_pct = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
     torque_direction = mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION];
 
-    printf("{\"outputs\":{\"pedalPosition\":%u,\"pedalFaultCode\":%u,\"pedalFaultName\":\"%s\","
+    printf("{\"pedalPosition\":%u,\"pedalFaultCode\":%u,\"pedalFaultName\":\"%s\","
            "\"torqueRequestPct\":%u,\"torqueDirection\":%u,"
-           "\"comSignals\":{\"torqueRequestCommandPct\":%u}}}\n",
+           "\"comSignals\":{\"torqueRequestCommandPct\":%u}}\n",
            (unsigned)pedal_position,
            (unsigned)pedal_fault,
            fault_name(pedal_fault),

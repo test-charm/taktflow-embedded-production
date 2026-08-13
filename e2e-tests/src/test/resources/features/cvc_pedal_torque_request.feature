@@ -14,13 +14,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 40
-        pedalFaultName: NONE
-        torqueDirection: 1
-        comSignals: {
-          torqueRequestCommandPct: 40
-        }
+      torqueRequestPct: 40
+      pedalFaultName: NONE
+      torqueDirection: 1
+      comSignals: {
+        torqueRequestCommandPct: 40
       }
     }
     """
@@ -38,13 +36,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: PLAUSIBILITY
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: PLAUSIBILITY
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -62,13 +58,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 75
-        pedalFaultName: NONE
-        torqueDirection: 1
-        comSignals: {
-          torqueRequestCommandPct: 75
-        }
+      torqueRequestPct: 75
+      pedalFaultName: NONE
+      torqueDirection: 1
+      comSignals: {
+        torqueRequestCommandPct: 75
       }
     }
     """
@@ -86,13 +80,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 30
-        pedalFaultName: NONE
-        torqueDirection: 1
-        comSignals: {
-          torqueRequestCommandPct: 30
-        }
+      torqueRequestPct: 30
+      pedalFaultName: NONE
+      torqueDirection: 1
+      comSignals: {
+        torqueRequestCommandPct: 30
       }
     }
     """
@@ -110,13 +102,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: NONE
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: NONE
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -134,13 +124,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: NONE
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: NONE
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -158,13 +146,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: NONE
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: NONE
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -183,13 +169,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: SENSOR1_FAIL
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: SENSOR1_FAIL
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -208,13 +192,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: SENSOR2_FAIL
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: SENSOR2_FAIL
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -232,13 +214,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: NONE
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: NONE
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
@@ -259,13 +239,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 10
-        pedalFaultName: NONE
-        torqueDirection: 1
-        comSignals: {
-          torqueRequestCommandPct: 10
-        }
+      torqueRequestPct: 10
+      pedalFaultName: NONE
+      torqueDirection: 1
+      comSignals: {
+        torqueRequestCommandPct: 10
       }
     }
     """
@@ -284,13 +262,11 @@
     那么response should be:
     """
     body.json: {
-      outputs: {
-        torqueRequestPct: 0
-        pedalFaultName: STUCK
-        torqueDirection: 0
-        comSignals: {
-          torqueRequestCommandPct: 0
-        }
+      torqueRequestPct: 0
+      pedalFaultName: STUCK
+      torqueDirection: 0
+      comSignals: {
+        torqueRequestCommandPct: 0
       }
     }
     """
