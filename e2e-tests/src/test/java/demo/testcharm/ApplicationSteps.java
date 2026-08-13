@@ -14,7 +14,6 @@ import javax.annotation.PostConstruct;
 @ContextConfiguration(classes = {CucumberConfiguration.class}, loader = SpringBootContextLoader.class)
 @CucumberContextConfiguration
 public class ApplicationSteps {
-    private static final String CLIENT_ID = "taktflow-e2e-tests";
 
     @Value("${testcharm.dal.dumpinput:true}")
     private boolean dalDumpInput;
@@ -22,7 +21,6 @@ public class ApplicationSteps {
     @Before
     public void disableDALDump() {
         Assertions.dumpInput(dalDumpInput);
-        restfulStep.header("X-Client-Id", CLIENT_ID);
     }
 
     @Autowired
