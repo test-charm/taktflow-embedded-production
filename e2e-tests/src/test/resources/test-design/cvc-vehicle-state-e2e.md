@@ -127,6 +127,45 @@ RTE 故障信号（踏板/急停/通信/电机/制动/转向/电池/SC 继电器
 | degraded_to_safe_stop_on_motor_cutoff | P0: selfTestPass=true,1005; P1: 1005; P2: pedalFault=1,5; P3: motorCutoff=1,5 | SAFE_STOP | SAFE_STOP | MOTOR_CUTOFF_RX |
 | limp_to_safe_stop_on_motor_cutoff | P0: selfTestPass=true,1005; P1: 1005; P2: batteryStatus=0,1; P3: motorCutoff=1,5 | SAFE_STOP | SAFE_STOP | BATT_UNDERVOLT,MOTOR_CUTOFF_RX |
 
+> **分支覆盖补充场景（S23-S42）**——目标为行覆盖之外的分支侧（B/C/D/E 类）：
+>
+> **B 类（心跳/SC kill 时序短路侧）：**
+> | 用例 | 阶段序列 | 期望 vehicleState | 覆盖分支 |
+> |---|---|---|---|
+> | fzc_timeout_blocks_init_to_run | P0: selfTestPass=true,fzcComm=TIMEOUT,1005 | INIT | L593/L608 false 侧（fzc 心跳阻断 RUN） |
+> | rzc_timeout_blocks_init_to_run | P0: selfTestPass=true,rzcComm=TIMEOUT,1005 | INIT | L593/L609 false 侧（rzc 心跳阻断 RUN） |
+> | sc_kill_silent_during_grace | P0: selfTestPass=true,1005; P1: scRelayEnergized=false,5 | RUN | L653/L654 false 侧（宽限期内 SC kill 静默） |
+>
+> **C 类（电池枚举补全）：**
+> | 用例 | 阶段序列 | 期望 vehicleState | 覆盖分支 |
+> |---|---|---|---|
+> | battery_high_crit_to_limp | P0: selfTestPass=true,1005; P1: 1005; P2: batteryStatus=DISABLE_HIGH,1 | LIMP | L735 `==4` 侧（DISABLE_HIGH） |
+> | battery_high_warn_to_degraded | P0: selfTestPass=true,1005; P1: 1005; P2: batteryStatus=WARN_HIGH,1 | DEGRADED | L740 `==3` 侧（WARN_HIGH） |
+>
+> **D 类（SAFE_STOP 恢复窗口内瞬时信号再现 → 恢复计数清零）：**
+> 统一模式：`Given RUN` → `estop` 触发 SAFE_STOP → 等待 300 周期故障锁存解除 → 注入 1 周期
+> 瞬时信号（恢复计数被清零，`safe_stop_clear_count=0`）→ 故障清除 + 200 周期恢复 → 回 RUN。
+> | 用例 | 注入信号（恢复窗口内 1 周期） | 期望 vehicleState | 覆盖分支 |
+> |---|---|---|---|
+> | recovery_reset_by_motor_cutoff | motorCutoff=1 | RUN | L941 false 侧 |
+> | recovery_reset_by_motor_fault_rzc | motorFaultRzc=1 | RUN | L942 false 侧 |
+> | recovery_reset_by_brake_fault | brakeFault=1 | RUN | L943 false 侧 |
+> | recovery_reset_by_steering_fault | steeringFault=1 | RUN | L944 false 侧 |
+> | recovery_reset_by_pedal_fault | pedalFault=1 | RUN | L945 false 侧 |
+> | recovery_reset_by_sc_relay_kill | scRelayEnergized=false | RUN | L946 false 侧 + L897 true 侧 |
+> | recovery_reset_by_rzc_timeout | rzcComm=TIMEOUT | RUN | L948 false 侧 |
+> | recovery_reset_by_battery_crit | batteryStatus=DISABLE_LOW | RUN | L949 false 侧 |
+>
+> **E 类（其余短路/时序分支，S36-S41）：**
+> | 用例 | 阶段序列 | 期望 vehicleState | 覆盖分支 |
+> |---|---|---|---|
+> | self_test_pass_in_run_noop | P0: selfTestPass=true,1005; P1: 1005; P2: selfTestPass=true,5 | RUN | L358 `current_state==INIT` false 侧 |
+> | single_can_timeout_keeps_limp | P0: selfTestPass=true,1005; P1: 1005; P2: batteryStatus=0,1; P3: fzcComm=TIMEOUT,55 | LIMP | L682 `state==RUN/DEGRADED` false 侧（LIMP 下单超时无迁移） |
+> | pedal_pressed_skips_creep | P0: selfTestPass=true,1005; P1: pedalPosition=60,torqueRequest=60,205 | RUN | L769 `pedal_position<50` false 侧（踩踏板非爬行） |
+> | motor_spinning_skips_creep | P0: selfTestPass=true,1005; P1: motorSpeed=60,torqueRequest=60,205 | RUN | L776 `motor_speed<50` false 侧（电机已转非爬行） |
+> | brake_fault_blocks_fault_clear | P0: selfTestPass=true,1005; P1: 1005; P2: pedalFault=1,5; P3: brakeFault=1,2; P4: 5 | RUN | L813 `brake_fault==0` false 侧（DEGRADED 中制动故障阻止清除） |
+> | sc_kill_in_init_noop | P0: scRelayEnergized=false,1005 | INIT | L653 `current_state!=INIT` false 侧（INIT 下 SC 切断不触发） |
+
 > 周期数说明：`1005 = 1000（保持/宽限）+ 5 余量`；`55 = 50（CAN 去抖）+ 5`；
 > `205 = 200（爬行去抖）+ 5`；`520 = 300（故障解锁）+ 200（恢复）+ 20 余量`；
 > `350 = 300（故障解锁）+ 50（恢复计数递增中）`；
@@ -157,20 +196,28 @@ RTE 故障信号（踏板/急停/通信/电机/制动/转向/电池/SC 继电器
 | 指标 | 数值 |
 |---|---:|
 | **行覆盖** | **96.2%**（405 / 421 行） |
+| **分支覆盖** | **96.6%**（197 / 204 分支） |
 | **函数覆盖** | **100%**（5 / 5） |
 
 覆盖到的函数：`Swc_VehicleState_Init`、`Swc_VehicleState_GetState`、`Swc_VehicleState_OnEvent`、
 `Swc_VehicleState_ConfirmFault`、`Swc_VehicleState_MainFunction`。
 
-> 未覆盖的 14 行全部属于 A 类（防御性守卫）与 B 类（状态机结构不可达），C 类功能分支已通过
-> S14-S22 九个补充场景清零（见下方「无法覆盖的代码及理由」）。
-
-> 下表「实测命中」为单次完整套件运行（12 个踏板场景 + 20 个状态机场景）的累积值，供参考；
+> 下表「实测命中」为单次完整套件运行（12 个踏板场景 + 41 个状态机场景）的累积值，供参考；
 > 每次运行因容器重启会重新累积，具体数字可能不同，但覆盖关系不变。
+
+行覆盖与分支覆盖分别说明如下。
+
+---
+
+## 行覆盖分析（96.2%，405/421）
+
+行覆盖反映**每一行是否被执行**。未覆盖的 16 行全部属于防御性守卫或状态机结构不可达
+（见「无法覆盖的行」），不存在可通过补充场景覆盖的行级缺口——原行级缺口已通过 S14-S22 清零。
 
 ### 逐函数代码行覆盖映射
 
-下表按函数/代码块列出每个可执行代码块的覆盖情况、由哪些场景覆盖、以及实测命中次数（`MainFunction` 累计调用 71823 次，来自 13 个场景的累积 coverage 数据）。
+下表按函数/代码块列出每个可执行代码块的覆盖情况、由哪些场景覆盖、以及实测命中次数
+（`MainFunction` 累计调用 38952 次）。
 
 #### 辅助常量与状态表（L34-284）
 
@@ -253,36 +300,21 @@ RTE 故障信号（踏板/急停/通信/电机/制动/转向/电池/SC 继电器
 | L962-965 | 恢复检查负向分支：瞬时信号不全清 → 复位恢复计数 | S20（恢复途中 `cycles=350` 时重新注入 `estop`，恢复计数归零后再续） | 7 |
 | L974-977 | `Rte_Write` 车辆状态 + 心跳运行模式 | 全部场景（每周期） | 38952 |
 
-### 无法覆盖的代码及理由（14 行，占 3.8%）
+### 无法覆盖的行（16 行，占 3.8%）
 
-剩余未覆盖行全部属于以下两类，**不存在可通过场景补充的功能分支**（原 C 类已通过 S14-S21 清零）：
-
-#### A. 防御性守卫（无法从 E2E 层触发，属 ASIL-D 安全护栏）
-
-| 行号 | 代码 | 无法覆盖的理由 |
-|---|---|---|
-| L344-347 | `OnEvent`：`initialized != TRUE` 返回 | harness 在执行前总是调用 `Init`，不可能未初始化 |
-| L348-351 | `OnEvent`：`event >= CVC_EVT_COUNT` 返回 | harness 只注入合法事件，无法从 REST API 注入越界事件 |
-| L352-355 | `OnEvent`：`current_state >= CVC_STATE_COUNT` 返回 | 状态始终在 0-5 内 |
-| L513-516 | `MainFunction`：`initialized != TRUE` 返回 | harness 在 MainFunction 前调用 Init |
-
-#### B. 状态机结构决定的不可达分支
-
-| 行号 | 代码 | 无法覆盖的理由 |
-|---|---|---|
-| L395 | `case EVT_SC_KILL → LATCH_IDX_SC_KILL` | SC_KILL 的迁移目标恒为 SHUTDOWN（transition_table 中 INIT/RUN/DEGRADED/LIMP/SAFE_STOP 行均映射到 SHUTDOWN，TSR-035 外部覆盖），永远不进入 `next_state==SAFE_STOP` 的锁存块 |
-| L696-700 | LIMP 下通信恢复 → `EVT_CAN_RESTORED` | **时序互斥不可达**：该分支仅在 `post_init_grace_counter != 0`（后 INIT 宽限期内）执行，但进入 LIMP 需要 `battery CRIT`，而电池处理（L733）要求 `post_init_grace_counter == 0`——宽限期内无法进入 LIMP，该分支恒不可达 |
+剩余未覆盖行全部属于防御性守卫（A 类 12 行）或状态机结构不可达（B 类 4 行），
+**不存在可通过场景补充的行级缺口**。详细说明与分支级不可覆盖点统一见
+「[无法覆盖的代码](#无法覆盖的代码行与分支全部不可达)」。
 
 > **说明**：`EVT_MOTOR_CUTOFF` 的锁存 case（L396）曾被误判为 B 类不可达。实际上 transition_table
 > 中仅 **RUN** 状态将电机切断映射到 DEGRADED（fail-silent，L113）；**DEGRADED**（L133）与 **LIMP**（L153）
 > 状态映射到 SAFE_STOP，会命中该锁存 case。已通过 S21（先 pedal fault 到 DEGRADED，再注入 motor cutoff）
 > 与 S22（先 battery CRIT 到 LIMP，再注入 motor cutoff）覆盖全部三条状态相关的迁移边。
->
-> **结论**：A 类（7 行）为必要的安全护栏，E2E 层不应（也无法）触发；B 类（L395 SC_KILL、L696-700
-> CAN_RESTORED）为状态机结构约束。这些均已由 `firmware/ecu/cvc/test/test_Swc_VehicleState_asild.c`
-> 单元测试覆盖（`test_Any_to_SAFE_STOP_on_SC_kill`、`test_LIMP_to_DEGRADED_on_CAN_restored`）。
 
-### 补充场景一览（S14-S22，覆盖原 C 类分支）
+### 行覆盖补充场景（S14-S22）
+
+S14-S22 覆盖了原「仅间接覆盖」的行级分支（双踏板故障、电池升锁、单 CAN 超时、电池告警、
+制动 Com 不一致、PDU 超时、恢复中断、DEGRADED/LIMP 电机切断）：
 
 | 场景 | 刺激阶段（When） | 覆盖的代码行 | 覆盖的分支 |
 |---|---|---|---|
@@ -300,3 +332,123 @@ RTE 故障信号（踏板/急停/通信/电机/制动/转向/电池/SC 继电器
 > `comBrakeFault`/`comMotorCutoff`（Com shadow 解耦）、`motorPduTimedOut`（RX PDU 超时质量）。
 > S14 的 `EVT_PEDAL_FAULT_DUAL` 在 `MainFunction` 中无派生源（生产仅派生 SINGLE），由 harness
 > 直接注入 `Swc_VehicleState_OnEvent(EVT_PEDAL_FAULT_DUAL)` 模拟 Swc_Pedal 双传感器合理性故障。
+
+---
+
+## 分支覆盖分析（96.6%，197/204）
+
+行覆盖率不能反映 `&&`/`||` 短路、多值枚举等**同一行内多个判断侧**的覆盖情况。
+`./gradlew cucumber` 生成的 `Swc_VehicleState.c.gcov.html` 提供 lcov `BRDA:` 分支数据，
+实测 204 个分支、197 个覆盖（96.6%）。S23-S42 共覆盖 B/C/D/E 类 35 个分支，
+剩余 7 个分支全部不可达。
+
+### B 类：时序/心跳短路下未走到的一侧（S23-S25、S41）
+
+| 分支 | 位置 | 覆盖场景 | 说明 |
+|---|---|---|---|
+| `hb_ok` 的 `(fzc&&rzc)==OK` 不为真侧 | L593 | S23（fzc 超时）、S24（rzc 超时） | 心跳双 OK 被阻断时 `hb_ok=0` |
+| `fzc_comm==OK` 为假侧 | L608 | S23（fzcComm=TIMEOUT） | 自检通过但 FZC 心跳超时 → 保持 INIT |
+| `rzc_comm==OK` 为假侧 | L609 | S24（rzcComm=TIMEOUT） | 同上，RZC 侧 |
+| `sc_relay_kill==0 && state!=INIT && grace==0` 的 `grace!=0` 侧 | L653/L654 | S25（自检后立即 sc kill） | 宽限期内 SC kill 静默，保持 RUN |
+| SC_KILL `current_state != INIT` 的 false 侧 | L653 | S41（INIT 下 SC kill） | INIT 下 SC 切断不触发迁移 |
+
+### C 类：多值枚举只测了一个值（S26-S27）
+
+| 分支 | 位置 | 覆盖场景 | 说明 |
+|---|---|---|---|
+| `battery_status==0 \|\| ==4` 的 `==4` 侧 | L735 | S26（batteryStatus=DISABLE_HIGH） | 与 `==0`（DISABLE_LOW）同行为 → LIMP |
+| `battery_status==1 \|\| ==3` 的 `==3` 侧 | L740 | S27（batteryStatus=WARN_HIGH） | 与 `==1`（WARN_LOW）同行为 → DEGRADED |
+
+### D 类：SAFE_STOP 恢复窗口内瞬时信号再现（S28-S35）
+
+| 分支 | 位置 | 覆盖场景 | 说明 |
+|---|---|---|---|
+| 恢复检查 `(estop==0 && motor_cutoff==0 && ...)` 的 `motor_cutoff==0` 假侧 | L941 | S28 | 恢复计数进行中 motor_cutoff 再现 → `safe_stop_clear_count=0` |
+| `motor_fault_rzc==0` 假侧 | L942 | S29 | 同上，RZC 电机故障 |
+| `brake_fault==0` 假侧 | L943 | S30 | 同上，制动故障 |
+| `steering_fault==0` 假侧 | L944 | S31 | 同上，转向故障 |
+| `pedal_fault==0` 假侧 | L945 | S32 | 同上，踏板故障 |
+| `sc_relay_kill!=0` 假侧 + `(sc_relay_kill==0)?1:0` true 侧 | L897/L946 | S33 | 同上，SC 继电器切断 |
+| `rzc_comm==OK` 假侧 | L948 | S34 | 同上，RZC 通信超时 |
+| `battery_status==2` 假侧 | L949 | S35 | 同上，电池非 NORMAL |
+
+> **说明**：这 8 个瞬时信号原本互斥（一次只走一个 `&&` 短路分支）。S28-S35 采用统一模式——先
+> `estop` 触发 SAFE_STOP，等 300 周期锁存解除后，在恢复窗口内注入 1 周期目标信号，使恢复计数清零，
+> 再清除信号等待 200 周期恢复回 RUN。`estop==0` 侧（L940）与 `fzc_comm==OK` 假侧（L947）已由
+> 既有场景覆盖，无需新增。
+
+### E 类：其余短路/时序分支（S36-S40、S42）
+
+| 分支 | 位置 | 覆盖场景 | 说明 |
+|---|---|---|---|
+| `SELF_TEST_PASS && state==INIT` 的 `state!=INIT` 侧 | L358 | S36 | RUN 下再次注入自检通过 → 无效果（保持 RUN） |
+| 单超时 `state==RUN \|\| state==DEGRADED` 的 `state==DEGRADED` 为 true 侧 | L682 | S42 | DEGRADED 持续 pedalFault 下注入单超时 → SAFE_STOP（`state==RUN` 短路后才评估 `state==DEGRADED`） |
+| 爬行守护 `pedal_position<50` 的 false 侧 | L769 | S38 | 踩踏板（pedalPosition≥50）非爬行 → 守护跳过 |
+| 爬行守护 `motor_speed<50` 的 false 侧 | L776 | S39 | 电机已转（motorSpeed≥50）非爬行 → 守护跳过 |
+| 故障清除 `brake_fault==0` 的 false 侧 | L813 | S40 | DEGRADED 中制动故障（未确认）阻止 FAULT_CLEARED |
+
+### 剩余未覆盖分支（7 个，全部不可达）
+
+7 个未覆盖分支全部不可达，与行级不可覆盖点同源，统一见「[无法覆盖的代码](#无法覆盖的代码行与分支全部不可达)」：
+
+- **A 类防御守卫 4 个**（L344/L348/L352/L513）
+- **B 类结构不可达 3 个**：L395（SC_KILL latch）、L630（INIT→RUN grace）、L696（CAN_RESTORED）
+
+---
+
+## 无法覆盖的代码（行与分支，全部不可达）
+
+行级（16 行）与分支级（8 个）的不可覆盖点源自同一批底层代码，统一说明如下。
+行与分支的未覆盖**不是**可补场景的功能缺口——S14-S22 已清零行级缺口、S23-S41 已清零分支级缺口，
+剩余均无法从 E2E 层触发。
+
+### A. 防御性守卫（行 + 分支均不可覆盖，属 ASIL-D 安全护栏）
+
+| 代码块 | 行覆盖 | 分支覆盖 | 无法覆盖的理由 |
+|---|---|---|---|
+| `OnEvent`：`initialized != TRUE` 返回 | ✗（L345-347） | ✗（L344） | harness 恒先 Init 再调用，永不未初始化 |
+| `OnEvent`：`event >= CVC_EVT_COUNT` 返回 | ✗（L349-351） | ✗（L348） | 只注入合法事件，无法从 REST API 注入越界事件 |
+| `OnEvent`：`current_state >= CVC_STATE_COUNT` 返回 | ✗（L353-355） | ✗（L352） | 状态恒在 0-5 |
+| `MainFunction`：`initialized != TRUE` 返回 | ✗（L514-516） | ✗（L513） | harness 在 MainFunction 前调用 Init |
+
+> 行级小计 12 行、分支级小计 4 个。均已由 `test_Swc_VehicleState_asild.c` 单元测试覆盖。
+
+### B. 状态机结构决定的不可达分支（行 + 分支均不可覆盖）
+
+| 代码块 | 行覆盖 | 分支覆盖 | 无法覆盖的理由 |
+|---|---|---|---|
+| `case EVT_SC_KILL → LATCH_IDX_SC_KILL` | ✗（L395） | ✗（L395） | SC_KILL 迁移目标恒为 SHUTDOWN（transition_table 各行均映射 SHUTDOWN，TSR-035 外部覆盖），永不进入 `next_state==SAFE_STOP` 锁存块 |
+| LIMP 下通信恢复 `EVT_CAN_RESTORED` | ✗（L697-699） | ✗（L696） | **时序互斥**：该分支仅在 `post_init_grace_counter != 0`（宽限期）执行，但进入 LIMP 需 `battery CRIT` 而电池处理（L733）要求 `grace == 0`——宽限期内无法进入 LIMP |
+
+> 行级小计 4 行、分支级小计 2 个。均已由单元测试覆盖
+> （`test_Any_to_SAFE_STOP_on_SC_kill`、`test_LIMP_to_DEGRADED_on_CAN_restored`）。
+
+### C. 行可达但分支侧不可达（短路/时序保护）
+
+| 代码块 | 行覆盖 | 未覆盖分支侧 | 原因 |
+|---|---|---|---|
+| INIT→RUN 转换块 `post_init_grace_counter > 0` | ✓（L630） | false 侧 | 该块仅在 INIT→RUN 转换瞬间执行，此时 grace 恒为刚设置值（>0），false 侧不可能到达 |
+
+> 行均可达，仅特定短路侧不可达；分支级小计 1 个。
+> `state==RUN \|\| state==DEGRADED`（L682）的 DEGRADED 侧原被误判为不可达，实为短路保护——
+> S16 走 `state==RUN` true 短路（跳过 DEGRADED 求值）；S42（DEGRADED 持续 + 单超时）覆盖
+> `state==DEGRADED` true 侧、S37（LIMP 单超时）覆盖 false 侧，L682 已全部分支覆盖。
+
+### 小结
+
+| 类别 | 行未覆盖 | 分支未覆盖 |
+|---|---|---|
+| A. 防御性守卫 | 12 行 | 4 个 |
+| B. 结构不可达 | 4 行 | 2 个 |
+| C. 行可达分支侧不可达 | 0 行 | 1 个 |
+| **合计** | **16 行（3.8%）** | **7 个（3.4%）** |
+
+---
+
+## 覆盖总结
+
+| 维度 | 覆盖 | 未覆盖 | 未覆盖原因 |
+|---|---|---|---|
+| 行 | 96.2%（405/421） | 16 行 | A 防御守卫 12 行 + B 结构不可达 4 行 |
+| 分支 | 96.6%（197/204） | 7 个 | A 防御守卫 4 个 + B 结构不可达 2 个 + C 短路侧 1 个 |
+| 函数 | 100%（5/5） | — | — |
