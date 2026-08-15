@@ -803,16 +803,21 @@ def _generate_coverage_html():
         return
 
     # Step 2: merge lcov traces (aggregates duplicate SF records, e.g.
-    # Swc_VehicleState.c appears in both the pedal and VSM harness binaries)
+    # Swc_VehicleState.c appears in both the pedal and VSM harness binaries).
+    # NOTE: lcov's default lcovrc sets branch_coverage=0, which drops BRDA
+    # records on --add-tracefile. Force branch_coverage=1 to keep branch data.
     if len(info_files) == 1:
         shutil.copyfile(info_files[0], info_file)
     else:
         lcov_bin = "/usr/bin/lcov"
-        cmd = [lcov_bin]
+        cmd = [lcov_bin, "--rc", "branch_coverage=1",
+               "--ignore-errors", "inconsistent,corrupt,unsupported"]
         for f in info_files:
             cmd += ["--add-tracefile", f]
         cmd += ["--output-file", info_file]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            log.warning("lcov merge failed: %s", (result.stderr or result.stdout)[-500:])
 
     # Step 3: Generate HTML
     subprocess.run(
