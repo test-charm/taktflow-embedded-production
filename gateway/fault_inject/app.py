@@ -110,6 +110,10 @@ class VehicleStatePhase(BaseModel):
     motorSpeed: int = 0
     torqueRequest: int = 0
     pedalPosition: int = 0
+    pedalFaultDual: bool = False       # inject EVT_PEDAL_FAULT_DUAL (no prod trigger)
+    comBrakeFault: int = -1            # -1=follow RTE brake_fault, 0/1=override Com shadow
+    comMotorCutoff: int = -1           # -1=follow RTE motor_cutoff, 0/1=override Com shadow
+    motorPduTimedOut: bool = False     # Motor_Status PDU quality = TIMED_OUT
 
 
 class CvcVehicleStateSetupBody(BaseModel):
@@ -903,6 +907,10 @@ def _phase_to_line(p: VehicleStatePhase) -> str:
         f"motorSpeed={p.motorSpeed}",
         f"torqueRequest={p.torqueRequest}",
         f"pedalPosition={p.pedalPosition}",
+        f"pedalFaultDual={_b(p.pedalFaultDual)}",
+        f"comBrakeFault={p.comBrakeFault}",
+        f"comMotorCutoff={p.comMotorCutoff}",
+        f"motorPduTimedOut={_b(p.motorPduTimedOut)}",
     ])
 
 

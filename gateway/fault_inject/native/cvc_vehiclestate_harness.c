@@ -25,6 +25,10 @@
  *            motorSpeed          uint32  RPM
  *            torqueRequest       uint32  percent
  *            pedalPosition       uint32
+ *            pedalFaultDual      0|1     inject EVT_PEDAL_FAULT_DUAL (no prod trigger)
+ *            comBrakeFault       -1|0|1  override Com shadow for brake (default -1=follow)
+ *            comMotorCutoff      -1|0|1  override Com shadow for motor cutoff (default -1=follow)
+ *            motorPduTimedOut    0|1     Motor_Status PDU quality = TIMED_OUT
  *
  *          Output is a single JSON object on stdout:
  *            {"vehicleState":"RUN","bswmMode":"RUN",
@@ -158,9 +162,13 @@ Std_ReturnType Com_ReceiveSignal(Com_SignalIdType SignalId, void* SignalDataPtr)
     return E_OK;
 }
 
+static uint8_t mock_motor_pdu_timed_out = 0u;
+
 Com_SignalQualityType Com_GetRxPduQuality(PduIdType RxPduId)
 {
-    (void)RxPduId;
+    if ((RxPduId == CVC_COM_RX_MOTOR_STATUS) && (mock_motor_pdu_timed_out != 0u)) {
+        return COM_SIGNAL_QUALITY_TIMED_OUT;
+    }
     return COM_SIGNAL_QUALITY_FRESH;
 }
 
@@ -189,11 +197,20 @@ typedef struct {
     uint32_t motor_speed;
     uint32_t torque_request;
     uint32_t pedal_position;
+    uint8_t  pedal_fault_dual;    /* inject EVT_PEDAL_FAULT_DUAL (no production trigger) */
+    int32_t  com_brake_fault;     /* -1 = follow RTE brake_fault, 0/1 = override Com shadow */
+    int32_t  com_motor_cutoff;    /* -1 = follow RTE motor_cutoff, 0/1 = override Com shadow */
+    uint8_t  motor_pdu_timed_out; /* Com_GetRxPduQuality(MOTOR_STATUS) = TIMED_OUT */
 } Phase;
 
 static uint32_t parse_uint(const char* s)
 {
     return (uint32_t)strtoul(s, NULL, 10);
+}
+
+static int32_t parse_int(const char* s)
+{
+    return (int32_t)strtol(s, NULL, 10);
 }
 
 static void apply_phase(const Phase* p)
@@ -213,9 +230,22 @@ static void apply_phase(const Phase* p)
     mock_rte_signals[CVC_SIG_PEDAL_POSITION]  = p->pedal_position;
 
     /* Mirror the CAN-origin faults into the Com shadow used by the
-     * ISO 26262 confirmation-read in Swc_VehicleState_ConfirmFault(). */
-    mock_com_signals[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] = p->brake_fault;
-    mock_com_signals[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE]   = p->motor_cutoff;
+     * ISO 26262 confirmation-read in Swc_VehicleState_ConfirmFault().
+     * comBrakeFault/comMotorCutoff override the shadow (to exercise the
+     * "Com disagrees" branch); -1 (default) follows the RTE signal. */
+    mock_com_signals[CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS] =
+        (p->com_brake_fault >= 0) ? (uint32_t)p->com_brake_fault : p->brake_fault;
+    mock_com_signals[CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE] =
+        (p->com_motor_cutoff >= 0) ? (uint32_t)p->com_motor_cutoff : p->motor_cutoff;
+
+    /* Motor_Status PDU timeout: Com zeroes motor_fault_rzc on timeout, and
+     * Swc_VehicleState treats a timed-out signal as fault (fail-closed).
+     * Simulate the Com timeout default = fault present so the confirmation
+     * read is consistent with the forced RTE value. */
+    mock_motor_pdu_timed_out = p->motor_pdu_timed_out;
+    if (p->motor_pdu_timed_out != 0u) {
+        mock_com_signals[CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS] = 1u;
+    }
 }
 
 static void record_state(void)
@@ -249,6 +279,13 @@ static int run_phase(const Phase* p)
         Swc_VehicleState_OnEvent(CVC_EVT_SELF_TEST_PASS);
     }
 
+    /* Dual pedal fault has no production trigger in MainFunction (only the
+     * single pedal fault is derived). Inject it directly, mirroring how
+     * Swc_Pedal would report a dual-sensor plausibility fault. */
+    if (p->pedal_fault_dual != 0u) {
+        Swc_VehicleState_OnEvent(CVC_EVT_PEDAL_FAULT_DUAL);
+    }
+
     for (i = 0u; i < p->cycles; i++) {
         Swc_VehicleState_MainFunction();
         record_state();
@@ -279,6 +316,8 @@ int main(void)
         p.rzc_comm           = CVC_COMM_OK;
         p.battery_status     = 2u;   /* NORMAL */
         p.motor_fault_rzc    = 0u;
+        p.com_brake_fault    = -1;   /* follow RTE brake_fault */
+        p.com_motor_cutoff   = -1;   /* follow RTE motor_cutoff */
 
         token = strtok_r(line, " \t\r\n", &saveptr);
         while (token != NULL) {
@@ -303,6 +342,10 @@ int main(void)
                     else if (strcmp(key, "motorSpeed") == 0)    p.motor_speed = val;
                     else if (strcmp(key, "torqueRequest") == 0) p.torque_request = val;
                     else if (strcmp(key, "pedalPosition") == 0) p.pedal_position = val;
+                    else if (strcmp(key, "pedalFaultDual") == 0) p.pedal_fault_dual = (uint8_t)val;
+                    else if (strcmp(key, "comBrakeFault") == 0) p.com_brake_fault = parse_int(eq + 1);
+                    else if (strcmp(key, "comMotorCutoff") == 0) p.com_motor_cutoff = parse_int(eq + 1);
+                    else if (strcmp(key, "motorPduTimedOut") == 0) p.motor_pdu_timed_out = (uint8_t)val;
                 }
             }
             token = strtok_r(NULL, " \t\r\n", &saveptr);

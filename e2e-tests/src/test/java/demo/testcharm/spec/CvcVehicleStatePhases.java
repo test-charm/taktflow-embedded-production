@@ -22,6 +22,10 @@ public class CvcVehicleStatePhases {
             property("motorSpeed").defaultValue(null);
             property("torqueRequest").defaultValue(null);
             property("pedalPosition").defaultValue(null);
+            property("pedalFaultDual").defaultValue(null);
+            property("comBrakeFault").defaultValue(null);
+            property("comMotorCutoff").defaultValue(null);
+            property("motorPduTimedOut").defaultValue(null);
         }
     }
 }

@@ -28,4 +28,8 @@ public class CvcVehicleStatePhase {
     private Integer motorSpeed;
     private Integer torqueRequest;
     private Integer pedalPosition;
+    private Boolean pedalFaultDual;
+    private Integer comBrakeFault;
+    private Integer comMotorCutoff;
+    private Boolean motorPduTimedOut;
 }
