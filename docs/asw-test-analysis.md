@@ -35,13 +35,18 @@
 - **POSIX/vCAN 集成测试**：多 ECU 进程级测试
 - **SIL/HIL/PIL 测试**：验证 CAN 可见行为、时序、故障响应和诊断的场景及台架测试
 
-**目前缺失的**不是测试量，而是一个 **`panda/e2e-tests` 风格的 ASW 适配层**：
+**曾缺失的**不是测试量，而是一个 **`panda/e2e-tests` 风格的 ASW 适配层**。该层已开始落地：
 
-- 没有 `.feature` + 步骤定义风格的 BDD 层，
-- 没有针对 ASW 内部的 JNA/原生测试 shim，
-- 没有以 `Given/When/Then` 表达功能行为的 ASW 领域特定语言。
+- 已有 `.feature` + RESTful-cucumber 步骤定义风格的 BDD 层（`e2e-tests/src/test/resources/features/`），
+- 已有针对 ASW 内部的原生测试 shim（`gateway/fault_inject/native/*_harness.c`），
+- 已有以 `Given/When/Then`（或 `When/Then`）表达功能行为的 ASW 领域特定语言。
 
-换句话说，仓库已经验证了 ASW 行为的许多**效果**，但尚未提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**。
+当前已覆盖两条 ASW 链：
+
+1. **CVC 踏板 → Torque_Request**（`cvc_pedal_torque_request.feature`，12 场景）
+2. **CVC 车辆状态机**（`cvc_vehicle_state.feature`，13 场景）
+
+换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，但仍仅覆盖 CVC 的两个 SWC，其余 ECU 待扩展。
 
 ---
 
@@ -50,6 +55,7 @@
 | 层级 | 位置 | 数量 | 主要目的 |
 |---|---:|---|
 | ECU ASW/SWC 单元测试 | `firmware/ecu/*/test/` | 69 个文件 | 使用 Unity + mock 直接验证应用组件 |
+| ASW E2E（BDD） | `e2e-tests/src/test/resources/features/` | 2 个 feature / 25 场景 | 通过测试专用 API + 原生 harness 执行真实 SWC 生产代码，可读断言 |
 | BSW 单元测试 | `test/unit/bsw/` | 40 个文件 | 验证单个 BSW 模块及生成的负向/全路径用例 |
 | BSW 集成测试 | `test/framework/test_int_*.c` | 11 个文件 | 验证真实模块链，如 E2E -> Com -> PduR -> CanIf |
 | POSIX 多 ECU 集成 | `test/integration/` | 8 个文件 | 在 `vcan0` 上运行 POSIX ECU 二进制，验证总线可见的集成行为 |
@@ -67,13 +73,13 @@
 
 | 方面 | `panda/e2e-tests` | 当前仓库 |
 |---|---|---|
-| 测试表达 | Java + Cucumber `.feature` + 步骤定义 | C/Unity、Python 脚本、YAML 场景 |
-| ASW/内部访问 | JNA/原生库适配器（`BodyPandaClient`、`PandaClient`） | 主要是黑盒或基于 mock 的访问；无等效的 ASW 适配层 |
-| 场景风格 | BDD 业务可读步骤 | 面向 CAN/系统/故障的测试脚本和 YAML |
-| 内部断言 | 通过原生 shim 轻松断言内部状态 | 通常通过 mock、CAN 流量、DTC、状态或进程行为推断 |
-| 当前规模 | 47 个 feature 文件 / 392 个场景 | 基础设施种类更多，但 ASW 可读的 BDD 呈现较少 |
+| 测试表达 | Java + Cucumber `.feature` + 步骤定义 | C/Unity、Python 脚本、YAML 场景 + Java Cucumber `.feature`（ASW E2E） |
+| ASW/内部访问 | JNA/原生库适配器（`BodyPandaClient`、`PandaClient`） | 原生 C harness（`cvc_pedal_harness.c`、`cvc_vehiclestate_harness.c`）链接真实 SWC 生产代码 |
+| 场景风格 | BDD 业务可读步骤 | 面向 CAN/系统/故障的测试脚本和 YAML + 业务可读的 ASW BDD 场景 |
+| 内部断言 | 通过原生 shim 轻松断言内部状态 | 通过原生 harness 直接断言 RTE/Com 输出 + mock、CAN 流量、DTC、状态推断 |
+| 当前规模 | 47 个 feature 文件 / 392 个场景 | 2 个 feature 文件 / 25 个 ASW E2E 场景（其余层级覆盖广泛） |
 
-**含义：** 本仓库已有强大的验证基础设施，但如果目标是"类似于 `panda/e2e-tests` 的 ASW 端到端测试"，缺失的部分是**新的测试框架风格**，而不是底层测试的不足。
+**含义：** 本仓库已有强大的验证基础设施，且已开始补齐 `panda/e2e-tests` 风格的**可读 ASW E2E 测试框架**（原生 harness + BDD feature）。当前规模仍小，仅覆盖 CVC 两个 SWC。
 
 ---
 
@@ -329,7 +335,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `Swc_Pedal.c` | 双踏板处理和扭矩映射 | `test_Swc_Pedal_asild.c` | `sil_002_pedal_ramp.yaml` | 踏板传感器值、合理性故障、模式限制 | 扭矩请求、故障检测、钳位 |
 | `Swc_Scheduler.c` | 可运行实体表和时序配置 | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py` | 调度器表内容/周期 | 可运行实体配置正确性 |
 | `Swc_SelfTest.c` | 启动自检序列 | `test_Swc_SelfTest_asild.c` | `test_hil_selftest.py`、启动 SIL/HIL 流程 | 自检前提条件和失败 | 通过/失败顺序和门控 |
-| `Swc_VehicleState.c` | 权威 CVC VSM | `test_Swc_VehicleState_asild.c` | `test_vsm_fault_transitions.py`、`test_hil_vsm.py`、SIL 电池/过温/紧急停止场景 | 故障、通信丢失、紧急停止、电池、对等状态 | 状态转换、锁存、模式输出 |
+| `Swc_VehicleState.c` | 权威 CVC VSM | `test_Swc_VehicleState_asild.c` | `test_vsm_fault_transitions.py`、`test_hil_vsm.py`、SIL 电池/过温/紧急停止场景、`cvc_vehicle_state.feature`（ASW E2E） | 故障、通信丢失、紧急停止、电池、对等状态 | 状态转换、锁存、模式输出 |
 | `Swc_Watchdog.c` | 外部看门狗喂狗门控 | `test_Swc_Watchdog_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py` | 存活条件/缺失条件 | WDI 喂狗使能/禁用和故障门控 |
 | `main.c` | CVC 入口点和周期性循环 | 无 | `test_cvc_full.py`、SIL 启动/电源循环场景、HIL/PIL 启动路径 | 进程/板卡启动 | 端到端启动和周期性行为 |
 
@@ -417,18 +423,30 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ## 主要 ASW 覆盖缺口
 
-### 1. 缺少 `panda` 风格的 ASW 适配层
+### 1. `panda` 风格的 ASW 适配层（已起步，仍在扩展）
 
-当前测试要么是：
-
-- 重度 mock 的单元测试，要么是
-- 黑盒 CAN/系统测试。
-
-缺失的是一个中间层，能够：
+此前测试要么是重度 mock 的单元测试，要么是黑盒 CAN/系统测试，缺少一个中间层。该中间层现已落地：
 
 - 以场景友好的方式调用 ASW 入口点，
 - 注入内部状态而不重新实现完整的 ECU 框架，
 - 用可读的 BDD 步骤断言内部的 ASW 可见输出。
+
+已实现两条链：
+
+| 功能链 | Feature | 场景数 | 原生 harness |
+|---|---|---:|---|
+| CVC 踏板 → Torque_Request | `cvc_pedal_torque_request.feature` | 12 | `cvc_pedal_harness.c` |
+| CVC 车辆状态机 | `cvc_vehicle_state.feature` | 13 | `cvc_vehiclestate_harness.c` |
+
+> 说明：车辆状态机 E2E 采用 Given/When 分离：
+> - **Given**（`存在:` → `/setup`）只存**前置阶段**——使车辆到达被测前置状态（如自检通过 + 保持周期 → RUN），
+>   以及等待后 INIT 宽限期过期的阶段；无前置状态的场景存空 `phases: []`（同时清除上一场景的服务端残留）。
+> - **When**（`POST /api/test/asw/cvc/vehicle-state`）body 携带**刺激阶段**——触发状态迁移的最后动作
+>   （如 `{cycles:5, brakeFault:true}`），服务端按「前置 + 刺激」顺序执行。
+> 未指定的阶段字段通过 spec `defaultValue(null)` + DTO `@JsonInclude(NON_NULL)` 从请求 JSON 中省略，
+> 由服务端/harness 默认值接管。注意：JFactory 的内存仓库（`MemoryDataRepository`）默认跨场景残留，
+> 其 query-first 行为会让部分匹配的 phase 复用到上一场景的对象（导致 `selfTestPass` 等未指定字段泄漏）；
+> `ApplicationSteps.resetJFactoryRepository()`（`@Before` 每场景清空仓库）已消除该残留。
 
 ### 2. 仅间接覆盖的组件
 
@@ -476,11 +494,13 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
    它已经很好地覆盖了单元、集成、SIL、HIL 和 PIL 关注点。
 
 2. **在其之上增加新的 ASW 适配框架。**  
-   缺失的层是可读的场景/适配层，而非底层验证。
+   缺失的层是可读的场景/适配层，而非底层验证。该层已开始建设（见「主要 ASW 覆盖缺口」第 1 条）。
 
 3. **从已有最佳 ASW 覆盖的领域开始。**  
-   良好的首选候选是：
-   - CVC：`Swc_Pedal`、`Swc_VehicleState`、`Swc_EStop`、`Swc_CvcCom`
+   已落地候选：
+   - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅
+   待扩展候选：
+   - CVC：`Swc_EStop`、`Swc_CvcCom`
    - FZC：`Swc_Steering`、`Swc_Brake`、`Swc_Lidar`
    - RZC：`Swc_Motor`、`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
 

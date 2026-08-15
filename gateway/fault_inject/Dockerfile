@@ -144,7 +144,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/firmware/ecu/tcu/src/Swc_Obd2Pids.c \
       /app/firmware/ecu/tcu/src/Swc_UdsServer.c && \
     clang $LDFLAGS -Wl,--allow-multiple-definition -o /app/bin/cvc_pedal_harness \
-      /app/build/*.o /app/build/*/*.o
+      /app/build/*.o /app/build/*/*.o && \
+    # Vehicle-state machine harness (links Swc_VehicleState.c only, with coverage)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/cvc/include -I/app/firmware/ecu/cvc/cfg \
+      -I/app/firmware/ecu/cvc/cfg/platform_posix \
+      /app/fault_inject/native/cvc_vehiclestate_harness.c \
+      /app/firmware/ecu/cvc/src/Swc_VehicleState.c \
+      -o /app/bin/cvc_vehiclestate_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

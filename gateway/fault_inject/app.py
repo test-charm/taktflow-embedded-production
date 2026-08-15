@@ -16,6 +16,7 @@ Runs on FAULT_PORT (default 8091).
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -92,6 +93,33 @@ class CvcPedalTorqueBody(BaseModel):
     ditherAmplitude: int | None = None    # 0=no dither (stuck-test), None=default 16
 
 
+class VehicleStatePhase(BaseModel):
+    """One phase of the CVC vehicle-state harness script."""
+    cycles: int = 0
+    selfTestPass: bool = False
+    estop: bool = False
+    scRelayEnergized: bool = True      # 1 = relay energized / OK
+    fzcComm: int = 0                   # 0=OK, 1=TIMEOUT
+    rzcComm: int = 0
+    pedalFault: bool = False
+    motorCutoff: bool = False
+    brakeFault: bool = False
+    steeringFault: bool = False
+    batteryStatus: int = 2             # 2=NORMAL
+    motorFaultRzc: bool = False
+    motorSpeed: int = 0
+    torqueRequest: int = 0
+    pedalPosition: int = 0
+
+
+class CvcVehicleStateSetupBody(BaseModel):
+    phases: list[VehicleStatePhase] = []
+
+
+class CvcVehicleStateRunBody(BaseModel):
+    phases: list[VehicleStatePhase] | None = None  # stimulus phases, appended after server-side stored precondition
+
+
 # Server-side state store for Given/When separation.
 # Mutated by /pedal-torque/setup, read by /pedal-torque when fields are absent.
 _stored_vehicle_state: int = 1          # default: RUN
@@ -100,10 +128,14 @@ _stored_spi_fault_sensor: int | None = None  # default: no fault
 _stored_dither_amplitude: int | None = None  # default: use harness built-in (16)
 _stored_recover_cycles: int | None = None    # default: no recovery phase
 
+# Stored VSM phase script for Given/When separation.
+_stored_vehicle_state_phases: list[VehicleStatePhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
 _CVC_PEDAL_HARNESS = "/app/bin/cvc_pedal_harness"
+_CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -714,6 +746,7 @@ def test_result():
 
 def _generate_coverage_html():
     """Run LLVM coverage tools + genhtml to produce HTML coverage report."""
+    info_file = os.path.join(_COVERAGE_DIR, "coverage.info")
     profdata_bin = "/usr/bin/llvm-profdata"
     llvmcov_bin = "/usr/bin/llvm-cov"
     genhtml_bin = "/usr/bin/genhtml"
@@ -721,32 +754,61 @@ def _generate_coverage_html():
         log.warning("llvm-profdata/llvm-cov/genhtml not found — skipping coverage")
         return
 
-    info_file = os.path.join(_COVERAGE_DIR, "coverage.info")
-    profdata_file = os.path.join(_COVERAGE_DIR, "merged.profdata")
+    # One harness binary per instrumented ASW chain. Profiles from different
+    # binaries cannot be merged into a single .profdata (each binary has its
+    # own instrumentation mapping), so we export per-binary lcov traces and
+    # merge those with lcov (which correctly aggregates shared source files).
+    harnesses = [
+        ("cvc_pedal", _CVC_PEDAL_HARNESS),
+        ("cvc_vsm", _CVC_VSM_HARNESS),
+    ]
 
-    # Step 1: Merge all .profraw files
-    profraw_files = [os.path.join(_COVERAGE_DIR, f)
-                     for f in os.listdir(_COVERAGE_DIR) if f.endswith(".profraw")]
-    if not profraw_files:
-        log.warning("No .profraw files found in %s", _COVERAGE_DIR)
+    # Step 1: per-binary merge + export
+    info_files = []
+    for prefix, harness in harnesses:
+        profraw_files = sorted(
+            os.path.join(_COVERAGE_DIR, f)
+            for f in os.listdir(_COVERAGE_DIR)
+            if f.startswith(prefix + "_") and f.endswith(".profraw")
+        )
+        if not profraw_files:
+            log.warning("No .profraw files found for %s in %s", prefix, _COVERAGE_DIR)
+            continue
+
+        profdata_file = os.path.join(_COVERAGE_DIR, prefix + ".profdata")
+        subprocess.run(
+            [profdata_bin, "merge", "-sparse", "-o", profdata_file] + profraw_files,
+            capture_output=True, text=True, timeout=30,
+        )
+
+        prefix_info = os.path.join(_COVERAGE_DIR, prefix + ".info")
+        result = subprocess.run(
+            [llvmcov_bin, "export", harness,
+             "-instr-profile=" + profdata_file, "-format=lcov",
+             "-ignore-filename-regex=/app/fault_inject/.*",
+             "-ignore-filename-regex=/app/firmware/bsw/.*",
+             "-ignore-filename-regex=/usr/.*"],
+            capture_output=True, text=True, timeout=30,
+        )
+        with open(prefix_info, "w") as f:
+            f.write(result.stdout)
+        info_files.append(prefix_info)
+
+    if not info_files:
+        log.warning("No coverage data to report")
         return
-    subprocess.run(
-        [profdata_bin, "merge", "-sparse", "-o", profdata_file] + profraw_files,
-        capture_output=True, text=True, timeout=30,
-    )
-    # Step 2: Export to lcov format via llvm-cov
-    # llvm-cov export uses the binary to resolve source paths and naturally
-    # includes header-file coverage (unlike gcov which only tracks .c files).
-    result = subprocess.run(
-        [llvmcov_bin, "export", _CVC_PEDAL_HARNESS,
-         "-instr-profile=" + profdata_file, "-format=lcov",
-         "-ignore-filename-regex=/app/fault_inject/.*",
-         "-ignore-filename-regex=/app/firmware/bsw/.*",
-         "-ignore-filename-regex=/usr/.*"],
-        capture_output=True, text=True, timeout=30,
-    )
-    with open(info_file, "w") as f:
-        f.write(result.stdout)
+
+    # Step 2: merge lcov traces (aggregates duplicate SF records, e.g.
+    # Swc_VehicleState.c appears in both the pedal and VSM harness binaries)
+    if len(info_files) == 1:
+        shutil.copyfile(info_files[0], info_file)
+    else:
+        lcov_bin = "/usr/bin/lcov"
+        cmd = [lcov_bin]
+        for f in info_files:
+            cmd += ["--add-tracefile", f]
+        cmd += ["--output-file", info_file]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
     # Step 3: Generate HTML
     subprocess.run(
@@ -819,6 +881,78 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC pedal harness returned invalid JSON") from exc
+
+
+def _phase_to_line(p: VehicleStatePhase) -> str:
+    """Serialize one VSM phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"selfTestPass={_b(p.selfTestPass)}",
+        f"estop={_b(p.estop)}",
+        f"scRelayEnergized={_b(p.scRelayEnergized)}",
+        f"fzcComm={p.fzcComm}",
+        f"rzcComm={p.rzcComm}",
+        f"pedalFault={_b(p.pedalFault)}",
+        f"motorCutoff={_b(p.motorCutoff)}",
+        f"brakeFault={_b(p.brakeFault)}",
+        f"steeringFault={_b(p.steeringFault)}",
+        f"batteryStatus={p.batteryStatus}",
+        f"motorFaultRzc={_b(p.motorFaultRzc)}",
+        f"motorSpeed={p.motorSpeed}",
+        f"torqueRequest={p.torqueRequest}",
+        f"pedalPosition={p.pedalPosition}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/vehicle-state/setup")
+def setup_vehicle_state(body: CvcVehicleStateSetupBody):
+    """Store the VSM phase script for subsequent run calls that omit phases."""
+    global _stored_vehicle_state_phases
+    _stored_vehicle_state_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/vehicle-state")
+def run_cvc_vehicle_state(body: CvcVehicleStateRunBody):
+    """Execute the real CVC vehicle state machine in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. reaching RUN). `body.phases` carries the stimulus phases — the final
+    triggering action under test. The harness runs the concatenated
+    precondition + stimulus script.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_vehicle_state_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_vsm_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_VSM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC vehicle-state harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC vehicle-state harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC vehicle-state harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC vehicle-state harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
