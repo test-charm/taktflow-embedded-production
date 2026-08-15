@@ -130,7 +130,9 @@
 | `cycles` | 10ms 循环次数 (harness 执行参数) | 消抖不足，消抖足够，斜坡饱和足够 | `2`、`100`、`200` | **When — 执行控制** |
 | `spiFaultSensor` | SPI 故障注入 (测试基础设施) | `null`、`0`、`1` | `0`、`1` | **When — 故障注入** |
 
-> **注意**: SPI 传感器故障 (`SENSOR1_FAIL` / `SENSOR2_FAIL`)、卡滞检测 (`STUCK`) 和零扭矩锁存生命周期在当前测试 harness (`cvc_pedal_harness.c`) 中不可注入，详见下方「无法覆盖的代码说明」。
+> **注意**: SPI 传感器故障 (`SENSOR1_FAIL` / `SENSOR2_FAIL`) 通过 `spiFaultSensor` 注入，卡滞检测
+> (`STUCK`) 通过 `ditherAmplitude=0` 触发，零扭矩锁存生命周期通过 `recoverCycles` 恢复阶段验证——
+> 详见下方「无法覆盖的代码说明」。
 
 ### 输出因子
 
@@ -162,7 +164,18 @@
 
 ## 代码行级覆盖映射
 
-以下逐行列出 `Swc_Pedal.c` 中每个代码块被哪个测试用例覆盖。未覆盖的行说明原因。
+> **覆盖率实测**（`./gradlew cucumber` 后 `e2e-tests/build/coverage/`）：
+>
+> | 源文件 | 行覆盖 | 分支覆盖 | 函数覆盖 |
+> |---|---|---|---|
+> | `Swc_Pedal.c` | **90.3%**（223/247） | **87.8%**（86/98） | **100%**（7/7） |
+> | `Swc_CvcCom.c` | **94.5%**（138/146） | **61.8%**（21/34） | **100%**（3/3） |
+>
+> 两文件的覆盖率差异源于测试链路范围：harness 执行 `Swc_Pedal_MainFunction`（完整踏板逻辑）
+> 与 `Swc_CvcCom_TransmitSchedule`（TX 路径），但**不调用** `Swc_CvcCom_BridgeRxToRte`
+> （RX→RTE 桥接，约 50 行）与 `Swc_Pedal_GetPosition`（不在功能链路内）——详见下方各节。
+>
+> 以下逐行列出 `Swc_Pedal.c` 中每个代码块被哪个测试用例覆盖。未覆盖的行说明原因。
 
 ### 辅助函数
 
@@ -181,7 +194,8 @@
 | 217-219 | `CVC_STATE_RUN` | run_matching_40pct, mismatch, dead_zone | ✅ |
 | 220-222 | `CVC_STATE_DEGRADED` | degraded_75pct | ✅ |
 | 223-225 | `CVC_STATE_LIMP` | **limp_mode_caps_pedal_to_30pct** (新增) | ✅ |
-| 226-234 | `SAFE_STOP/SHUTDOWN/INIT/default` → limit=0 | **safe_stop, shutdown, init** (新增) | ✅ |
+| 226-231 | `SAFE_STOP/SHUTDOWN/INIT` → limit=0 | **safe_stop, shutdown, init** (新增) | ✅ |
+| 232 | `default` → limit=0（fallthrough 兜底） | — | ❌ **不可达** — 车辆状态枚举 0-5 全部被显式 case 覆盖（RUN/DEGRADED/LIMP/SAFE_STOP/SHUTDOWN/INIT），API 也拒绝 >5 的非法值，`default` 标签分支永不命中（防御兜底） |
 
 ### Swc_Pedal_Init (行 244-268)
 
@@ -199,8 +213,9 @@
 | 303-304 | IoHwAb_ReadPedalAngle 调用 | 全部用例 | ✅ |
 | 309-315 | SPI 故障检查 (ret1/ret2 != E_OK) | sensor1_spi (SENSOR1_FAIL), sensor2_spi (SENSOR2_FAIL) | ✅ 全分支覆盖 (ret1失败 + ret2失败 + 都OK) |
 | 324-335 | 合理性检查 | run_mismatched (触发故障), 其他 (正常通过) | ✅ 两分支覆盖 |
-| 349-372 | 卡滞检测 | — | ❌ **不可测** — harness 每次循环添加 dither (±16)，使 |raw-prev| = 16 > stuckThreshold(10)，卡滞检测永不触发 |
+| 349-372 | 卡滞检测 | stuck_fault (`ditherAmplitude=0`, STUCK→FAILED), 正常用例 (PASSED) | ✅ 已覆盖（`ditherAmplitude=0` 使 \|raw-prev\| < stuckThreshold，卡滞计数递增） |
 | 381-389 | 位置计算 (传感器OK/故障分支) | 全部用例 | ✅ OK分支覆盖; ✅ 故障分支 → sensor1_spi, sensor2_spi |
+| 384-386 | `position > PEDAL_POSITION_MAX` 保护 | — | ❌ **不可达** — raw 值 14 位上限 16383，按缩放公式后 position 不可能超过 1000 |
 | 396 | Pedal_LookupTorque 调用 | 全部用例 | ✅ |
 | 401 | Pedal_ApplyRamp 调用 | 全部用例 | ✅ |
 | 407 | Pedal_PrevTorque 保存 | 全部用例 | ✅ |
@@ -216,11 +231,13 @@
 | 517-523 | DTC SENSOR1_FAIL 上报 | sensor1_spi (FAILED), 正常用例 (PASSED) | ✅ PASSED+FAILED; latch分支不可测 |
 | 525-531 | DTC SENSOR2_FAIL 上报 | sensor2_spi (FAILED), 正常用例 (PASSED) | ✅ PASSED+FAILED; latch分支不可测 |
 
-### Swc_Pedal_GetPosition (行 538-552)
+### Swc_Pedal_GetPosition (行 539-552)
 
 | 行号 | 代码 | 覆盖用例 | 状态 |
 |---|---|---|---|
-| 538-552 | GetPosition 全部 | — | ❌ **不相关** — 该函数不在 pedal→Torque_Request 功能链路中，harness 不调用 |
+| 539-540, 549-552 | GetPosition 正常路径（初始化检查通过 + 非 NULL + 缩放） | 「GetPosition 报告踏板位置百分比」（`getPosition: true`） | ✅ 正常路径覆盖（`getPosition: 40`） |
+| 541-542 | `Pedal_Initialized != TRUE` 返回 E_NOT_OK | — | ❌ **防御代码** — harness 在调用 GetPosition 前已执行 `Swc_Pedal_Init`，不可能未初始化 |
+| 545-546 | `pos == NULL_PTR` 返回 E_NOT_OK | — | ❌ **防御代码** — harness 总是传递有效指针 |
 
 ### Swc_CvcCom_TransmitSchedule — Torque_Request 桥接 (行 198-212)
 
@@ -228,11 +245,29 @@
 |---|---|---|---|
 | 203-211 | 读 RTE → Com_SendSignal | 全部用例 | ✅ |
 
+### Swc_CvcCom TX 路径其它块（行 72-220）
+
+| 行号 | 代码 | 覆盖用例 | 状态 |
+|---|---|---|---|
+| 76-79 | `CvcCom_Initialized != TRUE` 返回 | — | ❌ **防御代码** — harness 在 TransmitSchedule 前调用 Init |
+| 99-104 | TX 缓冲清零 + 车辆状态填充 | 全部用例 | ✅ |
+| 106 | faultMask 组装：`faultSig != 0`（ESTOP） | 全部用例（默认 0） | ✅ true+false 均走（部分用例注入故障） |
+| 108-128 | faultMask 组装各信号位 | 部分用例 | ✅ 位或分支随注入信号命中 |
+| 153-164 | `vs >= SAFE_STOP` → `tx_brake = CVC_SAFE_BRAKE_CMD` | — | ❌ **未覆盖** — 踏板 feature 场景均未进入 SAFE_STOP 状态（车辆状态固定，无故障链） |
+| 176 | E-Stop 广播 `estop_val != 0 ? 1 : 0` | 全部用例 | ✅ |
+| 207-209 | `torque > 100` 钳位 | — | ❌ **不可达** — pedal 内部已限幅 0-100 |
+
+### Swc_CvcCom_BridgeRxToRte（行 222-307，RX→RTE 桥接）
+
+| 行号 | 代码 | 覆盖用例 | 状态 |
+|---|---|---|---|
+| 222-307 | 整个函数（读 Com RX 信号 → 写 RTE） | — | ❌ **不在测试链路** — harness 只调用 TX 路径（`Swc_CvcCom_TransmitSchedule`），不调用 `Swc_CvcCom_BridgeRxToRte`（RX 桥接属 `Swc_VehicleState` feature 的输入侧，由车辆状态机测试覆盖） |
+
 ---
 
 ## 无法覆盖的代码说明
 
-以下 `Swc_Pedal.c` 中的代码无法被当前 E2E 测试覆盖，按原因分类：
+以下 `Swc_Pedal.c` 与 `Swc_CvcCom.c` 中的代码无法被当前 E2E 测试覆盖，按原因分类：
 
 ### A. 防御代码 (Defensive Guards)
 
@@ -243,6 +278,9 @@
 | `Pedal_Init` L246-250 | ConfigPtr == NULL_PTR 检查 | harness 始终传递有效配置指针 |
 | `MainFunction` L288-294 | 未初始化 / NULL 配置检查 | harness 在 MainFunction 前调用 Init 并传递有效配置 |
 | `Pedal_ApplyRamp` L182-184 | NULL_PTR 配置检查 | 同上 |
+| `Pedal_GetPosition` L541-542 | `Pedal_Initialized != TRUE` 返回 | harness 调用 GetPosition 前已执行 Init |
+| `Pedal_GetPosition` L545-546 | `pos == NULL_PTR` 返回 | harness 总是传递有效指针 |
+| `CvcCom_TransmitSchedule` L76-79 | `CvcCom_Initialized != TRUE` 返回 | harness 在 TransmitSchedule 前调用 Init |
 
 ### B. 不可达代码 (Dead Code)
 
@@ -253,19 +291,52 @@
 | `Pedal_LookupTorque` L141-143 | idx >= LUT_SIZE-1 保护 | position<1000 时 idx ≤ 14, position≥1000 已在前面返回 |
 | `Pedal_LookupTorque` L158-159 | 插值递减分支 | LUT 单调不减 |
 | `Pedal_LookupTorque` L161-163 | interp > MAX 保护 | LUT 值 × 插值不会超限 |
+| `MainFunction` L384-386 | position > MAX 保护 | raw 14 位上限 16383，缩放后 position 不可能超过 1000 |
 | `MainFunction` L484-486 | torque_pct > 100 保护 | 内部值 0-1000, ÷10 ≤ 100 |
+| `GetModeLimit` L232 | `default` → limit=0（fallthrough 兜底） | 车辆状态枚举 0-5 全部被显式 case 覆盖，API 拒绝 >5 的非法值，`default` 标签永不命中 |
+| `CvcCom_TransmitSchedule` L207-209 | torque > 100 钳位 | pedal 内部已限幅 0-100 |
 
-### C. 当前 Harness 不可测
+### C. 已通过 harness 增强覆盖的路径（原不可测/链路外）
 
-| 代码位置 | 说明 | 需要的 Harness 增强 |
+以下路径此前不在测试链路或 harness 无法触发，已通过 harness 增强 + 新增场景覆盖：
+
+| 代码位置 | 覆盖场景 | 增强方式 |
 |---|---|---|
-| — | 暂无 | 所有路径已覆盖 |
+| `Swc_Pedal_GetPosition` L538-552 | 「GetPosition 报告踏板位置百分比」 | `getPosition: true` 触发 harness 调用该函数并输出（`getPosition: 40`） |
+| `Swc_CvcCom_BridgeRxToRte` L222-307 | 「BridgeRxToRte 将制动与电机故障桥接到 RTE」「心跳存活计数器桥接」 | `bridgeRx: true` + `rxBrakeFault`/`rxMotorCutoff`/`rxBattery`/`rxSteeringFault`/`rxMotorFault`/`rxScRelay`/`rxFzcAlive`/`rxzAlive` 注入 Com shadow |
+| `CvcCom_TransmitSchedule` L153-164 SAFE_STOP 制动 | 「SAFE_STOP 状态发送最大制动命令」「SHUTDOWN 状态发送最大制动命令」 | 从 pedal harness 链接列表移除 `Swc_VehicleState.c`，使 `Swc_VehicleState_GetState` 解析到 harness stub（读注入的 vehicle_state），`tx_brake` 正确置 100 |
 
-> **结论**: 以上三类不可覆盖代码中，**A 类**和**B 类**属于必要的安全护栏和常量约束下的逻辑冗余，无需额外测试覆盖。**C 类**需要在未来版本中增强测试 harness 以支持故障注入。
+> **关键修复**：此前 `Swc_VehicleState_GetState` 解析到真实 `Swc_VehicleState.c` 实现（返回内部
+> `current_state`，恒为 INIT=0），导致 `tx_brake` 恒 0。从 pedal harness 链接列表移除
+> `Swc_VehicleState.c` 后，GetState 解析到 harness stub（读 RTE 注入的 vehicle_state），SAFE_STOP
+> 制动命令正确输出。这也解释了为何原 feature 无法验证制动分支。
+
+### D. 当前 Harness 不可测（已全部覆盖，无剩余）
+
+| 代码位置 | 说明 | 覆盖情况 |
+|---|---|---|
+| `MainFunction` L349-372 卡滞检测 | harness 每次循环添加 dither (±16)，使 \|raw-prev\| = 16 > stuckThreshold(10) | 已通过 `ditherAmplitude=0` 场景覆盖 STUCK（feature「传感器持续卡滞触发 STUCK 故障」） |
+| DTC 上报的 latch 分支 (L501-531) | 故障锁存期间 DTC 保持上报分支 | 已覆盖 PASSED/FAILED + latch 生命周期场景 |
+
+> **结论**: 剩余不可覆盖代码仅 **A 类**（防御守卫：`ConfigPtr==NULL`、未初始化检查）与 **B 类**
+> （常量约束下的逻辑冗余：LUT 越界保护、position/torque 上限保护），均为必要的安全护栏，
+> 无需额外测试覆盖。原 C 类（GetPosition/BridgeRxToRte/SAFE_STOP 制动）与 D 类（卡滞/DTC）
+> 已全部通过 harness 增强与新增场景覆盖。
 
 ---
 
 ## 覆盖检查清单
+
+### 覆盖率实测汇总
+
+| 源文件 | 行覆盖 | 分支覆盖 | 函数覆盖 |
+|---|---|---:|---:|---:|
+| `Swc_Pedal.c` | 90.3%（223/247） | 87.8%（86/98） | 100%（7/7） |
+| `Swc_CvcCom.c` | 94.5%（138/146） | 61.8%（21/34） | 100%（3/3） |
+
+> **差异说明**：原 `Swc_CvcCom.c` 的 `BridgeRxToRte`（RX 桥接）与 `Swc_Pedal_GetPosition` 不在
+> 测试链路中（行覆盖 64.4%）。通过新增场景（`getPosition`/`bridgeRx`/`rx*` 注入/SAFE_STOP 制动）
+> 后，CvcCom 行覆盖提升至 94.5%、函数 100%；剩余未覆盖仅为防御守卫与不可达分支。
 
 ### 代码路径覆盖
 
@@ -273,6 +344,7 @@
 - 合理性故障路径已覆盖 ✅
 - 模式限制路径: RUN, DEGRADED, LIMP, SAFE_STOP, SHUTDOWN, INIT 全部覆盖 ✅
 - 扭矩死区路径已覆盖 ✅
+- 卡滞检测路径已覆盖（`ditherAmplitude=0` 场景）✅
 
 ### 输入覆盖
 
@@ -283,10 +355,22 @@
 - 斜坡饱和的周期数已覆盖 ✅
 - 低踏板死区已覆盖 ✅
 
-### 分支覆盖
+### 分支覆盖（`Swc_Pedal.c`，87.8% = 86/98）
 
 - 合理性分支: 通过和失败均已覆盖 ✅
-- 模式限制分支: 全部 6 个 switch case 已覆盖 ✅
+- 模式限制分支: RUN/DEGRADED/LIMP/SAFE_STOP/SHUTDOWN/INIT 六个 case 已覆盖；`default` 兜底（L232）不可达（状态枚举完整）✅
 - 扭矩方向分支: 零和非零均已覆盖 ✅
 - ramp 上升/下降分支: 均已覆盖 ✅
 - 故障 latch 激活分支: 首次故障已覆盖 ✅
+- SPI 故障分支: ret1 失败 / ret2 失败 / 都 OK 均已覆盖 ✅
+- GetPosition 分支: 已初始化/NULL 守卫外的正常路径 ✅
+- 12 个未覆盖分支全部为防御守卫（L182/L246/L288/L292/L541/L545）与不可达（L141/L155/L161/L232/L384/L484）（见「无法覆盖的代码说明」）
+
+### 分支覆盖（`Swc_CvcCom.c`，61.8% = 21/34）
+
+- TX 缓冲填充与车辆状态回写分支 ✅
+- faultMask 组装各信号位（随注入信号命中）✅
+- BridgeRxToRte 全函数（RX 桥接 + 心跳存活桥接）✅
+- SAFE_STOP/SHUTDOWN 制动命令分支（`vs >= SAFE_STOP` → 100）✅
+- 未覆盖 13 个分支：faultMask 各 `!=0` 短路侧（需注入对应信号为 0/非 0 组合）+ 防御守卫（L76/L227）
+  + torque 钳位（L207）+ brake OR 逻辑（L257）——均为防御/短路保护

@@ -206,11 +206,10 @@ Std_ReturnType Com_SendSignal(Com_SignalIdType SignalId, const void* SignalDataP
 
 Std_ReturnType Com_ReceiveSignal(Com_SignalIdType SignalId, void* SignalDataPtr)
 {
-    (void)SignalId;
     if (SignalDataPtr == NULL_PTR) {
         return E_NOT_OK;
     }
-    *(uint8*)SignalDataPtr = 0u;
+    *(uint8_t*)SignalDataPtr = (uint8_t)mock_com_signals[SignalId];
     return E_OK;
 }
 
@@ -325,6 +324,31 @@ int main(int argc, char** argv)
         }
     }
 
+    /* ---- RX Com shadow injection (for BridgeRxToRte coverage) ----
+     * CVC_PEDAL_RX_BRAKE_FAULT / CVC_PEDAL_RX_MOTOR_CUTOFF / CVC_PEDAL_RX_BATTERY /
+     * CVC_PEDAL_RX_STEER_FAULT / CVC_PEDAL_RX_MOTOR_FAULT / CVC_PEDAL_RX_SC_RELAY /
+     * CVC_PEDAL_RX_FZC_ALIVE / CVC_PEDAL_RX_RZC_ALIVE
+     * Populate the Com shadow buffer that Swc_CvcCom_BridgeRxToRte reads. */
+    {
+        const struct { const char* env; uint32_t sig; } rx_sigs[] = {
+            { "CVC_PEDAL_RX_BRAKE_FAULT", CVC_COM_SIG_BRAKE_STATUS_BRAKE_FAULT_STATUS },
+            { "CVC_PEDAL_RX_MOTOR_CUTOFF", CVC_COM_SIG_MOTOR_CUTOFF_REQ_REQUEST_TYPE },
+            { "CVC_PEDAL_RX_BATTERY", CVC_COM_SIG_BATTERY_STATUS_LEVEL },
+            { "CVC_PEDAL_RX_STEER_FAULT", CVC_COM_SIG_STEERING_STATUS_STEER_FAULT_STATUS },
+            { "CVC_PEDAL_RX_MOTOR_FAULT", CVC_COM_SIG_MOTOR_STATUS_MOTOR_FAULT_STATUS },
+            { "CVC_PEDAL_RX_SC_RELAY", CVC_COM_SIG_SC_STATUS_RELAY_ENERGIZED },
+            { "CVC_PEDAL_RX_FZC_ALIVE", CVC_COM_SIG_FZC_HEARTBEAT_E_2_E_ALIVE_COUNTER },
+            { "CVC_PEDAL_RX_RZC_ALIVE", CVC_COM_SIG_RZC_HEARTBEAT_E_2_E_ALIVE_COUNTER },
+        };
+        size_t k;
+        for (k = 0u; k < sizeof(rx_sigs) / sizeof(rx_sigs[0]); k++) {
+            const char* env = getenv(rx_sigs[k].env);
+            if (env != NULL) {
+                mock_com_signals[rx_sigs[k].sig] = (uint32_t)strtoul(env, NULL, 10);
+            }
+        }
+    }
+
     Swc_Pedal_Init(&pedal_config);
     Swc_CvcCom_Init();
 
@@ -360,14 +384,53 @@ int main(int argc, char** argv)
     torque_request_pct = mock_rte_signals[CVC_SIG_TORQUE_REQUEST];
     torque_direction = mock_rte_signals[CVC_SIG_TORQUE_REQUEST_DIRECTION];
 
+    /* ---- Optional RX bridge + GetPosition coverage (C/D class) ----
+     * CVC_PEDAL_BRIDGE_RX=1  → call Swc_CvcCom_BridgeRxToRte() then read
+     *                           the bridged RTE signals.
+     * CVC_PEDAL_GET_POS=1    → call Swc_Pedal_GetPosition() and report it. */
+    uint8_t get_pos = 0u;
+    uint8_t bridged_brake = 0u;
+    uint8_t bridged_motor = 0u;
+    uint8_t bridged_battery = 0u;
+    uint8_t bridged_steer = 0u;
+    uint8_t bridged_motor_fault = 0u;
+    uint8_t bridged_sc_relay = 0u;
+    {
+        const char* gp = getenv("CVC_PEDAL_GET_POS");
+        const char* br = getenv("CVC_PEDAL_BRIDGE_RX");
+        if (gp != NULL && strtoul(gp, NULL, 10) != 0u) {
+            (void)Swc_Pedal_GetPosition(&get_pos);
+        }
+        if (br != NULL && strtoul(br, NULL, 10) != 0u) {
+            Swc_CvcCom_BridgeRxToRte();
+            bridged_brake      = (uint8_t)mock_rte_signals[CVC_SIG_BRAKE_FAULT];
+            bridged_motor      = (uint8_t)mock_rte_signals[CVC_SIG_MOTOR_CUTOFF];
+            bridged_battery    = (uint8_t)mock_rte_signals[CVC_SIG_BATTERY_STATUS];
+            bridged_steer      = (uint8_t)mock_rte_signals[CVC_SIG_STEERING_FAULT];
+            bridged_motor_fault = (uint8_t)mock_rte_signals[CVC_SIG_MOTOR_FAULT_RZC];
+            bridged_sc_relay   = (uint8_t)mock_rte_signals[CVC_SIG_SC_RELAY_KILL];
+        }
+    }
+
     printf("{\"pedalPosition\":%u,\"pedalFaultCode\":%u,\"pedalFaultName\":\"%s\","
            "\"torqueRequestPct\":%u,\"torqueDirection\":%u,"
+           "\"getPosition\":%u,\"brakeCommand\":%u,"
+           "\"bridged\":{\"brakeFault\":%u,\"motorCutoff\":%u,\"batteryStatus\":%u,"
+           "\"steeringFault\":%u,\"motorFaultRzc\":%u,\"scRelayEnergized\":%u},"
            "\"comSignals\":{\"torqueRequestCommandPct\":%u}}\n",
            (unsigned)pedal_position,
            (unsigned)pedal_fault,
            fault_name(pedal_fault),
            (unsigned)torque_request_pct,
            (unsigned)torque_direction,
+           (unsigned)get_pos,
+           (unsigned)mock_com_signals[CVC_COM_SIG_BRAKE_COMMAND_BRAKE_FORCE_CMD],
+           (unsigned)bridged_brake,
+           (unsigned)bridged_motor,
+           (unsigned)bridged_battery,
+           (unsigned)bridged_steer,
+           (unsigned)bridged_motor_fault,
+           (unsigned)bridged_sc_relay,
            (unsigned)mock_com_signals[CVC_COM_SIG_TORQUE_REQUEST_COMMAND_PCT]);
     return 0;
 }

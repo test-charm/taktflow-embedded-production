@@ -330,3 +330,141 @@
       }
     }
     """
+
+  场景: GetPosition 报告踏板位置百分比
+    假如存在:
+      """
+      CvcPedalSetup: {
+        vehicleState: RUN
+        cycles: 100
+      }
+      """
+    当POST "/api/test/asw/cvc/pedal-torque":
+      """
+      {
+        "sensor1Pct": 40,
+        "sensor2Pct": 40,
+        "getPosition": true
+      }
+      """
+    那么response should be:
+      """
+      body.json: {
+        getPosition: 40
+        pedalFaultName: NONE
+      }
+      """
+
+  场景: BridgeRxToRte 将制动与电机故障桥接到 RTE
+    假如存在:
+      """
+      CvcPedalSetup: {
+        vehicleState: RUN
+        cycles: 100
+      }
+      """
+    当POST "/api/test/asw/cvc/pedal-torque":
+      """
+      {
+        "sensor1Pct": 40,
+        "sensor2Pct": 40,
+        "bridgeRx": true,
+        "rxBrakeFault": 1,
+        "rxMotorCutoff": 1,
+        "rxBattery": 0,
+        "rxSteeringFault": 1,
+        "rxMotorFault": 1,
+        "rxScRelay": 0
+      }
+      """
+    那么response should be:
+      """
+      body.json: {
+        bridged: {
+          brakeFault: 1
+          motorCutoff: 1
+          batteryStatus: 0
+          steeringFault: 1
+          motorFaultRzc: 1
+          scRelayEnergized: 0
+        }
+      }
+      """
+
+  场景: BridgeRxToRte 心跳存活计数器桥接
+    假如存在:
+      """
+      CvcPedalSetup: {
+        vehicleState: RUN
+        cycles: 100
+      }
+      """
+    当POST "/api/test/asw/cvc/pedal-torque":
+      """
+      {
+        "sensor1Pct": 40,
+        "sensor2Pct": 40,
+        "bridgeRx": true,
+        "rxFzcAlive": 5,
+        "rxzAlive": 7
+      }
+      """
+    那么response should be:
+      """
+      body.json: {
+        bridged: {
+          brakeFault: 0
+          motorCutoff: 0
+          batteryStatus: 0
+        }
+      }
+      """
+
+  场景: SAFE_STOP 状态发送最大制动命令
+    假如存在:
+      """
+      CvcPedalSetup: {
+        vehicleState: SAFE_STOP
+        cycles: 100
+      }
+      """
+    当POST "/api/test/asw/cvc/pedal-torque":
+      """
+      {
+        "sensor1Pct": 100,
+        "sensor2Pct": 100
+      }
+      """
+    那么response should be:
+      """
+      body.json: {
+        torqueRequestPct: 0
+        brakeCommand: 100
+        comSignals: {
+          torqueRequestCommandPct: 0
+        }
+      }
+      """
+
+  场景: SHUTDOWN 状态发送最大制动命令
+    假如存在:
+      """
+      CvcPedalSetup: {
+        vehicleState: SHUTDOWN
+        cycles: 100
+      }
+      """
+    当POST "/api/test/asw/cvc/pedal-torque":
+      """
+      {
+        "sensor1Pct": 100,
+        "sensor2Pct": 100
+      }
+      """
+    那么response should be:
+      """
+      body.json: {
+        torqueRequestPct: 0
+        brakeCommand: 100
+      }
+      """

@@ -70,9 +70,12 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/firmware/ecu/cvc/src/Swc_Nvm.c \
       /app/firmware/ecu/cvc/src/Swc_Scheduler.c \
       /app/firmware/ecu/cvc/src/Swc_SelfTest.c \
-      /app/firmware/ecu/cvc/src/Swc_VehicleState.c \
       /app/firmware/ecu/cvc/src/Swc_Watchdog.c \
       /app/firmware/ecu/cvc/src/Ssd1306.c && \
+    # NOTE: Swc_VehicleState.c intentionally excluded from the pedal harness
+    # so that Swc_VehicleState_GetState resolves to the harness stub (which
+    # reads the injected vehicle_state RTE signal) rather than the real VSM
+    # internal current_state (which stays INIT unless VSM MainFunction runs).
     # FZC
     cd /app/build/fzc && \
     clang $CFLAGS -c $COMMON_INC \

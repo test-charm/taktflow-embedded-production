@@ -91,6 +91,16 @@ class CvcPedalTorqueBody(BaseModel):
     recoverSensor2Pct: int | None = None  # recovery phase: sensor 2 percentage
     recoverCycles: int | None = None      # recovery phase: cycles to run
     ditherAmplitude: int | None = None    # 0=no dither (stuck-test), None=default 16
+    bridgeRx: bool = False                # call Swc_CvcCom_BridgeRxToRte after cycle
+    getPosition: bool = False             # call Swc_Pedal_GetPosition and report
+    rxBrakeFault: int | None = None       # Com shadow: Brake_Status.BrakeFaultStatus
+    rxMotorCutoff: int | None = None      # Com shadow: Motor_Cutoff_Req.RequestType
+    rxBattery: int | None = None          # Com shadow: Battery_Status.Level
+    rxSteeringFault: int | None = None    # Com shadow: Steering_Status.SteerFaultStatus
+    rxMotorFault: int | None = None       # Com shadow: Motor_Status.MotorFaultStatus
+    rxScRelay: int | None = None          # Com shadow: SC_Status.RelayEnergized
+    rxFzcAlive: int | None = None         # Com shadow: FZC_Heartbeat E2E alive
+    rxzAlive: int | None = None           # Com shadow: RZC_Heartbeat E2E alive
 
 
 class VehicleStatePhase(BaseModel):
@@ -852,6 +862,23 @@ def run_cvc_pedal_torque(body: CvcPedalTorqueBody):
         env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_pedal_%p.profraw")
         if dither is not None:
             env["CVC_PEDAL_DITHER"] = str(dither)
+        if body.bridgeRx:
+            env["CVC_PEDAL_BRIDGE_RX"] = "1"
+        if body.getPosition:
+            env["CVC_PEDAL_GET_POS"] = "1"
+        rx_env = {
+            "CVC_PEDAL_RX_BRAKE_FAULT": body.rxBrakeFault,
+            "CVC_PEDAL_RX_MOTOR_CUTOFF": body.rxMotorCutoff,
+            "CVC_PEDAL_RX_BATTERY": body.rxBattery,
+            "CVC_PEDAL_RX_STEER_FAULT": body.rxSteeringFault,
+            "CVC_PEDAL_RX_MOTOR_FAULT": body.rxMotorFault,
+            "CVC_PEDAL_RX_SC_RELAY": body.rxScRelay,
+            "CVC_PEDAL_RX_FZC_ALIVE": body.rxFzcAlive,
+            "CVC_PEDAL_RX_RZC_ALIVE": body.rxzAlive,
+        }
+        for k, v in rx_env.items():
+            if v is not None:
+                env[k] = str(v)
         harness_args = [
             _CVC_PEDAL_HARNESS,
             str(sensor1),
