@@ -498,9 +498,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 3. **从已有最佳 ASW 覆盖的领域开始。**  
    已落地候选：
-   - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅
+   - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅
    待扩展候选：
-   - CVC：`Swc_EStop`、`Swc_CvcCom`
+   - CVC：`Swc_CvcCom`
    - FZC：`Swc_Steering`、`Swc_Brake`、`Swc_Lidar`
    - RZC：`Swc_Motor`、`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
 

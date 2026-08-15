@@ -134,6 +134,22 @@ class CvcVehicleStateRunBody(BaseModel):
     phases: list[VehicleStatePhase] | None = None  # stimulus phases, appended after server-side stored precondition
 
 
+class CvcEStopPhase(BaseModel):
+    """One phase of the CVC E-stop harness script."""
+    cycles: int = 0
+    pin: int = 0              # 0=LOW (released), 1=HIGH (pressed)
+    readFail: bool = False    # IoHwAb_ReadEStop returns E_NOT_OK (fail-safe active)
+    skipInit: bool = False    # skip Swc_EStop_Init (uninitialized no-op guard test)
+
+
+class CvcEStopSetupBody(BaseModel):
+    phases: list[CvcEStopPhase] = []
+
+
+class CvcEStopRunBody(BaseModel):
+    phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 # Server-side state store for Given/When separation.
 # Mutated by /pedal-torque/setup, read by /pedal-torque when fields are absent.
 _stored_vehicle_state: int = 1          # default: RUN
@@ -145,11 +161,15 @@ _stored_recover_cycles: int | None = None    # default: no recovery phase
 # Stored VSM phase script for Given/When separation.
 _stored_vehicle_state_phases: list[VehicleStatePhase] = []
 
+# Stored E-stop phase script for Given/When separation.
+_stored_estop_phases: list[CvcEStopPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
 _CVC_PEDAL_HARNESS = "/app/bin/cvc_pedal_harness"
 _CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
+_CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -775,6 +795,7 @@ def _generate_coverage_html():
     harnesses = [
         ("cvc_pedal", _CVC_PEDAL_HARNESS),
         ("cvc_vsm", _CVC_VSM_HARNESS),
+        ("cvc_estop", _CVC_ESTOP_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -993,6 +1014,68 @@ def run_cvc_vehicle_state(body: CvcVehicleStateRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC vehicle-state harness returned invalid JSON") from exc
+
+
+def _estop_phase_to_line(p: CvcEStopPhase) -> str:
+    """Serialize one E-stop phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"pin={p.pin}",
+        f"readFail={_b(p.readFail)}",
+        f"skipInit={_b(p.skipInit)}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/estop/setup")
+def setup_estop(body: CvcEStopSetupBody):
+    """Store the E-stop phase script for subsequent run calls that omit phases."""
+    global _stored_estop_phases
+    _stored_estop_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/estop")
+def run_cvc_estop(body: CvcEStopRunBody):
+    """Execute the real CVC E-stop ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. E-stop released). `body.phases` carries the stimulus phases — the
+    final triggering action under test (e.g. pressing the button). The harness
+    runs the concatenated precondition + stimulus script against the real
+    Swc_EStop.c + Swc_CvcCom.c production code.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_estop_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_estop_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_estop_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_ESTOP_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC estop harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC estop harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC estop harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC estop harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
