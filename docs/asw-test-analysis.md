@@ -345,7 +345,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 | 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_Brake.c` | 刹车伺服控制 | `test_Swc_Brake_asild.c` | `sil_003_emergency_stop.yaml`、`test_cvc_fzc_full.py` | 刹车命令、模式、电机切断条件 | PWM/伺服行为、钳位/安全状态处理 |
+| `Swc_Brake.c` | 刹车伺服控制 | `test_Swc_Brake_asild.c` | `sil_003_emergency_stop.yaml`、`test_cvc_fzc_full.py`、`fzc_brake.feature`（ASW E2E） | 刹车命令、模式、电机切断条件 | PWM/伺服行为、钳位/安全状态处理 |
 | `Swc_Buzzer.c` | 警告蜂鸣器模式 | `test_Swc_Buzzer_qm.c` | 通过 FZC main 间接覆盖 | 区域/状态警告条件 | 音调/模式行为 |
 | `Swc_FzcCanMonitor.c` | FZC CAN 丢失检测 | `test_Swc_FzcCanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、集成心跳测试 | 总线关闭/静默/错误条件 | 故障检测/降级路径 |
 | `Swc_FzcCom.c` | FZC RX/TX + E2E | `test_Swc_FzcCom_asild.c` | `test_cvc_fzc_dual.py`、`test_cvc_fzc_full.py`、HIL 车身/心跳 | 对等命令帧、本地状态信号 | 路由、E2E DataId、TX 状态帧 |
@@ -503,8 +503,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 3. **从已有最佳 ASW 覆盖的领域开始。**  
    已落地候选：
    - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅、`Swc_CvcCom` ✅
+   - FZC：`Swc_Steering` ✅、`Swc_Brake` ✅（见 `fzc_steering.feature`、`fzc_brake.feature`）
    待扩展候选：
-   - FZC：`Swc_Steering`、`Swc_Brake`、`Swc_Lidar`
+   - FZC：`Swc_Lidar`
    - RZC：`Swc_Motor`、`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
 
 4. **使用现有 SIL/HIL 场景作为行为参考。**  

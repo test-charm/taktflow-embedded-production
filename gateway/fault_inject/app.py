@@ -213,6 +213,34 @@ class FzcSteeringRunBody(BaseModel):
     phases: list[FzcSteeringPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcBrakePhase(BaseModel):
+    """One phase of the FZC brake servo harness script.
+
+    Drives Swc_Brake_MainFunction() against injected RTE brake command,
+    E-stop flag, IoHwAb ADC feedback, and fault injections, and reports
+    PWM / RTE / DEM outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_Brake_Init (uninitialized guard)
+    initNull: bool = False         # call Swc_Brake_Init(NULL) (NULL-config guard)
+    cmdBrake: int = 0              # commanded brake force 0-100+ (RTE FZC_SIG_BRAKE_CMD)
+    rteReadFail: bool = False      # Rte_Read returns E_NOT_OK (command timeout path)
+    estop: int = 0                 # RTE FZC_SIG_ESTOP_ACTIVE (immediate 100% brake)
+    actualPos: int = 0             # IoHwAb ADC feedback 0-1000 (0-100% in 10ths)
+    actualTrack: bool = False      # feedback tracks the commanded brake (healthy)
+    posReadFail: bool = False      # IoHwAb_ReadBrakePosition returns E_NOT_OK
+    getPos: bool = False           # call Swc_Brake_GetPosition at end of phase
+    getPosNull: bool = False       # call Swc_Brake_GetPosition(NULL)
+
+
+class FzcBrakeSetupBody(BaseModel):
+    phases: list[FzcBrakePhase] = []
+
+
+class FzcBrakeRunBody(BaseModel):
+    phases: list[FzcBrakePhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -237,6 +265,9 @@ _stored_cvccom_phases: list[CvcCvcComPhase] = []
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
+# Stored FZC brake phase script for Given/When separation.
+_stored_fzc_brake_phases: list[FzcBrakePhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -245,6 +276,7 @@ _CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
 _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
+_FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -873,6 +905,7 @@ def _generate_coverage_html():
         ("cvc_estop", _CVC_ESTOP_HARNESS),
         ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
+        ("fzc_brake", _FZC_BRAKE_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1301,6 +1334,76 @@ def run_fzc_steering(body: FzcSteeringRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="FZC steering harness returned invalid JSON") from exc
+
+
+def _fzc_brake_phase_to_line(p: FzcBrakePhase) -> str:
+    """Serialize one FZC brake phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"initNull={_b(p.initNull)}",
+        f"cmdBrake={p.cmdBrake}",
+        f"rteReadFail={_b(p.rteReadFail)}",
+        f"estop={p.estop}",
+        f"actualPos={p.actualPos}",
+        f"actualTrack={_b(p.actualTrack)}",
+        f"posReadFail={_b(p.posReadFail)}",
+        f"getPos={_b(p.getPos)}",
+        f"getPosNull={_b(p.getPosNull)}",
+    ])
+
+
+@app.post("/api/test/asw/fzc/brake/setup")
+def setup_fzc_brake(body: FzcBrakeSetupBody):
+    """Store the FZC brake phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_brake_phases
+    _stored_fzc_brake_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/brake")
+def run_fzc_brake(body: FzcBrakeRunBody):
+    """Execute the real FZC brake ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a healthy command baseline). `body.phases` carries the stimulus
+    phases — the final brake action under test. The harness runs the
+    concatenated precondition + stimulus script against the real Swc_Brake.c
+    production code (MainFunction, clamp, E-stop, timeout/oscillation
+    detection, PWM deviation, fault latch, motor cutoff, DEM).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_brake_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_brake_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_brake_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_BRAKE_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC brake harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC brake harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC brake harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC brake harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
