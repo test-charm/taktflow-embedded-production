@@ -219,7 +219,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
       /app/fault_inject/native/rzc_temponitor_harness.c \
       /app/firmware/ecu/rzc/src/Swc_TempMonitor.c \
-      -o /app/bin/rzc_temponitor_harness
+      -o /app/bin/rzc_temponitor_harness && \
+    # RZC COM harness (links Swc_RzcCom.c only — E2E protect/check, RX receive
+    # with E-stop/E2E-fail/command-timeout handling, and TX transmit scheduling
+    # for heartbeat/motor status/motor current/motor temp/battery)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_rzccom_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_RzcCom.c \
+      -o /app/bin/rzc_rzccom_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

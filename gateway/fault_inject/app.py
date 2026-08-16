@@ -337,6 +337,46 @@ class RzcTempMonitorRunBody(BaseModel):
     phases: list[RzcTempMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcComPhase(BaseModel):
+    """One phase of the RZC COM harness script.
+
+    Drives the Swc_RzcCom APIs against injected E2E buffers / RTE signals,
+    and reports E2E return codes, mutated buffers, RTE torque/estop state,
+    DEM CAN-bus-off status, and TX Com signals.
+    """
+    op: str = "receive"            # init | e2eProtect | e2eCheck | receive | tx
+    pduId: int = 0                 # E2E PDU index
+    data: str = "0000000000000000" # E2E 8-byte payload as hex ("null" = NULL_PTR)
+    length: int = 8                # E2E payload length
+    repeats: int = 1               # repeat count for e2eProtect / e2eCheck
+    cycles: int = 1                # cyclic call count (receive / tx)
+    skipInit: bool = False         # skip Swc_RzcCom_Init (uninitialized guard)
+    estop: int = 0                 # RTE RZC_SIG_ESTOP_ACTIVE (receive input)
+    vehicleState: int = 1          # RTE RZC_SIG_VEHICLE_STATE
+    torqueCmd: int = 0             # RTE RZC_SIG_TORQUE_CMD
+    faultMask: int = 0             # RTE RZC_SIG_FAULT_MASK (tx input)
+    torqueEcho: int = 0            # RTE RZC_SIG_TORQUE_ECHO
+    speedRpm: int = 0              # RTE RZC_SIG_ENCODER_SPEED
+    motorDir: int = 0              # RTE RZC_SIG_MOTOR_DIR
+    motorEnable: int = 0           # RTE RZC_SIG_MOTOR_ENABLE
+    motorFault: int = 0            # RTE RZC_SIG_MOTOR_FAULT
+    currentMa: int = 0             # RTE RZC_SIG_CURRENT_MA
+    overcurrent: int = 0           # RTE RZC_SIG_OVERCURRENT
+    temp1Dc: int = 0               # RTE RZC_SIG_TEMP1_DC
+    temp2Dc: int = 0               # RTE RZC_SIG_TEMP2_DC
+    deratingPct: int = 100         # RTE RZC_SIG_DERATING_PCT
+    batteryMv: int = 0             # RTE RZC_SIG_BATTERY_MV
+    batteryStatus: int = 0         # RTE RZC_SIG_BATTERY_STATUS
+
+
+class RzcComSetupBody(BaseModel):
+    phases: list[RzcComPhase] = []
+
+
+class RzcComRunBody(BaseModel):
+    phases: list[RzcComPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -376,6 +416,9 @@ _stored_rzc_battery_phases: list[RzcBatteryPhase] = []
 # Stored RZC temp-monitor phase script for Given/When separation.
 _stored_rzc_temponitor_phases: list[RzcTempMonitorPhase] = []
 
+# Stored RZC COM phase script for Given/When separation.
+_stored_rzc_rzccom_phases: list[RzcComPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -389,6 +432,7 @@ _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
 _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 _RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
 _RZC_TEMPMONITOR_HARNESS = "/app/bin/rzc_temponitor_harness"
+_RZC_RZCCOM_HARNESS = "/app/bin/rzc_rzccom_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1022,6 +1066,7 @@ def _generate_coverage_html():
         ("rzc_motor", _RZC_MOTOR_HARNESS),
         ("rzc_battery", _RZC_BATTERY_HARNESS),
         ("rzc_temponitor", _RZC_TEMPMONITOR_HARNESS),
+        ("rzc_rzccom", _RZC_RZCCOM_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1788,6 +1833,91 @@ def run_rzc_temponitor(body: RzcTempMonitorRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC temp-monitor harness returned invalid JSON") from exc
+
+
+def _rzc_rzccom_phase_to_line(p: RzcComPhase) -> str:
+    """Serialize one RZC COM phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    parts = [
+        f"op={p.op}",
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"pduId={p.pduId}",
+        f"data={p.data}",
+        f"len={p.length}",
+        f"repeats={p.repeats}",
+        f"estop={p.estop}",
+        f"vehicleState={p.vehicleState}",
+        f"torqueCmd={p.torqueCmd}",
+        f"faultMask={p.faultMask}",
+        f"torqueEcho={p.torqueEcho}",
+        f"speedRpm={p.speedRpm}",
+        f"motorDir={p.motorDir}",
+        f"motorEnable={p.motorEnable}",
+        f"motorFault={p.motorFault}",
+        f"currentMa={p.currentMa}",
+        f"overcurrent={p.overcurrent}",
+        f"temp1Dc={p.temp1Dc}",
+        f"temp2Dc={p.temp2Dc}",
+        f"deratingPct={p.deratingPct}",
+        f"batteryMv={p.batteryMv}",
+        f"batteryStatus={p.batteryStatus}",
+    ]
+    return " ".join(parts)
+
+
+@app.post("/api/test/asw/rzc/rzccom/setup")
+def setup_rzc_rzccom(body: RzcComSetupBody):
+    """Store the RZC COM phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_rzccom_phases
+    _stored_rzc_rzccom_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/rzccom")
+def run_rzc_rzccom(body: RzcComRunBody):
+    """Execute the real RZC COM ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. E2E alive-counter setup or an E-stop baseline). `body.phases` carries
+    the stimulus phases — the E2E protect/check / receive / tx actions under
+    test. The harness runs the concatenated precondition + stimulus script
+    against the real Swc_RzcCom.c production code (E2E CRC-8 + alive counter
+    protect/check, RX receive with E-stop / E2E-fail / command-timeout
+    handling, TX scheduling for heartbeat / motor status / motor current /
+    motor temp / battery, DEM DTC, RTE signals).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_rzccom_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_rzccom_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_rzccom_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_RZCCOM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC COM harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC COM harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC COM harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC COM harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

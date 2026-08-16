@@ -51,8 +51,10 @@
 6. **FZC 刹车伺服控制**（`fzc_brake.feature`，22 场景）
 7. **FZC 激光雷达障碍物检测**（`fzc_lidar.feature`，29 场景）
 8. **RZC 电机控制**（`rzc_motor.feature`，35 场景）
+9. **RZC 温度监控**（`rzc_temponitor.feature`，31 场景）
+10. **RZC CAN 通信**（`rzc_rzccom.feature`，32 场景）
 
-换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，已覆盖 CVC 的四个 SWC、FZC 的三个 SWC 与 RZC 的 `Swc_Motor`，其余 RZC SWC 待扩展。
+换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，已覆盖 CVC 的四个 SWC、FZC 的三个 SWC 与 RZC 的 `Swc_Motor`/`Swc_Battery`/`Swc_TempMonitor`/`Swc_RzcCom`，其余 RZC SWC 待扩展。
 
 ---
 
@@ -61,7 +63,7 @@
 | 层级 | 位置 | 数量 | 主要目的 |
 |---|---:|---|
 | ECU ASW/SWC 单元测试 | `firmware/ecu/*/test/` | 69 个文件 | 使用 Unity + mock 直接验证应用组件 |
-| ASW E2E（BDD） | `e2e-tests/src/test/resources/features/` | 8 个 feature / 195 场景 | 通过测试专用 API + 原生 harness 执行真实 SWC 生产代码，可读断言 |
+| ASW E2E（BDD） | `e2e-tests/src/test/resources/features/` | 10 个 feature / 286 场景 | 通过测试专用 API + 原生 harness 执行真实 SWC 生产代码，可读断言 |
 | BSW 单元测试 | `test/unit/bsw/` | 40 个文件 | 验证单个 BSW 模块及生成的负向/全路径用例 |
 | BSW 集成测试 | `test/framework/test_int_*.c` | 11 个文件 | 验证真实模块链，如 E2E -> Com -> PduR -> CanIf |
 | POSIX 多 ECU 集成 | `test/integration/` | 8 个文件 | 在 `vcan0` 上运行 POSIX ECU 二进制，验证总线可见的集成行为 |
@@ -83,7 +85,7 @@
 | ASW/内部访问 | JNA/原生库适配器（`BodyPandaClient`、`PandaClient`） | 原生 C harness（`cvc_pedal_harness.c`、`cvc_vehiclestate_harness.c`、`cvc_estop_harness.c`、`cvc_cvccom_harness.c`、`fzc_steering_harness.c`、`fzc_brake_harness.c`、`fzc_lidar_harness.c`）链接真实 SWC 生产代码 |
 | 场景风格 | BDD 业务可读步骤 | 面向 CAN/系统/故障的测试脚本和 YAML + 业务可读的 ASW BDD 场景 |
 | 内部断言 | 通过原生 shim 轻松断言内部状态 | 通过原生 harness 直接断言 RTE/Com 输出 + mock、CAN 流量、DTC、状态推断 |
-| 当前规模 | 47 个 feature 文件 / 392 个场景 | 8 个 feature 文件 / 195 个 ASW E2E 场景（其余层级覆盖广泛） |
+| 当前规模 | 47 个 feature 文件 / 392 个场景 | 10 个 feature 文件 / 286 个 ASW E2E 场景（其余层级覆盖广泛） |
 
 **含义：** 本仓库已有强大的验证基础设施，且已开始补齐 `panda/e2e-tests` 风格的**可读 ASW E2E 测试框架**（原生 harness + BDD feature）。当前规模仍较小，已覆盖 CVC 四个 SWC 与 FZC 三个 SWC。
 
@@ -511,9 +513,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
    已落地候选：
    - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅、`Swc_CvcCom` ✅
    - FZC：`Swc_Steering` ✅、`Swc_Brake` ✅、`Swc_Lidar` ✅（见 `fzc_steering.feature`、`fzc_brake.feature`、`fzc_lidar.feature`）
-   - RZC：`Swc_Motor` ✅（见 `rzc_motor.feature`，行覆盖 93.8%、函数覆盖 100%）、`Swc_Battery` ✅（见 `rzc_battery.feature`，行/分支/函数覆盖 100%）
-   待扩展候选：
-   - RZC：`Swc_TempMonitor` ✅（见 `rzc_temponitor.feature`，行覆盖 98.2%、函数覆盖 100%）、`Swc_RzcCom`
+   - RZC：`Swc_Motor` ✅（见 `rzc_motor.feature`，行覆盖 93.8%、函数覆盖 100%）、`Swc_Battery` ✅（见 `rzc_battery.feature`，行/分支/函数覆盖 100%）、`Swc_TempMonitor` ✅（见 `rzc_temponitor.feature`，行覆盖 98.2%、函数覆盖 100%）、`Swc_RzcCom` ✅（见 `rzc_rzccom.feature`，行覆盖 99.3%、分支覆盖 98.7%、函数覆盖 100%）
 
 4. **使用现有 SIL/HIL 场景作为行为参考。**  
    尤其是：
