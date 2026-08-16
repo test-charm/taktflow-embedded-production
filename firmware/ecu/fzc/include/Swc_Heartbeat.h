@@ -21,4 +21,17 @@
 void Swc_Heartbeat_Init(void);
 void Swc_Heartbeat_MainFunction(void);
 
+/* ==================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * never reach shipping firmware. The native ASW E2E harness uses them to
+ * verify heartbeat internal state (alive counter, cycle counter,
+ * initialized flag) that is otherwise not externally observable.
+ * ================================================================== */
+#ifdef UNIT_TEST
+uint8 Swc_Heartbeat_GetAliveCounter(void);
+uint8 Swc_Heartbeat_GetCycleCounter(void);
+uint8 Swc_Heartbeat_GetInitialized(void);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_HEARTBEAT_H */
