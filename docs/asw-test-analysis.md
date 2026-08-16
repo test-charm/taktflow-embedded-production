@@ -41,14 +41,17 @@
 - 已有针对 ASW 内部的原生测试 shim（`gateway/fault_inject/native/*_harness.c`），
 - 已有以 `Given/When/Then`（或 `When/Then`）表达功能行为的 ASW 领域特定语言。
 
-当前已覆盖四条 ASW 链：
+当前已覆盖七条 ASW 链：
 
-1. **CVC 踏板 → Torque_Request**（`cvc_pedal_torque_request.feature`，12 场景）
-2. **CVC 车辆状态机**（`cvc_vehicle_state.feature`，13 场景）
+1. **CVC 踏板 → Torque_Request**（`cvc_pedal_torque_request.feature`，17 场景）
+2. **CVC 车辆状态机**（`cvc_vehicle_state.feature`，42 场景）
 3. **CVC 紧急停止**（`cvc_estop.feature`，6 场景）
 4. **CVC CAN 通信**（`cvc_cvccom.feature`，18 场景）
+5. **FZC 转向伺服控制**（`fzc_steering.feature`，26 场景）
+6. **FZC 刹车伺服控制**（`fzc_brake.feature`，22 场景）
+7. **FZC 激光雷达障碍物检测**（`fzc_lidar.feature`，29 场景）
 
-换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，已覆盖 CVC 的四个 SWC，其余 ECU 待扩展。
+换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，已覆盖 CVC 的四个 SWC 与 FZC 的三个 SWC，其余 ECU 待扩展。
 
 ---
 
@@ -57,7 +60,7 @@
 | 层级 | 位置 | 数量 | 主要目的 |
 |---|---:|---|
 | ECU ASW/SWC 单元测试 | `firmware/ecu/*/test/` | 69 个文件 | 使用 Unity + mock 直接验证应用组件 |
-| ASW E2E（BDD） | `e2e-tests/src/test/resources/features/` | 2 个 feature / 25 场景 | 通过测试专用 API + 原生 harness 执行真实 SWC 生产代码，可读断言 |
+| ASW E2E（BDD） | `e2e-tests/src/test/resources/features/` | 7 个 feature / 160 场景 | 通过测试专用 API + 原生 harness 执行真实 SWC 生产代码，可读断言 |
 | BSW 单元测试 | `test/unit/bsw/` | 40 个文件 | 验证单个 BSW 模块及生成的负向/全路径用例 |
 | BSW 集成测试 | `test/framework/test_int_*.c` | 11 个文件 | 验证真实模块链，如 E2E -> Com -> PduR -> CanIf |
 | POSIX 多 ECU 集成 | `test/integration/` | 8 个文件 | 在 `vcan0` 上运行 POSIX ECU 二进制，验证总线可见的集成行为 |
@@ -76,12 +79,12 @@
 | 方面 | `panda/e2e-tests` | 当前仓库 |
 |---|---|---|
 | 测试表达 | Java + Cucumber `.feature` + 步骤定义 | C/Unity、Python 脚本、YAML 场景 + Java Cucumber `.feature`（ASW E2E） |
-| ASW/内部访问 | JNA/原生库适配器（`BodyPandaClient`、`PandaClient`） | 原生 C harness（`cvc_pedal_harness.c`、`cvc_vehiclestate_harness.c`）链接真实 SWC 生产代码 |
+| ASW/内部访问 | JNA/原生库适配器（`BodyPandaClient`、`PandaClient`） | 原生 C harness（`cvc_pedal_harness.c`、`cvc_vehiclestate_harness.c`、`cvc_estop_harness.c`、`cvc_cvccom_harness.c`、`fzc_steering_harness.c`、`fzc_brake_harness.c`、`fzc_lidar_harness.c`）链接真实 SWC 生产代码 |
 | 场景风格 | BDD 业务可读步骤 | 面向 CAN/系统/故障的测试脚本和 YAML + 业务可读的 ASW BDD 场景 |
 | 内部断言 | 通过原生 shim 轻松断言内部状态 | 通过原生 harness 直接断言 RTE/Com 输出 + mock、CAN 流量、DTC、状态推断 |
-| 当前规模 | 47 个 feature 文件 / 392 个场景 | 2 个 feature 文件 / 25 个 ASW E2E 场景（其余层级覆盖广泛） |
+| 当前规模 | 47 个 feature 文件 / 392 个场景 | 7 个 feature 文件 / 160 个 ASW E2E 场景（其余层级覆盖广泛） |
 
-**含义：** 本仓库已有强大的验证基础设施，且已开始补齐 `panda/e2e-tests` 风格的**可读 ASW E2E 测试框架**（原生 harness + BDD feature）。当前规模仍小，仅覆盖 CVC 两个 SWC。
+**含义：** 本仓库已有强大的验证基础设施，且已开始补齐 `panda/e2e-tests` 风格的**可读 ASW E2E 测试框架**（原生 harness + BDD feature）。当前规模仍较小，已覆盖 CVC 四个 SWC 与 FZC 三个 SWC。
 
 ---
 
@@ -355,8 +358,8 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `Swc_FzcScheduler.c` | 可运行实体时序配置 | `test_Swc_FzcScheduler_asild.c` | `test_hil_scheduler.py`、`hil_061_scheduler_cross_ecu.yaml` | 调度器表定义 | 周期/优先级/WCET 正确性 |
 | `Swc_FzcSensorFeeder.c` | plant-sim 虚拟传感器 -> IoHwAb | 无 | `sil_008_sensor_disagreement.yaml`、`sil_011_steering_sensor_failure.yaml` | 注入的虚拟传感器数据 | 仅间接转向/激光雷达行为 |
 | `Swc_Heartbeat.c` | FZC 心跳 | `test_Swc_Heartbeat_asilc.c` | `test_cvc_fzc_dual.py`、`test_hil_heartbeat.py`、调度器 HIL 测试 | 周期性节拍、故障位掩码 | 50ms 心跳载荷和节奏 |
-| `Swc_Lidar.c` | TFMini 障碍物检测 | `test_Swc_Lidar_asilc.c` | `test_cvc_fzc_full.py`、SIL 传感器场景 | 激光雷达帧/障碍物距离 | 帧解析、区域、故障处理、CAN 状态 |
-| `Swc_Steering.c` | 转向伺服控制 | `test_Swc_Steering_asild.c` | `sil_008_sensor_disagreement.yaml`、`sil_011_steering_sensor_failure.yaml`、`test_cvc_fzc_dual.py` | 转向命令、实测角度、超时、SPI 故障 | PWM 映射、速率限制、RTC、故障锁存 |
+| `Swc_Lidar.c` | TFMini 障碍物检测 | `test_Swc_Lidar_asilc.c` | `test_cvc_fzc_full.py`、SIL 传感器场景、`fzc_lidar.feature`（ASW E2E） | 激光雷达帧/障碍物距离 | 帧解析、区域、故障处理、CAN 状态 |
+| `Swc_Steering.c` | 转向伺服控制 | `test_Swc_Steering_asild.c` | `sil_008_sensor_disagreement.yaml`、`sil_011_steering_sensor_failure.yaml`、`test_cvc_fzc_dual.py`、`fzc_steering.feature`（ASW E2E） | 转向命令、实测角度、超时、SPI 故障 | PWM 映射、速率限制、RTC、故障锁存 |
 | `main.c` | FZC 入口点 | 无 | `test_cvc_fzc_dual.py`、`test_cvc_fzc_full.py`、SIL/HIL 启动流程 | 进程启动 | 启动和集成操作 |
 
 ### ICU
@@ -433,24 +436,27 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 - 注入内部状态而不重新实现完整的 ECU 框架，
 - 用可读的 BDD 步骤断言内部的 ASW 可见输出。
 
-已实现四条链：
+已实现七条链：
 
 | 功能链 | Feature | 场景数 | 原生 harness |
 |---|---|---:|---|
-| CVC 踏板 → Torque_Request | `cvc_pedal_torque_request.feature` | 12 | `cvc_pedal_harness.c` |
-| CVC 车辆状态机 | `cvc_vehicle_state.feature` | 13 | `cvc_vehiclestate_harness.c` |
+| CVC 踏板 → Torque_Request | `cvc_pedal_torque_request.feature` | 17 | `cvc_pedal_harness.c` |
+| CVC 车辆状态机 | `cvc_vehicle_state.feature` | 42 | `cvc_vehiclestate_harness.c` |
 | CVC 紧急停止 | `cvc_estop.feature` | 6 | `cvc_estop_harness.c` |
 | CVC CAN 通信 | `cvc_cvccom.feature` | 18 | `cvc_cvccom_harness.c` |
+| FZC 转向伺服控制 | `fzc_steering.feature` | 26 | `fzc_steering_harness.c` |
+| FZC 刹车伺服控制 | `fzc_brake.feature` | 22 | `fzc_brake_harness.c` |
+| FZC 激光雷达障碍物检测 | `fzc_lidar.feature` | 29 | `fzc_lidar_harness.c` |
 
 > 说明：车辆状态机 E2E 采用 Given/When 分离：
 > - **Given**（`存在:` → `/setup`）只存**前置阶段**——使车辆到达被测前置状态（如自检通过 + 保持周期 → RUN），
 >   以及等待后 INIT 宽限期过期的阶段；无前置状态的场景存空 `phases: []`（同时清除上一场景的服务端残留）。
 > - **When**（`POST /api/test/asw/cvc/vehicle-state`）body 携带**刺激阶段**——触发状态迁移的最后动作
 >   （如 `{cycles:5, brakeFault:true}`），服务端按「前置 + 刺激」顺序执行。
-> 未指定的阶段字段通过 spec `defaultValue(null)` + DTO `@JsonInclude(NON_NULL)` 从请求 JSON 中省略，
-> 由服务端/harness 默认值接管。注意：JFactory 的内存仓库（`MemoryDataRepository`）默认跨场景残留，
-> 其 query-first 行为会让部分匹配的 phase 复用到上一场景的对象（导致 `selfTestPass` 等未指定字段泄漏）；
-> `ApplicationSteps.resetJFactoryRepository()`（`@Before` 每场景清空仓库）已消除该残留。
+>   未指定的阶段字段通过 spec `defaultValue(null)` + DTO `@JsonInclude(NON_NULL)` 从请求 JSON 中省略，
+>   由服务端/harness 默认值接管。注意：JFactory 的内存仓库（`MemoryDataRepository`）默认跨场景残留，
+>   其 query-first 行为会让部分匹配的 phase 复用到上一场景的对象（导致 `selfTestPass` 等未指定字段泄漏）；
+>   `ApplicationSteps.resetJFactoryRepository()`（`@Before` 每场景清空仓库）已消除该残留。
 
 ### 2. 仅间接覆盖的组件
 
@@ -503,9 +509,8 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 3. **从已有最佳 ASW 覆盖的领域开始。**  
    已落地候选：
    - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅、`Swc_CvcCom` ✅
-   - FZC：`Swc_Steering` ✅、`Swc_Brake` ✅（见 `fzc_steering.feature`、`fzc_brake.feature`）
+   - FZC：`Swc_Steering` ✅、`Swc_Brake` ✅、`Swc_Lidar` ✅（见 `fzc_steering.feature`、`fzc_brake.feature`、`fzc_lidar.feature`）
    待扩展候选：
-   - FZC：`Swc_Lidar`
    - RZC：`Swc_Motor`、`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
 
 4. **使用现有 SIL/HIL 场景作为行为参考。**  
