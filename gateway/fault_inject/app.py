@@ -253,6 +253,28 @@ class CvcWatchdogRunBody(BaseModel):
     phases: list[CvcWatchdogPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcSelfTestPhase(BaseModel):
+    """One phase of the CVC self-test harness script.
+    Drives Swc_SelfTest_Startup against the real Swc_SelfTest.c production
+    code with per-check pass/fail pinning for the seven diagnostic checks.
+    """
+    spi: bool = True                # SelfTest_Hw_SpiLoopback result (True=E_OK)
+    can: bool = True                # SelfTest_Hw_CanLoopback result
+    nvm: bool = True                # SelfTest_Hw_NvmCheck result
+    oled: bool = True               # SelfTest_Hw_OledAck result (non-critical)
+    mpu: bool = True                # SelfTest_Hw_MpuVerify result
+    canary: bool = True             # SelfTest_Hw_CanaryCheck result
+    ram: bool = True                # SelfTest_Hw_RamPattern result
+
+
+class CvcSelfTestSetupBody(BaseModel):
+    phases: list[CvcSelfTestPhase] = []
+
+
+class CvcSelfTestRunBody(BaseModel):
+    phases: list[CvcSelfTestPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -474,6 +496,9 @@ _stored_cvc_canmonitor_phases: list[CvcCanMonitorPhase] = []
 # Stored CVC watchdog phase script for Given/When separation.
 _stored_cvc_watchdog_phases: list[CvcWatchdogPhase] = []
 
+# Stored CVC self-test phase script for Given/When separation.
+_stored_cvc_selftest_phases: list[CvcSelfTestPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -505,6 +530,7 @@ _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 _CVC_HEARTBEAT_HARNESS = "/app/bin/cvc_heartbeat_harness"
 _CVC_CANMONITOR_HARNESS = "/app/bin/cvc_canmonitor_harness"
 _CVC_WATCHDOG_HARNESS = "/app/bin/cvc_watchdog_harness"
+_CVC_SELFTEST_HARNESS = "/app/bin/cvc_selftest_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1142,6 +1168,7 @@ def _generate_coverage_html():
         ("cvc_heartbeat", _CVC_HEARTBEAT_HARNESS),
         ("cvc_canmonitor", _CVC_CANMONITOR_HARNESS),
         ("cvc_watchdog", _CVC_WATCHDOG_HARNESS),
+        ("cvc_selftest", _CVC_SELFTEST_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -1709,6 +1736,72 @@ def run_cvc_watchdog(body: CvcWatchdogRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC watchdog harness returned invalid JSON") from exc
+
+
+def _selftest_phase_to_line(p: CvcSelfTestPhase) -> str:
+    """Serialize one self-test phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"spi={_b(p.spi)}",
+        f"can={_b(p.can)}",
+        f"nvm={_b(p.nvm)}",
+        f"oled={_b(p.oled)}",
+        f"mpu={_b(p.mpu)}",
+        f"canary={_b(p.canary)}",
+        f"ram={_b(p.ram)}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/selftest/setup")
+def setup_cvc_selftest(body: CvcSelfTestSetupBody):
+    """Store the self-test phase script for subsequent run calls that omit phases."""
+    global _stored_cvc_selftest_phases
+    _stored_cvc_selftest_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/selftest")
+def run_cvc_selftest(body: CvcSelfTestRunBody):
+    """Execute the real CVC self-test ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a failed first run). `body.phases` carries the stimulus phases. The
+    harness runs the concatenated precondition + stimulus script against the
+    real Swc_SelfTest.c production code (Startup + GetResults), pinning the
+    pass/fail result of each of the seven hardware diagnostic checks and
+    counting the reported Dem DTC events.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvc_selftest_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_selftest_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_selftest_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_SELFTEST_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC self-test harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC self-test harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC self-test harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC self-test harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:

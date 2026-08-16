@@ -200,6 +200,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/cvc_watchdog_harness.c \
       /app/firmware/ecu/cvc/src/Swc_Watchdog.c \
       -o /app/bin/cvc_watchdog_harness && \
+    # CVC self-test harness (links Swc_SelfTest.c only — 7-step startup
+    # self-test sequence with early-abort on critical failures, non-critical
+    # OLED handling, and DTC reporting)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/cvc/include -I/app/firmware/ecu/cvc/cfg \
+      -I/app/firmware/ecu/cvc/cfg/platform_posix \
+      /app/fault_inject/native/cvc_selftest_harness.c \
+      /app/firmware/ecu/cvc/src/Swc_SelfTest.c \
+      -o /app/bin/cvc_selftest_harness && \
     # FZC steering harness (links Swc_Steering.c only — servo control chain)
     clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
       -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
