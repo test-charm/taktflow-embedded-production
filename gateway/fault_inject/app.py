@@ -294,6 +294,26 @@ class RzcMotorRunBody(BaseModel):
     phases: list[RzcMotorPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcBatteryPhase(BaseModel):
+    """One phase of the RZC battery harness script.
+
+    Drives Swc_Battery_MainFunction() against an injected raw battery
+    voltage (mV) via the IoHwAb_ReadBatteryVoltage mock, and reports the
+    4-sample moving average / status / DEM outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_Battery_Init (uninitialized guard)
+    voltageMv: int = 0             # raw battery voltage (mV) injected to IoHwAb
+
+
+class RzcBatterySetupBody(BaseModel):
+    phases: list[RzcBatteryPhase] = []
+
+
+class RzcBatteryRunBody(BaseModel):
+    phases: list[RzcBatteryPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -327,6 +347,9 @@ _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 # Stored RZC motor phase script for Given/When separation.
 _stored_rzc_motor_phases: list[RzcMotorPhase] = []
 
+# Stored RZC battery phase script for Given/When separation.
+_stored_rzc_battery_phases: list[RzcBatteryPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -338,6 +361,7 @@ _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
 _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
+_RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -969,6 +993,7 @@ def _generate_coverage_html():
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
         ("rzc_motor", _RZC_MOTOR_HARNESS),
+        ("rzc_battery", _RZC_BATTERY_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1605,6 +1630,68 @@ def run_rzc_motor(body: RzcMotorRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC motor harness returned invalid JSON") from exc
+
+
+def _rzc_battery_phase_to_line(p: RzcBatteryPhase) -> str:
+    """Serialize one RZC battery phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"voltageMv={p.voltageMv}",
+    ])
+
+
+@app.post("/api/test/asw/rzc/battery/setup")
+def setup_rzc_battery(body: RzcBatterySetupBody):
+    """Store the RZC battery phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_battery_phases
+    _stored_rzc_battery_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/battery")
+def run_rzc_battery(body: RzcBatteryRunBody):
+    """Execute the real RZC battery ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a low-battery baseline for hysteresis). `body.phases` carries the
+    stimulus phases — the final battery voltage under test. The harness runs
+    the concatenated precondition + stimulus script against the real
+    Swc_Battery.c production code (MainFunction, 4-sample moving average,
+    5-state thresholds, hysteresis recovery, DEM DTC, RTE signals).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_battery_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_battery_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_battery_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_BATTERY_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC battery harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC battery harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC battery harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC battery harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

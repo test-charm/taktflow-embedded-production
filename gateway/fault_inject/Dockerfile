@@ -203,7 +203,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
       /app/fault_inject/native/rzc_motor_harness.c \
       /app/firmware/ecu/rzc/src/Swc_Motor.c \
-      -o /app/bin/rzc_motor_harness
+      -o /app/bin/rzc_motor_harness && \
+    # RZC battery harness (links Swc_Battery.c only — battery voltage monitor
+    # with 4-sample moving average, 5-state thresholds and hysteresis)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_battery_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_Battery.c \
+      -o /app/bin/rzc_battery_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

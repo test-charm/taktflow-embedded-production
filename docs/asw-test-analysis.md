@@ -375,7 +375,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 | 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
-| `Swc_Battery.c` | 电池电压监控 | `test_Swc_Battery_qm.c` | `test_battery_chain.py`、`test_hil_battery.py`、`sil_006_battery_undervoltage.yaml` | 电池电压采样/注入的低压条件 | 平均电压、CAN 0x303、状态反应 |
+| `Swc_Battery.c` | 电池电压监控 | `test_Swc_Battery_qm.c` | `test_battery_chain.py`、`test_hil_battery.py`、`sil_006_battery_undervoltage.yaml`、`rzc_battery.feature`（ASW E2E，行/分支/函数覆盖 100%） | 电池电压采样/注入的低压条件 | 平均电压、CAN 0x303、状态反应 |
 | `Swc_CurrentMonitor.c` | 电机电流采样/滤波 | `test_Swc_CurrentMonitor_asila.c` | `sil_007_overcurrent_motor.yaml`、`test_hil_overtemp.py` | 电流传感器采样/故障阈值 | 平均电流、过流指示 |
 | `Swc_Encoder.c` | 速度/RPM 和堵转逻辑 | `test_Swc_Encoder_asilc.c` | 通过电机链测试间接覆盖 | 编码器脉冲/方向 | RPM、方向、堵转检测 |
 | `Swc_Heartbeat.c` | RZC 心跳 | `test_Swc_Heartbeat_asilc.c` | `test_hil_heartbeat.py`、集成/调度器测试 | 周期性节拍和故障掩码 | 50ms 心跳载荷和时序 |
@@ -511,9 +511,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
    已落地候选：
    - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅、`Swc_CvcCom` ✅
    - FZC：`Swc_Steering` ✅、`Swc_Brake` ✅、`Swc_Lidar` ✅（见 `fzc_steering.feature`、`fzc_brake.feature`、`fzc_lidar.feature`）
-   - RZC：`Swc_Motor` ✅（见 `rzc_motor.feature`，行覆盖 93.8%、函数覆盖 100%）
+   - RZC：`Swc_Motor` ✅（见 `rzc_motor.feature`，行覆盖 93.8%、函数覆盖 100%）、`Swc_Battery` ✅（见 `rzc_battery.feature`，行/分支/函数覆盖 100%）
    待扩展候选：
-   - RZC：`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
+   - RZC：`Swc_TempMonitor`、`Swc_RzcCom`
 
 4. **使用现有 SIL/HIL 场景作为行为参考。**  
    尤其是：
