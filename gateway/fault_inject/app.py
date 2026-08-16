@@ -578,6 +578,30 @@ class FzcHeartbeatRunBody(BaseModel):
     phases: list[FzcHeartbeatPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcCanMonitorPhase(BaseModel):
+    """One phase of the FZC CAN monitor harness script.
+
+    Drives Swc_FzcCanMonitor_Init / Check / GetStatus / NotifyRx against the
+    real Swc_FzcCanMonitor.c production code (boot grace 500 cycles, bus-off
+    immediate, 20-cycle silence, 50-cycle sustained error warning, safe-state
+    latch with NO recovery, NotifyRx silence reset).
+    """
+    cycles: int = 1                # Swc_FzcCanMonitor_Check calls
+    skipInit: bool = False         # skip Swc_FzcCanMonitor_Init (uninitialized guard)
+    canMode: int = 2               # Can_GetControllerMode(0) return (2=STARTED, 1=STOPPED)
+    tec: int = 0                   # Can_GetErrorCounters transmit error counter
+    rec: int = 0                   # Can_GetErrorCounters receive error counter
+    notifyRx: bool = False         # call Swc_FzcCanMonitor_NotifyRx before each Check
+
+
+class FzcCanMonitorSetupBody(BaseModel):
+    phases: list[FzcCanMonitorPhase] = []
+
+
+class FzcCanMonitorRunBody(BaseModel):
+    phases: list[FzcCanMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -644,6 +668,9 @@ _stored_fzc_fzccom_phases: list[FzcFzcComPhase] = []
 # Stored FZC heartbeat phase script for Given/When separation.
 _stored_fzc_heartbeat_phases: list[FzcHeartbeatPhase] = []
 
+# Stored FZC CAN monitor phase script for Given/When separation.
+_stored_fzc_canmonitor_phases: list[FzcCanMonitorPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -666,6 +693,7 @@ _RZC_TEMPMONITOR_HARNESS = "/app/bin/rzc_temponitor_harness"
 _RZC_RZCCOM_HARNESS = "/app/bin/rzc_rzccom_harness"
 _FZC_FZCCOM_HARNESS = "/app/bin/fzc_fzccom_harness"
 _FZC_HEARTBEAT_HARNESS = "/app/bin/fzc_heartbeat_harness"
+_FZC_CANMONITOR_HARNESS = "/app/bin/fzc_canmonitor_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1308,6 +1336,7 @@ def _generate_coverage_html():
         ("rzc_rzccom", _RZC_RZCCOM_HARNESS),
         ("fzc_fzccom", _FZC_FZCCOM_HARNESS),
         ("fzc_heartbeat", _FZC_HEARTBEAT_HARNESS),
+        ("fzc_canmonitor", _FZC_CANMONITOR_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -2706,6 +2735,70 @@ def run_fzc_heartbeat(body: FzcHeartbeatRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="FZC heartbeat harness returned invalid JSON") from exc
+
+
+def _fzc_canmonitor_phase_to_line(p: FzcCanMonitorPhase) -> str:
+    """Serialize one FZC CAN monitor phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"canMode={p.canMode}",
+        f"tec={p.tec}",
+        f"rec={p.rec}",
+        f"notifyRx={_b(p.notifyRx)}",
+    ])
+
+
+@app.post("/api/test/asw/fzc/canmonitor/setup")
+def setup_fzc_canmonitor(body: FzcCanMonitorSetupBody):
+    """Store the FZC CAN monitor phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_canmonitor_phases
+    _stored_fzc_canmonitor_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/canmonitor")
+def run_fzc_canmonitor(body: FzcCanMonitorRunBody):
+    """Execute the real FZC CAN monitor ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a grace-period or fault baseline). `body.phases` carries the stimulus
+    phases. The harness runs the concatenated precondition + stimulus script
+    against the real Swc_FzcCanMonitor.c production code (Init + Check +
+    GetStatus + NotifyRx).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_canmonitor_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_canmonitor_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_canmonitor_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_CANMONITOR_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC CAN monitor harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC CAN monitor harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC CAN monitor harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC CAN monitor harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

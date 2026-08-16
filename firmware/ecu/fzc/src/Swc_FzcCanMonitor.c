@@ -198,3 +198,38 @@ void Swc_FzcCanMonitor_NotifyRx(void)
 {
     CanMon_SilenceCount = 0u;
 }
+
+/* ==================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * never reach shipping firmware. The native ASW E2E harness uses them to
+ * verify CAN monitor internal state (silence counter, grace cycle count,
+ * error-warning counter, safe-state latch) that is otherwise not
+ * externally observable.
+ * ================================================================== */
+#ifdef UNIT_TEST
+uint8 Swc_FzcCanMonitor_GetInitialized(void)
+{
+    return CanMon_Initialized;
+}
+
+uint16 Swc_FzcCanMonitor_GetSilenceCount(void)
+{
+    return CanMon_SilenceCount;
+}
+
+uint16 Swc_FzcCanMonitor_GetGraceCycles(void)
+{
+    return CanMon_GraceCycles;
+}
+
+uint16 Swc_FzcCanMonitor_GetErrWarnCount(void)
+{
+    return CanMon_ErrWarnCount;
+}
+
+uint8 Swc_FzcCanMonitor_GetSafeLatched(void)
+{
+    return CanMon_SafeLatched;
+}
+#endif /* UNIT_TEST */

@@ -69,4 +69,12 @@ uint8 Swc_FzcCanMonitor_GetStatus(void);
  */
 void Swc_FzcCanMonitor_NotifyRx(void);
 
+#ifdef UNIT_TEST
+uint8   Swc_FzcCanMonitor_GetInitialized(void);
+uint16  Swc_FzcCanMonitor_GetSilenceCount(void);
+uint16  Swc_FzcCanMonitor_GetGraceCycles(void);
+uint16  Swc_FzcCanMonitor_GetErrWarnCount(void);
+uint8   Swc_FzcCanMonitor_GetSafeLatched(void);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_FZC_CAN_MONITOR_H */
