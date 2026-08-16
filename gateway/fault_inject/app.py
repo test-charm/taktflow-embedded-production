@@ -269,6 +269,31 @@ class FzcLidarRunBody(BaseModel):
     phases: list[FzcLidarPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcMotorPhase(BaseModel):
+    """One phase of the RZC motor harness script.
+
+    Drives Swc_Motor_MainFunction() against injected RTE vehicle state,
+    e-stop, torque command, thermal derating, and external fault flags,
+    and reports PWM / Dio / RTE / DEM outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_Motor_Init (uninitialized guard)
+    vehicleState: int = 1          # 0=INIT 1=RUN 2=DEGRADED 3=LIMP 4=SAFE_STOP 5=SHUTDOWN
+    estop: int = 0                 # RTE RZC_SIG_ESTOP_ACTIVE (immediate disable)
+    torqueCmd: int = 0             # commanded torque % (sint16, negative = reverse)
+    derating: int = 100            # RTE RZC_SIG_DERATING_PCT (clamped to 100)
+    overcurrent: int = 0           # RTE RZC_SIG_OVERCURRENT external fault
+    tempFault: int = 0             # RTE RZC_SIG_TEMP_FAULT external fault
+
+
+class RzcMotorSetupBody(BaseModel):
+    phases: list[RzcMotorPhase] = []
+
+
+class RzcMotorRunBody(BaseModel):
+    phases: list[RzcMotorPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -299,6 +324,9 @@ _stored_fzc_brake_phases: list[FzcBrakePhase] = []
 # Stored FZC lidar phase script for Given/When separation.
 _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 
+# Stored RZC motor phase script for Given/When separation.
+_stored_rzc_motor_phases: list[RzcMotorPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -309,6 +337,7 @@ _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
+_RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -939,6 +968,7 @@ def _generate_coverage_html():
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
+        ("rzc_motor", _RZC_MOTOR_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1508,6 +1538,73 @@ def run_fzc_lidar(body: FzcLidarRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="FZC lidar harness returned invalid JSON") from exc
+
+
+def _rzc_motor_phase_to_line(p: RzcMotorPhase) -> str:
+    """Serialize one RZC motor phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"vehicleState={p.vehicleState}",
+        f"estop={p.estop}",
+        f"torqueCmd={p.torqueCmd}",
+        f"derating={p.derating}",
+        f"overcurrent={p.overcurrent}",
+        f"tempFault={p.tempFault}",
+    ])
+
+
+@app.post("/api/test/asw/rzc/motor/setup")
+def setup_rzc_motor(body: RzcMotorSetupBody):
+    """Store the RZC motor phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_motor_phases
+    _stored_rzc_motor_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/motor")
+def run_rzc_motor(body: RzcMotorRunBody):
+    """Execute the real RZC motor ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a healthy torque baseline). `body.phases` carries the stimulus
+    phases — the final motor action under test. The harness runs the
+    concatenated precondition + stimulus script against the real Swc_Motor.c
+    production code (MainFunction, mode torque limiting, derating, dead-time
+    sequencing, command timeout/recovery, shoot-through, Dio/PWM/DEM).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_motor_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_motor_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_motor_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_MOTOR_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC motor harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC motor harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC motor harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC motor harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

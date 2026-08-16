@@ -7,6 +7,7 @@ import demo.testcharm.dto.CvcVehicleStateSetup;
 import demo.testcharm.dto.FzcSteeringSetup;
 import demo.testcharm.dto.FzcBrakeSetup;
 import demo.testcharm.dto.FzcLidarSetup;
+import demo.testcharm.dto.RzcMotorSetup;
 import org.mockserver.client.MockServerClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -42,7 +43,8 @@ public class Factories {
                 .registerByType(CvcCvcComSetup.class, new CvcCvcComSetupDataRepository(restfulStep))
                 .registerByType(FzcSteeringSetup.class, new FzcSteeringSetupDataRepository(restfulStep))
                 .registerByType(FzcBrakeSetup.class, new FzcBrakeSetupDataRepository(restfulStep))
-                .registerByType(FzcLidarSetup.class, new FzcLidarSetupDataRepository(restfulStep)));
+                .registerByType(FzcLidarSetup.class, new FzcLidarSetupDataRepository(restfulStep))
+                .registerByType(RzcMotorSetup.class, new RzcMotorSetupDataRepository(restfulStep)));
     }
 
     public static class CvcPedalSetupDataRepository extends MemoryDataRepository {
@@ -147,6 +149,21 @@ public class Factories {
         public void save(Object object) {
             super.save(object);
             restfulStep.postObjectInJson("/api/test/asw/fzc/lidar/setup", object);
+        }
+    }
+
+    public static class RzcMotorSetupDataRepository extends MemoryDataRepository {
+
+        private final RestfulStep restfulStep;
+
+        public RzcMotorSetupDataRepository(RestfulStep restfulStep) {
+            this.restfulStep = restfulStep;
+        }
+
+        @Override
+        public void save(Object object) {
+            super.save(object);
+            restfulStep.postObjectInJson("/api/test/asw/rzc/motor/setup", object);
         }
     }
 }

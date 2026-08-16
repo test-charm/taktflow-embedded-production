@@ -196,7 +196,14 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/fzc/cfg/platform_posix \
       /app/fault_inject/native/fzc_lidar_harness.c \
       /app/firmware/ecu/fzc/src/Swc_Lidar.c \
-      -o /app/bin/fzc_lidar_harness
+      -o /app/bin/fzc_lidar_harness && \
+    # RZC motor harness (links Swc_Motor.c only — BTS7960 H-bridge control chain)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_motor_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_Motor.c \
+      -o /app/bin/rzc_motor_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 
