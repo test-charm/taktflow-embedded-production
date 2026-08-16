@@ -76,4 +76,14 @@ Std_ReturnType Swc_CanMonitor_Recovery(uint32 currentTimeMs);
  */
 uint8 Swc_CanMonitor_GetStatus(void);
 
+#ifdef UNIT_TEST
+uint8   Swc_CanMonitor_GetInitialized(void);
+uint32  Swc_CanMonitor_GetLastRxCount(void);
+uint32  Swc_CanMonitor_GetLastRxTimeMs(void);
+uint32  Swc_CanMonitor_GetErrorWarnStartMs(void);
+uint8   Swc_CanMonitor_GetErrorWarnActive(void);
+uint8   Swc_CanMonitor_GetRecoveryAttempts(void);
+uint32  Swc_CanMonitor_GetRecoveryWindowStartMs(void);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_CANMONITOR_H */

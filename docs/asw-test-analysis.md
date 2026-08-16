@@ -334,7 +334,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | 组件 | 功能 | 直接测试 | 间接/系统测试 | 测试的输入 | 输出/验证点 |
 |---|---|---|---|---|---|
 | `Ssd1306.c` | OLED 驱动 | `test_Ssd1306_qm.c` | 通过 `test_Swc_Dashboard_qm.c` 间接覆盖 | 初始化/渲染/清除调用 | 显示缓冲区/I2C 面向行为 |
-| `Swc_CanMonitor.c` | CAN 丢失检测和恢复 | `test_Swc_CanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、心跳/集成测试 | 超时/总线丢失条件 | 故障检测和恢复路径 |
+| `Swc_CanMonitor.c` | CAN 丢失检测和恢复 | `test_Swc_CanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、`cvc_canmonitor.feature`（ASW E2E：bus-off/200ms 静默/500ms 错误警告/10s 窗口恢复/SHUTDOWN 终态） | 超时/总线丢失条件 | 故障检测和恢复路径 |
 | `Swc_CvcCom.c` | CVC RX/TX + E2E 桥接 | `test_Swc_CvcCom_asild.c` | `test_cvc_full.py`、`test_cvc_fzc_full.py`、SIL 启动/E2E 场景、`cvc_cvccom.feature`（ASW E2E：TX 心跳/0x100 faultMask/制动覆盖/E-Stop 广播 + RX 桥接） | RX 帧、调度节拍、RTE 值 | 信号路由、E2E 保护 TX、周期性发送 |
 | `Swc_CvcDcm.c` | UDS/DID/DTC 路由 | `test_Swc_CvcDcm_qm.c` | `test_hil_uds.py` | UDS 服务请求 | DID 响应、DTC 暴露、服务分发 |
 | `Swc_Dashboard.c` | OLED 仪表盘渲染 | `test_Swc_Dashboard_qm.c` | 通过启动/显示路径间接覆盖 | 车辆状态、速度、故障 | 渲染后的状态/故障呈现 |
@@ -508,9 +508,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **12 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，298 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **13 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，312 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
-- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）
+- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）
 - **FZC**：`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
@@ -521,16 +521,24 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > 详见 `test-design/cvc-heartbeat-e2e.md`。为观测 SWC 内部静态状态，在
 > `Swc_Heartbeat.c/.h` 增加了 UNIT_TEST 保护的观测 getter（仅测试编译，不影响
 > 交付固件）。
+>
+> CVC `Swc_CanMonitor`（2026-08-16 新增）：`cvc_canmonitor.feature` 14 场景驱动真实
+> `Swc_CanMonitor.c`（bus-off 立即 SAFE_STOP、200ms 静默、500ms 错误警告、
+> 10s 窗口 3 次恢复尝试、第 4 次失败 SHUTDOWN、终态短路）。覆盖报告：行 100%
+> （118/118）、分支 100%（26/26）、函数 100%（11/11，含 7 个 `#ifdef UNIT_TEST`
+> 观测 getter，生产固件不含）。详见 `test-design/cvc-canmonitor-e2e.md`。为观测
+> SWC 内部静态状态（静默定时器/错误警告追踪/恢复计数器），在
+> `Swc_CanMonitor.c/.h` 增加了 UNIT_TEST 保护的观测 getter（仅测试编译，不影响
+> 交付固件）。
 
 ### 扩展优先级
 
-以下为**未**被现有 12 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 13 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---:|---|
-| CVC | `Swc_CanMonitor` | asilc | `sil_004_can_busoff_fzc.yaml` |
 | CVC | `Swc_Watchdog` | asild | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py` |
 | CVC | `Swc_SelfTest` | asild | `test_hil_selftest.py` |
 | CVC | `Swc_Scheduler` | asild | `test_hil_scheduler.py` |

@@ -197,3 +197,47 @@ uint8 Swc_CanMonitor_GetStatus(void)
 {
     return CanMon_Status;
 }
+
+/* ==================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * never reach shipping firmware. The native ASW E2E harness uses them to
+ * verify CAN monitor internal state (silence timer, error-warning
+ * tracking, recovery counter) that is otherwise not externally observable.
+ * ==================================================================== */
+#ifdef UNIT_TEST
+uint8 Swc_CanMonitor_GetInitialized(void)
+{
+    return CanMon_Initialized;
+}
+
+uint32 Swc_CanMonitor_GetLastRxCount(void)
+{
+    return CanMon_LastRxCount;
+}
+
+uint32 Swc_CanMonitor_GetLastRxTimeMs(void)
+{
+    return CanMon_LastRxTimeMs;
+}
+
+uint32 Swc_CanMonitor_GetErrorWarnStartMs(void)
+{
+    return CanMon_ErrorWarnStartMs;
+}
+
+uint8 Swc_CanMonitor_GetErrorWarnActive(void)
+{
+    return CanMon_ErrorWarnActive;
+}
+
+uint8 Swc_CanMonitor_GetRecoveryAttempts(void)
+{
+    return CanMon_RecoveryAttempts;
+}
+
+uint32 Swc_CanMonitor_GetRecoveryWindowStartMs(void)
+{
+    return CanMon_RecoveryWindowStartMs;
+}
+#endif /* UNIT_TEST */

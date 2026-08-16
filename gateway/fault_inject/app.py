@@ -206,6 +206,31 @@ class CvcHeartbeatRunBody(BaseModel):
     phases: list[CvcHeartbeatPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcCanMonitorPhase(BaseModel):
+    """One phase of the CVC CAN monitor harness script.
+    Drives Swc_CanMonitor_Init / Check / Recovery against the real
+    Swc_CanMonitor.c production code.
+    """
+    cycles: int = 1                # Swc_CanMonitor_Check calls
+    skipInit: bool = False         # skip Swc_CanMonitor_Init (uninitialized guard)
+    isBusOff: bool = False         # Check isBusOff arg (bus-off detection)
+    rxMsgCount: int | None = None  # Check rxMsgCount arg; None = carry over the monotonic counter
+    rxInc: bool = False            # increment the running RX counter each Check call (messages arriving)
+    errorWarning: bool = False     # Check errorWarning arg
+    timeStartMs: int = 0           # currentTimeMs for first Check call
+    timeStepMs: int = 100          # currentTimeMs delta between Check calls
+    recovery: bool = False         # call Swc_CanMonitor_Recovery after cycles
+    recoveryTimeMs: int = 0        # currentTimeMs for the Recovery call
+
+
+class CvcCanMonitorSetupBody(BaseModel):
+    phases: list[CvcCanMonitorPhase] = []
+
+
+class CvcCanMonitorRunBody(BaseModel):
+    phases: list[CvcCanMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -421,6 +446,9 @@ _stored_cvccom_phases: list[CvcCvcComPhase] = []
 # Stored CVC heartbeat phase script for Given/When separation.
 _stored_cvc_heartbeat_phases: list[CvcHeartbeatPhase] = []
 
+# Stored CVC CAN monitor phase script for Given/When separation.
+_stored_cvc_canmonitor_phases: list[CvcCanMonitorPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -450,6 +478,7 @@ _CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
 _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 _CVC_HEARTBEAT_HARNESS = "/app/bin/cvc_heartbeat_harness"
+_CVC_CANMONITOR_HARNESS = "/app/bin/cvc_canmonitor_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1085,6 +1114,7 @@ def _generate_coverage_html():
         ("cvc_estop", _CVC_ESTOP_HARNESS),
         ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
         ("cvc_heartbeat", _CVC_HEARTBEAT_HARNESS),
+        ("cvc_canmonitor", _CVC_CANMONITOR_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -1515,6 +1545,78 @@ def run_cvc_heartbeat(body: CvcHeartbeatRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC heartbeat harness returned invalid JSON") from exc
+
+
+def _canmonitor_phase_to_line(p: CvcCanMonitorPhase) -> str:
+    """Serialize one CAN monitor phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    toks = [
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"isBusOff={_b(p.isBusOff)}",
+    ]
+    if p.rxMsgCount is not None:
+        toks.append(f"rxMsgCount={p.rxMsgCount}")
+    toks += [
+        f"rxInc={_b(p.rxInc)}",
+        f"errorWarning={_b(p.errorWarning)}",
+        f"timeStartMs={p.timeStartMs}",
+        f"timeStepMs={p.timeStepMs}",
+        f"recovery={_b(p.recovery)}",
+        f"recoveryTimeMs={p.recoveryTimeMs}",
+    ]
+    return " ".join(toks)
+
+
+@app.post("/api/test/asw/cvc/canmonitor/setup")
+def setup_cvc_canmonitor(body: CvcCanMonitorSetupBody):
+    """Store the CAN monitor phase script for subsequent run calls that omit phases."""
+    global _stored_cvc_canmonitor_phases
+    _stored_cvc_canmonitor_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/canmonitor")
+def run_cvc_canmonitor(body: CvcCanMonitorRunBody):
+    """Execute the real CVC CAN monitor ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a bus-off baseline or error-warning activation). `body.phases`
+    carries the stimulus phases. The harness runs the concatenated
+    precondition + stimulus script against the real Swc_CanMonitor.c
+    production code (Init + Check + Recovery + GetStatus).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvc_canmonitor_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_canmonitor_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_canmonitor_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_CANMONITOR_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC CAN monitor harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC CAN monitor harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC CAN monitor harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC CAN monitor harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:
