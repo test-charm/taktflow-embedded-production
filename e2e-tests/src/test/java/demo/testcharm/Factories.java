@@ -1,6 +1,7 @@
 package demo.testcharm;
 
 import demo.testcharm.dto.CvcEStopSetup;
+import demo.testcharm.dto.CvcCvcComSetup;
 import demo.testcharm.dto.CvcPedalSetup;
 import demo.testcharm.dto.CvcVehicleStateSetup;
 import org.mockserver.client.MockServerClient;
@@ -34,7 +35,8 @@ public class Factories {
         return new EntityFactory(new CompositeDataRepository(new MemoryDataRepository())
                 .registerByType(CvcPedalSetup.class, new CvcPedalSetupDataRepository(restfulStep))
                 .registerByType(CvcVehicleStateSetup.class, new CvcVehicleStateSetupDataRepository(restfulStep))
-                .registerByType(CvcEStopSetup.class, new CvcEStopSetupDataRepository(restfulStep)));
+                .registerByType(CvcEStopSetup.class, new CvcEStopSetupDataRepository(restfulStep))
+                .registerByType(CvcCvcComSetup.class, new CvcCvcComSetupDataRepository(restfulStep)));
     }
 
     public static class CvcPedalSetupDataRepository extends MemoryDataRepository {
@@ -79,6 +81,21 @@ public class Factories {
         public void save(Object object) {
             super.save(object);
             restfulStep.postObjectInJson("/api/test/asw/cvc/estop/setup", object);
+        }
+    }
+
+    public static class CvcCvcComSetupDataRepository extends MemoryDataRepository {
+
+        private final RestfulStep restfulStep;
+
+        public CvcCvcComSetupDataRepository(RestfulStep restfulStep) {
+            this.restfulStep = restfulStep;
+        }
+
+        @Override
+        public void save(Object object) {
+            super.save(object);
+            restfulStep.postObjectInJson("/api/test/asw/cvc/cvccom/setup", object);
         }
     }
 }

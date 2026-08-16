@@ -41,12 +41,14 @@
 - 已有针对 ASW 内部的原生测试 shim（`gateway/fault_inject/native/*_harness.c`），
 - 已有以 `Given/When/Then`（或 `When/Then`）表达功能行为的 ASW 领域特定语言。
 
-当前已覆盖两条 ASW 链：
+当前已覆盖四条 ASW 链：
 
 1. **CVC 踏板 → Torque_Request**（`cvc_pedal_torque_request.feature`，12 场景）
 2. **CVC 车辆状态机**（`cvc_vehicle_state.feature`，13 场景）
+3. **CVC 紧急停止**（`cvc_estop.feature`，6 场景）
+4. **CVC CAN 通信**（`cvc_cvccom.feature`，18 场景）
 
-换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，但仍仅覆盖 CVC 的两个 SWC，其余 ECU 待扩展。
+换句话说，仓库在验证 ASW 行为**效果**的同时，已开始提供与 `panda/e2e-tests` 可比的统一**可读 ASW E2E 测试框架**，已覆盖 CVC 的四个 SWC，其余 ECU 待扩展。
 
 ---
 
@@ -326,7 +328,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 |---|---|---|---|---|---|
 | `Ssd1306.c` | OLED 驱动 | `test_Ssd1306_qm.c` | 通过 `test_Swc_Dashboard_qm.c` 间接覆盖 | 初始化/渲染/清除调用 | 显示缓冲区/I2C 面向行为 |
 | `Swc_CanMonitor.c` | CAN 丢失检测和恢复 | `test_Swc_CanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、心跳/集成测试 | 超时/总线丢失条件 | 故障检测和恢复路径 |
-| `Swc_CvcCom.c` | CVC RX/TX + E2E 桥接 | `test_Swc_CvcCom_asild.c` | `test_cvc_full.py`、`test_cvc_fzc_full.py`、SIL 启动/E2E 场景 | RX 帧、调度节拍、RTE 值 | 信号路由、E2E 保护 TX、周期性发送 |
+| `Swc_CvcCom.c` | CVC RX/TX + E2E 桥接 | `test_Swc_CvcCom_asild.c` | `test_cvc_full.py`、`test_cvc_fzc_full.py`、SIL 启动/E2E 场景、`cvc_cvccom.feature`（ASW E2E：TX 心跳/0x100 faultMask/制动覆盖/E-Stop 广播 + RX 桥接） | RX 帧、调度节拍、RTE 值 | 信号路由、E2E 保护 TX、周期性发送 |
 | `Swc_CvcDcm.c` | UDS/DID/DTC 路由 | `test_Swc_CvcDcm_qm.c` | `test_hil_uds.py` | UDS 服务请求 | DID 响应、DTC 暴露、服务分发 |
 | `Swc_Dashboard.c` | OLED 仪表盘渲染 | `test_Swc_Dashboard_qm.c` | 通过启动/显示路径间接覆盖 | 车辆状态、速度、故障 | 渲染后的状态/故障呈现 |
 | `Swc_EStop.c` | 紧急停止消抖、锁存、广播 | `test_Swc_EStop_asilb.c` | `sil_003_emergency_stop.yaml` | GPIO/按钮式紧急停止信号 | 锁存、CAN 0x001、安全状态触发 |
@@ -431,12 +433,14 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 - 注入内部状态而不重新实现完整的 ECU 框架，
 - 用可读的 BDD 步骤断言内部的 ASW 可见输出。
 
-已实现两条链：
+已实现四条链：
 
 | 功能链 | Feature | 场景数 | 原生 harness |
 |---|---|---:|---|
 | CVC 踏板 → Torque_Request | `cvc_pedal_torque_request.feature` | 12 | `cvc_pedal_harness.c` |
 | CVC 车辆状态机 | `cvc_vehicle_state.feature` | 13 | `cvc_vehiclestate_harness.c` |
+| CVC 紧急停止 | `cvc_estop.feature` | 6 | `cvc_estop_harness.c` |
+| CVC CAN 通信 | `cvc_cvccom.feature` | 18 | `cvc_cvccom_harness.c` |
 
 > 说明：车辆状态机 E2E 采用 Given/When 分离：
 > - **Given**（`存在:` → `/setup`）只存**前置阶段**——使车辆到达被测前置状态（如自检通过 + 保持周期 → RUN），
@@ -498,9 +502,8 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 3. **从已有最佳 ASW 覆盖的领域开始。**  
    已落地候选：
-   - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅
+   - CVC：`Swc_Pedal` ✅、`Swc_VehicleState` ✅、`Swc_EStop` ✅、`Swc_CvcCom` ✅
    待扩展候选：
-   - CVC：`Swc_CvcCom`
    - FZC：`Swc_Steering`、`Swc_Brake`、`Swc_Lidar`
    - RZC：`Swc_Motor`、`Swc_Battery`、`Swc_TempMonitor`、`Swc_RzcCom`
 

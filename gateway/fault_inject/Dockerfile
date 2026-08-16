@@ -164,7 +164,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/cvc_estop_harness.c \
       /app/firmware/ecu/cvc/src/Swc_EStop.c \
       /app/firmware/ecu/cvc/src/Swc_CvcCom.c \
-      -o /app/bin/cvc_estop_harness
+      -o /app/bin/cvc_estop_harness && \
+    # CVC COM harness (links Swc_CvcCom.c only — TX scheduling + RX bridge)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/cvc/include -I/app/firmware/ecu/cvc/cfg \
+      -I/app/firmware/ecu/cvc/cfg/platform_posix \
+      /app/fault_inject/native/cvc_cvccom_harness.c \
+      /app/firmware/ecu/cvc/src/Swc_CvcCom.c \
+      -o /app/bin/cvc_cvccom_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

@@ -146,6 +146,47 @@ class CvcEStopSetupBody(BaseModel):
     phases: list[CvcEStopPhase] = []
 
 
+class CvcCvcComPhase(BaseModel):
+    """One phase of the CVC CAN-communication harness script.
+
+    Drives Swc_CvcCom_TransmitSchedule() (TX) and optionally
+    Swc_CvcCom_BridgeRxToRte() (RX bridge) against injected RTE fault
+    signals and Com RX shadows.
+    """
+    cycles: int = 1                # TransmitSchedule calls
+    skipInit: bool = False         # skip Swc_CvcCom_Init (uninitialized guard)
+    bridgeRx: bool = False         # call BridgeRxToRte after TX
+    vehicleState: int = 1          # 0=INIT 1=RUN 2=DEGRADED 3=LIMP 4=SAFE_STOP 5=SHUTDOWN
+    # TX fault inputs (RTE → faultMask composition)
+    estop: int = 0
+    relayKill: int = 1             # 1=energized (OK), 0=killed → 0x02
+    motorCutoff: int = 0
+    brakeFault: int = 0
+    steerFault: int = 0
+    pedalFault: int = 0
+    fzcComm: int = 0               # 0=OK, 1=TIMEOUT
+    rzcComm: int = 0
+    torque: int = 0                # CVC_SIG_TORQUE_REQUEST (clamped at 100)
+    # RX bridge inputs (Com shadows → RTE fault signals)
+    rxBrakeEvent: int = 0
+    rxBrakeStatus: int = 0
+    rxMotorCutoff: int = 0
+    rxScRelay: int = 1             # 1=energized (OK), 0=killed
+    rxBattery: int = 0
+    rxSteerFault: int = 0
+    rxMotorFault: int = 0
+    rxFzcAlive: int = 0
+    rxRzcAlive: int = 0
+
+
+class CvcCvcComSetupBody(BaseModel):
+    phases: list[CvcCvcComPhase] = []
+
+
+class CvcCvcComRunBody(BaseModel):
+    phases: list[CvcCvcComPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -164,12 +205,16 @@ _stored_vehicle_state_phases: list[VehicleStatePhase] = []
 # Stored E-stop phase script for Given/When separation.
 _stored_estop_phases: list[CvcEStopPhase] = []
 
+# Stored CvcCom phase script for Given/When separation.
+_stored_cvccom_phases: list[CvcCvcComPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
 _CVC_PEDAL_HARNESS = "/app/bin/cvc_pedal_harness"
 _CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
 _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
+_CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -796,6 +841,7 @@ def _generate_coverage_html():
         ("cvc_pedal", _CVC_PEDAL_HARNESS),
         ("cvc_vsm", _CVC_VSM_HARNESS),
         ("cvc_estop", _CVC_ESTOP_HARNESS),
+        ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1076,6 +1122,86 @@ def run_cvc_estop(body: CvcEStopRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC estop harness returned invalid JSON") from exc
+
+
+def _cvccom_phase_to_line(p: CvcCvcComPhase) -> str:
+    """Serialize one CvcCom phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"bridgeRx={_b(p.bridgeRx)}",
+        f"vehicleState={p.vehicleState}",
+        f"estop={p.estop}",
+        f"relayKill={p.relayKill}",
+        f"motorCutoff={p.motorCutoff}",
+        f"brakeFault={p.brakeFault}",
+        f"steerFault={p.steerFault}",
+        f"pedalFault={p.pedalFault}",
+        f"fzcComm={p.fzcComm}",
+        f"rzcComm={p.rzcComm}",
+        f"torque={p.torque}",
+        f"rxBrakeEvent={p.rxBrakeEvent}",
+        f"rxBrakeStatus={p.rxBrakeStatus}",
+        f"rxMotorCutoff={p.rxMotorCutoff}",
+        f"rxScRelay={p.rxScRelay}",
+        f"rxBattery={p.rxBattery}",
+        f"rxSteerFault={p.rxSteerFault}",
+        f"rxMotorFault={p.rxMotorFault}",
+        f"rxFzcAlive={p.rxFzcAlive}",
+        f"rxRzcAlive={p.rxRzcAlive}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/cvccom/setup")
+def setup_cvccom(body: CvcCvcComSetupBody):
+    """Store the CvcCom phase script for subsequent run calls that omit phases."""
+    global _stored_cvccom_phases
+    _stored_cvccom_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/cvccom")
+def run_cvc_cvccom(body: CvcCvcComRunBody):
+    """Execute the real CVC CAN-communication ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a vehicle state + RTE fault baseline). `body.phases` carries the
+    stimulus phases — the final TX/RX action under test. The harness runs the
+    concatenated precondition + stimulus script against the real Swc_CvcCom.c
+    production code (TransmitSchedule + optional BridgeRxToRte).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvccom_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_cvccom_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_cvccom_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_CVCCOM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC cvccom harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC cvccom harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC cvccom harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC cvccom harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
