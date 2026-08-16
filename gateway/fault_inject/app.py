@@ -241,6 +241,34 @@ class FzcBrakeRunBody(BaseModel):
     phases: list[FzcBrakePhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcLidarPhase(BaseModel):
+    """One phase of the FZC lidar harness script.
+
+    Drives Swc_Lidar_MainFunction() against injected TFMini-S UART frames
+    and fault injections, and reports RTE / DEM / GetDistance outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_Lidar_Init (uninitialized guard)
+    initNull: bool = False         # call Swc_Lidar_Init(NULL) (NULL-config guard)
+    distCm: int = 0                # distance in cm for the injected frame
+    signal: int = 0                # signal strength for the injected frame
+    noFrame: bool = False          # feed no UART bytes (timeout path)
+    badChecksum: bool = False      # corrupt the frame checksum byte
+    garbageHeader: bool = False    # feed 32 non-header bytes (sync fail)
+    partialFrame: bool = False     # feed header + 3 bytes only (incomplete)
+    uartFailAt: int = 0            # fail UART reads at/after call index (0=never; 1=sync, 3=payload)
+    getDist: bool = False          # call Swc_Lidar_GetDistance at end of phase
+    getDistNull: bool = False      # call Swc_Lidar_GetDistance(NULL)
+
+
+class FzcLidarSetupBody(BaseModel):
+    phases: list[FzcLidarPhase] = []
+
+
+class FzcLidarRunBody(BaseModel):
+    phases: list[FzcLidarPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -268,6 +296,9 @@ _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 # Stored FZC brake phase script for Given/When separation.
 _stored_fzc_brake_phases: list[FzcBrakePhase] = []
 
+# Stored FZC lidar phase script for Given/When separation.
+_stored_fzc_lidar_phases: list[FzcLidarPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -277,6 +308,7 @@ _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
+_FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -906,6 +938,7 @@ def _generate_coverage_html():
         ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
+        ("fzc_lidar", _FZC_LIDAR_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1404,6 +1437,77 @@ def run_fzc_brake(body: FzcBrakeRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="FZC brake harness returned invalid JSON") from exc
+
+
+def _fzc_lidar_phase_to_line(p: FzcLidarPhase) -> str:
+    """Serialize one FZC lidar phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"initNull={_b(p.initNull)}",
+        f"distCm={p.distCm}",
+        f"signal={p.signal}",
+        f"noFrame={_b(p.noFrame)}",
+        f"badChecksum={_b(p.badChecksum)}",
+        f"garbageHeader={_b(p.garbageHeader)}",
+        f"partialFrame={_b(p.partialFrame)}",
+        f"uartFailAt={p.uartFailAt}",
+        f"getDist={_b(p.getDist)}",
+        f"getDistNull={_b(p.getDistNull)}",
+    ])
+
+
+@app.post("/api/test/asw/fzc/lidar/setup")
+def setup_fzc_lidar(body: FzcLidarSetupBody):
+    """Store the FZC lidar phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_lidar_phases
+    _stored_fzc_lidar_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/lidar")
+def run_fzc_lidar(body: FzcLidarRunBody):
+    """Execute the real FZC lidar ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a healthy frame baseline). `body.phases` carries the stimulus
+    phases — the final lidar action under test. The harness runs the
+    concatenated precondition + stimulus script against the real Swc_Lidar.c
+    production code (MainFunction, frame parse, zone classification, stuck /
+    timeout / checksum / signal-low faults, GetDistance, DEM).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_lidar_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_lidar_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_lidar_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_LIDAR_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC lidar harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC lidar harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC lidar harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC lidar harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
