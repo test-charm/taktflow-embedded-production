@@ -231,6 +231,28 @@ class CvcCanMonitorRunBody(BaseModel):
     phases: list[CvcCanMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcWatchdogPhase(BaseModel):
+    """One phase of the CVC watchdog harness script.
+    Drives Swc_Watchdog_Init / Feed against the real Swc_Watchdog.c
+    production code with mocked Dio_FlipChannel.
+    """
+    skipInit: bool = False         # skip Swc_Watchdog_Init (uninitialized guard)
+    initNull: bool = False         # call Swc_Watchdog_Init(NULL_PTR) (NULL-config guard)
+    loopComplete: bool = True      # Swc_Watchdog_Feed arg (main loop finished)
+    canaryOk: bool = True          # Swc_Watchdog_Feed arg (stack canary intact)
+    ramOk: bool = True             # Swc_Watchdog_Feed arg (RAM pattern passed)
+    canOk: bool = True             # Swc_Watchdog_Feed arg (CAN not bus-off)
+    feedCount: int = 1             # Swc_Watchdog_Feed calls
+
+
+class CvcWatchdogSetupBody(BaseModel):
+    phases: list[CvcWatchdogPhase] = []
+
+
+class CvcWatchdogRunBody(BaseModel):
+    phases: list[CvcWatchdogPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -449,6 +471,9 @@ _stored_cvc_heartbeat_phases: list[CvcHeartbeatPhase] = []
 # Stored CVC CAN monitor phase script for Given/When separation.
 _stored_cvc_canmonitor_phases: list[CvcCanMonitorPhase] = []
 
+# Stored CVC watchdog phase script for Given/When separation.
+_stored_cvc_watchdog_phases: list[CvcWatchdogPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -479,6 +504,7 @@ _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
 _CVC_HEARTBEAT_HARNESS = "/app/bin/cvc_heartbeat_harness"
 _CVC_CANMONITOR_HARNESS = "/app/bin/cvc_canmonitor_harness"
+_CVC_WATCHDOG_HARNESS = "/app/bin/cvc_watchdog_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1115,6 +1141,7 @@ def _generate_coverage_html():
         ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
         ("cvc_heartbeat", _CVC_HEARTBEAT_HARNESS),
         ("cvc_canmonitor", _CVC_CANMONITOR_HARNESS),
+        ("cvc_watchdog", _CVC_WATCHDOG_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -1617,6 +1644,71 @@ def run_cvc_canmonitor(body: CvcCanMonitorRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC CAN monitor harness returned invalid JSON") from exc
+
+
+def _watchdog_phase_to_line(p: CvcWatchdogPhase) -> str:
+    """Serialize one watchdog phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"skipInit={_b(p.skipInit)}",
+        f"initNull={_b(p.initNull)}",
+        f"loopComplete={_b(p.loopComplete)}",
+        f"canaryOk={_b(p.canaryOk)}",
+        f"ramOk={_b(p.ramOk)}",
+        f"canOk={_b(p.canOk)}",
+        f"feedCount={p.feedCount}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/watchdog/setup")
+def setup_cvc_watchdog(body: CvcWatchdogSetupBody):
+    """Store the watchdog phase script for subsequent run calls that omit phases."""
+    global _stored_cvc_watchdog_phases
+    _stored_cvc_watchdog_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/watchdog")
+def run_cvc_watchdog(body: CvcWatchdogRunBody):
+    """Execute the real CVC watchdog ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a successful-feed baseline). `body.phases` carries the stimulus
+    phases. The harness runs the concatenated precondition + stimulus script
+    against the real Swc_Watchdog.c production code (Init + Feed, with a
+    mocked Dio_FlipChannel counting toggles).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvc_watchdog_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_watchdog_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_watchdog_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_WATCHDOG_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC watchdog harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC watchdog harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC watchdog harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC watchdog harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:

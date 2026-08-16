@@ -191,6 +191,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/cvc_canmonitor_harness.c \
       /app/firmware/ecu/cvc/src/Swc_CanMonitor.c \
       -o /app/bin/cvc_canmonitor_harness && \
+    # CVC watchdog harness (links Swc_Watchdog.c only — TPS3823 WDI feed with
+    # 4-condition gate: loop complete / canary intact / RAM ok / CAN not bus-off)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/cvc/include -I/app/firmware/ecu/cvc/cfg \
+      -I/app/firmware/ecu/cvc/cfg/platform_posix \
+      /app/fault_inject/native/cvc_watchdog_harness.c \
+      /app/firmware/ecu/cvc/src/Swc_Watchdog.c \
+      -o /app/bin/cvc_watchdog_harness && \
     # FZC steering harness (links Swc_Steering.c only — servo control chain)
     clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
       -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \

@@ -58,4 +58,16 @@ Std_ReturnType Swc_Watchdog_Feed(uint8 loopComplete,
                                   uint8 ramOk,
                                   uint8 canOk);
 
+/* ====================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds (STM32/TMS570/POSIX target) do not define
+ * UNIT_TEST, so these accessors never reach shipping firmware. They let
+ * the native ASW E2E harness verify the SWC's internal watchdog state
+ * (initialization flag, feed counter).
+ * ==================================================================== */
+#ifdef UNIT_TEST
+uint8  Swc_Watchdog_GetInitialized(void);
+uint32 Swc_Watchdog_GetFeedCount(void);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_WATCHDOG_H */

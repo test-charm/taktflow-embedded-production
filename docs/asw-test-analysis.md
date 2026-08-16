@@ -345,7 +345,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `Swc_Scheduler.c` | 可运行实体表和时序配置 | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py` | 调度器表内容/周期 | 可运行实体配置正确性 |
 | `Swc_SelfTest.c` | 启动自检序列 | `test_Swc_SelfTest_asild.c` | `test_hil_selftest.py`、启动 SIL/HIL 流程 | 自检前提条件和失败 | 通过/失败顺序和门控 |
 | `Swc_VehicleState.c` | 权威 CVC VSM | `test_Swc_VehicleState_asild.c` | `test_vsm_fault_transitions.py`、`test_hil_vsm.py`、SIL 电池/过温/紧急停止场景、`cvc_vehicle_state.feature`（ASW E2E） | 故障、通信丢失、紧急停止、电池、对等状态 | 状态转换、锁存、模式输出 |
-| `Swc_Watchdog.c` | 外部看门狗喂狗门控 | `test_Swc_Watchdog_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py` | 存活条件/缺失条件 | WDI 喂狗使能/禁用和故障门控 |
+| `Swc_Watchdog.c` | 外部看门狗喂狗门控 | `test_Swc_Watchdog_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py`、`cvc_watchdog.feature`（ASW E2E：四条件喂狗门控/NULL 配置/未初始化守卫） | 主循环完成、栈金丝雀、RAM 模式测试、CAN bus-off | WDI 喂狗使能/禁用、翻转计数和故障门控 |
 | `main.c` | CVC 入口点和周期性循环 | 无 | `test_cvc_full.py`、SIL 启动/电源循环场景、HIL/PIL 启动路径 | 进程/板卡启动 | 端到端启动和周期性行为 |
 
 ### FZC
@@ -508,9 +508,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **13 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，312 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **14 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，322 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
-- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）
+- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）
 - **FZC**：`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
@@ -530,16 +530,27 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > SWC 内部静态状态（静默定时器/错误警告追踪/恢复计数器），在
 > `Swc_CanMonitor.c/.h` 增加了 UNIT_TEST 保护的观测 getter（仅测试编译，不影响
 > 交付固件）。
+>
+> CVC `Swc_Watchdog`（2026-08-16 新增）：`cvc_watchdog.feature` 10 场景驱动真实
+> `Swc_Watchdog.c`（TPS3823 WDI 四条件门控：主循环完成/栈金丝雀/RAM 模式测试/
+> CAN 未 bus-off；NULL 配置与未初始化守卫；WDI 翻转计数与喂狗计数）。覆盖报告：
+> 行 93.5%（43/46）、分支 92.9%（13/14）、函数 100%（4/4，含 2 个
+> `#ifdef UNIT_TEST` 观测 getter，生产固件不含）。详见
+> `test-design/cvc-watchdog-e2e.md`。为观测 SWC 内部静态状态（初始化标志/喂狗
+> 计数），在 `Swc_Watchdog.c/.h` 增加了 UNIT_TEST 保护的观测 getter（仅测试编译，
+> 不影响交付固件）。唯一未覆盖分支为 `Wdg_CfgPtr == NULL_PTR` 防御守卫的 true
+> 侧（3 行）：`Wdg_Initialized` 与 `Wdg_CfgPtr` 在 Init 中同步赋值，二者满足
+> `Wdg_Initialized==TRUE ⟹ Wdg_CfgPtr!=NULL` 不变式，Feed 先检查初始化标志，
+> 该分支经公开 API 不可达，属合理豁免（详见设计文档「无法覆盖的代码说明」）。
 
 ### 扩展优先级
 
-以下为**未**被现有 13 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 14 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
-|---|---|---:|---|
-| CVC | `Swc_Watchdog` | asild | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py` |
+|---|---|---|---:|
 | CVC | `Swc_SelfTest` | asild | `test_hil_selftest.py` |
 | CVC | `Swc_Scheduler` | asild | `test_hil_scheduler.py` |
 | CVC | `Swc_Nvm` | asild | DCM/故障场景 |
