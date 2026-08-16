@@ -513,7 +513,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
    - FZC：`Swc_Steering` ✅、`Swc_Brake` ✅、`Swc_Lidar` ✅（见 `fzc_steering.feature`、`fzc_brake.feature`、`fzc_lidar.feature`）
    - RZC：`Swc_Motor` ✅（见 `rzc_motor.feature`，行覆盖 93.8%、函数覆盖 100%）、`Swc_Battery` ✅（见 `rzc_battery.feature`，行/分支/函数覆盖 100%）
    待扩展候选：
-   - RZC：`Swc_TempMonitor`、`Swc_RzcCom`
+   - RZC：`Swc_TempMonitor` ✅（见 `rzc_temponitor.feature`，行覆盖 98.2%、函数覆盖 100%）、`Swc_RzcCom`
 
 4. **使用现有 SIL/HIL 场景作为行为参考。**  
    尤其是：

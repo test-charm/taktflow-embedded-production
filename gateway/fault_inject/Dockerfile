@@ -211,7 +211,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
       /app/fault_inject/native/rzc_battery_harness.c \
       /app/firmware/ecu/rzc/src/Swc_Battery.c \
-      -o /app/bin/rzc_battery_harness
+      -o /app/bin/rzc_battery_harness && \
+    # RZC temp monitor harness (links Swc_TempMonitor.c only — NTC readout,
+    # dual-sensor plausibility, stepped derating curve and hysteresis recovery)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_temponitor_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_TempMonitor.c \
+      -o /app/bin/rzc_temponitor_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

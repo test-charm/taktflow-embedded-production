@@ -314,6 +314,29 @@ class RzcBatteryRunBody(BaseModel):
     phases: list[RzcBatteryPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcTempMonitorPhase(BaseModel):
+    """One phase of the RZC temp-monitor harness script.
+
+    Drives Swc_TempMonitor_MainFunction() against an injected NTC1/NTC2
+    temperature (deci-degrees C) via the IoHwAb read mocks, and reports
+    the selected temperature / derating / fault / DEM outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_TempMonitor_Init (uninitialized guard)
+    tempDc: int = 0                # NTC1 temperature (deci-degrees C) injected to IoHwAb
+    temp2Dc: int | None = None     # NTC2 temperature (deci-degrees C); None = agree with NTC1
+    ioFault: bool = False          # IoHwAb_ReadMotorTemp returns E_NOT_OK
+    temp2Fail: bool = False        # IoHwAb_ReadMotorTemp2 returns E_NOT_OK
+
+
+class RzcTempMonitorSetupBody(BaseModel):
+    phases: list[RzcTempMonitorPhase] = []
+
+
+class RzcTempMonitorRunBody(BaseModel):
+    phases: list[RzcTempMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -350,6 +373,9 @@ _stored_rzc_motor_phases: list[RzcMotorPhase] = []
 # Stored RZC battery phase script for Given/When separation.
 _stored_rzc_battery_phases: list[RzcBatteryPhase] = []
 
+# Stored RZC temp-monitor phase script for Given/When separation.
+_stored_rzc_temponitor_phases: list[RzcTempMonitorPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -362,6 +388,7 @@ _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
 _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 _RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
+_RZC_TEMPMONITOR_HARNESS = "/app/bin/rzc_temponitor_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -994,6 +1021,7 @@ def _generate_coverage_html():
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
         ("rzc_motor", _RZC_MOTOR_HARNESS),
         ("rzc_battery", _RZC_BATTERY_HARNESS),
+        ("rzc_temponitor", _RZC_TEMPMONITOR_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1692,6 +1720,74 @@ def run_rzc_battery(body: RzcBatteryRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC battery harness returned invalid JSON") from exc
+
+
+def _rzc_temponitor_phase_to_line(p: RzcTempMonitorPhase) -> str:
+    """Serialize one RZC temp-monitor phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    parts = [
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"tempDc={p.tempDc}",
+        f"ioFault={_b(p.ioFault)}",
+        f"temp2Fail={_b(p.temp2Fail)}",
+    ]
+    if p.temp2Dc is not None:
+        parts.insert(3, f"temp2Dc={p.temp2Dc}")
+    return " ".join(parts)
+
+
+@app.post("/api/test/asw/rzc/temponitor/setup")
+def setup_rzc_temponitor(body: RzcTempMonitorSetupBody):
+    """Store the RZC temp-monitor phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_temponitor_phases
+    _stored_rzc_temponitor_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/temponitor")
+def run_rzc_temponitor(body: RzcTempMonitorRunBody):
+    """Execute the real RZC temp-monitor ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a hot-motor baseline for hysteresis). `body.phases` carries the
+    stimulus phases — the final NTC temperatures under test. The harness runs
+    the concatenated precondition + stimulus script against the real
+    Swc_TempMonitor.c production code (MainFunction, NTC readout, plausible
+    range gating, dual-sensor cross-check, stepped derating curve, hysteresis
+    recovery, DEM DTC, RTE signals).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_temponitor_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_temponitor_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_temponitor_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_TEMPMONITOR_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC temp-monitor harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC temp-monitor harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC temp-monitor harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC temp-monitor harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
