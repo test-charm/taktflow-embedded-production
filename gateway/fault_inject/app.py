@@ -148,7 +148,6 @@ class CvcEStopSetupBody(BaseModel):
 
 class CvcCvcComPhase(BaseModel):
     """One phase of the CVC CAN-communication harness script.
-
     Drives Swc_CvcCom_TransmitSchedule() (TX) and optionally
     Swc_CvcCom_BridgeRxToRte() (RX bridge) against injected RTE fault
     signals and Com RX shadows.
@@ -187,6 +186,33 @@ class CvcCvcComRunBody(BaseModel):
     phases: list[CvcCvcComPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcSteeringPhase(BaseModel):
+    """One phase of the FZC steering servo harness script.
+
+    Drives Swc_Steering_MainFunction() against injected RTE command,
+    IoHwAb SPI feedback, and fault injections, and reports PWM / Dio /
+    RTE / DEM outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_Steering_Init (uninitialized guard)
+    initNull: bool = False         # call Swc_Steering_Init(NULL) (NULL-config guard)
+    cmdAngle: int = 0              # commanded angle in degrees (RTE FZC_SIG_STEER_CMD)
+    rteReadFail: bool = False      # Rte_Read returns E_NOT_OK (command timeout path)
+    actualAngle: int = 0           # IoHwAb feedback in degrees (14-bit SPI raw)
+    actualTrack: bool = False      # feedback tracks previous RTE output (healthy)
+    spiFail: bool = False          # IoHwAb_ReadSteeringAngle returns E_NOT_OK
+    getAngle: bool = False         # call Swc_Steering_GetAngle at end of phase
+    getAngleNull: bool = False     # call Swc_Steering_GetAngle(NULL)
+
+
+class FzcSteeringSetupBody(BaseModel):
+    phases: list[FzcSteeringPhase] = []
+
+
+class FzcSteeringRunBody(BaseModel):
+    phases: list[FzcSteeringPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -208,6 +234,9 @@ _stored_estop_phases: list[CvcEStopPhase] = []
 # Stored CvcCom phase script for Given/When separation.
 _stored_cvccom_phases: list[CvcCvcComPhase] = []
 
+# Stored FZC steering phase script for Given/When separation.
+_stored_fzc_steering_phases: list[FzcSteeringPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -215,6 +244,7 @@ _CVC_PEDAL_HARNESS = "/app/bin/cvc_pedal_harness"
 _CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
 _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
+_FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -842,6 +872,7 @@ def _generate_coverage_html():
         ("cvc_vsm", _CVC_VSM_HARNESS),
         ("cvc_estop", _CVC_ESTOP_HARNESS),
         ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
+        ("fzc_steering", _FZC_STEERING_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -1202,6 +1233,74 @@ def run_cvc_cvccom(body: CvcCvcComRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC cvccom harness returned invalid JSON") from exc
+
+
+def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:
+    """Serialize one FZC steering phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"initNull={_b(p.initNull)}",
+        f"cmdAngle={p.cmdAngle}",
+        f"rteReadFail={_b(p.rteReadFail)}",
+        f"actualAngle={p.actualAngle}",
+        f"actualTrack={_b(p.actualTrack)}",
+        f"spiFail={_b(p.spiFail)}",
+        f"getAngle={_b(p.getAngle)}",
+        f"getAngleNull={_b(p.getAngleNull)}",
+    ])
+
+
+@app.post("/api/test/asw/fzc/steering/setup")
+def setup_fzc_steering(body: FzcSteeringSetupBody):
+    """Store the FZC steering phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_steering_phases
+    _stored_fzc_steering_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/steering")
+def run_fzc_steering(body: FzcSteeringRunBody):
+    """Execute the real FZC steering ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a healthy command baseline). `body.phases` carries the stimulus
+    phases — the final steering action under test. The harness runs the
+    concatenated precondition + stimulus script against the real Swc_Steering.c
+    production code (MainFunction, RTC, fault latch, PWM/Dio/DEM).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_steering_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_steering_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_steering_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_STEERING_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC steering harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC steering harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC steering harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC steering harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
