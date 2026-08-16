@@ -285,7 +285,17 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
       /app/fault_inject/native/rzc_rzccom_harness.c \
       /app/firmware/ecu/rzc/src/Swc_RzcCom.c \
-      -o /app/bin/rzc_rzccom_harness
+      -o /app/bin/rzc_rzccom_harness && \
+    # FZC COM harness (links Swc_FzcCom.c only — E2E protect/check, RX receive
+    # with CAN-monitor notification, and TX transmit scheduling for heartbeat /
+    # steering status / brake status / brake fault / motor cutoff / lidar distance)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/fzc/include -I/app/firmware/ecu/fzc/cfg \
+      -I/app/firmware/ecu/fzc/cfg/platform_posix \
+      /app/fault_inject/native/fzc_fzccom_harness.c \
+      /app/firmware/ecu/fzc/src/Swc_FzcCom.c \
+      -o /app/bin/fzc_fzccom_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

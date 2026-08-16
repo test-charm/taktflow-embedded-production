@@ -522,6 +522,40 @@ class RzcComRunBody(BaseModel):
     phases: list[RzcComPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcFzcComPhase(BaseModel):
+    """One phase of the FZC COM harness script.
+
+    Drives the Swc_FzcCom APIs against injected E2E buffers / RTE signals,
+    and reports E2E return codes, mutated buffers, CAN-monitor notify
+    counts, the g_dbg_* instrumentation counters, and TX Com signals.
+    """
+    op: str = "receive"            # init | e2eProtect | e2eCheck | receive | tx
+    data: str = "0000000000000000" # E2E 8-byte payload as hex ("null" = NULL_PTR)
+    dataId: int = 3                # FZC E2E Data ID (FZC-specific, from Fzc_Cfg.h)
+    length: int = 8                # E2E payload length
+    repeats: int = 1               # repeat count for e2eProtect / e2eCheck
+    cycles: int = 1                # cyclic call count (receive / tx)
+    skipInit: bool = False         # skip Swc_FzcCom_Init (uninitialized guard)
+    vehicleState: int = 1          # RTE FZC_SIG_VEHICLE_STATE (tx input)
+    faultMask: int = 0             # RTE FZC_SIG_FAULT_MASK (tx input)
+    steerAngle: int = 0            # RTE FZC_SIG_STEER_ANGLE (tx input, sint16)
+    steerFault: int = 0            # RTE FZC_SIG_STEER_FAULT (tx input)
+    brakePos: int = 0              # RTE FZC_SIG_BRAKE_POS (tx input)
+    brakeFault: int = 0            # RTE FZC_SIG_BRAKE_FAULT (tx input)
+    motorCutoff: int = 0           # RTE FZC_SIG_MOTOR_CUTOFF (tx input)
+    lidarZone: int = 0             # RTE FZC_SIG_LIDAR_ZONE (tx input)
+    lidarDist: int = 0             # RTE FZC_SIG_LIDAR_DIST (tx input, uint16)
+    lidarSignal: int = 0           # RTE FZC_SIG_LIDAR_SIGNAL (tx input, uint16)
+
+
+class FzcFzcComSetupBody(BaseModel):
+    phases: list[FzcFzcComPhase] = []
+
+
+class FzcFzcComRunBody(BaseModel):
+    phases: list[FzcFzcComPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -582,6 +616,9 @@ _stored_rzc_temponitor_phases: list[RzcTempMonitorPhase] = []
 # Stored RZC COM phase script for Given/When separation.
 _stored_rzc_rzccom_phases: list[RzcComPhase] = []
 
+# Stored FZC COM phase script for Given/When separation.
+_stored_fzc_fzccom_phases: list[FzcFzcComPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -602,6 +639,7 @@ _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 _RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
 _RZC_TEMPMONITOR_HARNESS = "/app/bin/rzc_temponitor_harness"
 _RZC_RZCCOM_HARNESS = "/app/bin/rzc_rzccom_harness"
+_FZC_FZCCOM_HARNESS = "/app/bin/fzc_fzccom_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1242,6 +1280,7 @@ def _generate_coverage_html():
         ("rzc_battery", _RZC_BATTERY_HARNESS),
         ("rzc_temponitor", _RZC_TEMPMONITOR_HARNESS),
         ("rzc_rzccom", _RZC_RZCCOM_HARNESS),
+        ("fzc_fzccom", _FZC_FZCCOM_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -2499,6 +2538,85 @@ def run_rzc_rzccom(body: RzcComRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC COM harness returned invalid JSON") from exc
+
+
+def _fzc_fzccom_phase_to_line(p: FzcFzcComPhase) -> str:
+    """Serialize one FZC COM phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    parts = [
+        f"op={p.op}",
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"dataId={p.dataId}",
+        f"data={p.data}",
+        f"len={p.length}",
+        f"repeats={p.repeats}",
+        f"vehicleState={p.vehicleState}",
+        f"faultMask={p.faultMask}",
+        f"steerAngle={p.steerAngle}",
+        f"steerFault={p.steerFault}",
+        f"brakePos={p.brakePos}",
+        f"brakeFault={p.brakeFault}",
+        f"motorCutoff={p.motorCutoff}",
+        f"lidarZone={p.lidarZone}",
+        f"lidarDist={p.lidarDist}",
+        f"lidarSignal={p.lidarSignal}",
+    ]
+    return " ".join(parts)
+
+
+@app.post("/api/test/asw/fzc/fzccom/setup")
+def setup_fzc_fzccom(body: FzcFzcComSetupBody):
+    """Store the FZC COM phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_fzccom_phases
+    _stored_fzc_fzccom_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/fzccom")
+def run_fzc_fzccom(body: FzcFzcComRunBody):
+    """Execute the real FZC COM ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. E2E alive-counter baseline). `body.phases` carries the stimulus
+    phases — the E2E protect/check / receive / tx actions under test. The
+    harness runs the concatenated precondition + stimulus script against the
+    real Swc_FzcCom.c production code (E2E CRC-8 0x1D + 4-bit alive counter
+    protect/check, RX receive with CAN-monitor notification, TX scheduling
+    for heartbeat / steering status / brake status / brake fault / motor
+    cutoff / lidar distance, Com shadow signals, RTE signals).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_fzccom_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_fzccom_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_fzccom_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_FZCCOM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC COM harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC COM harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC COM harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC COM harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
