@@ -46,4 +46,21 @@ void Swc_Heartbeat_RxIndication(uint8 ecuId);
  */
 void Swc_Heartbeat_ResetCommStatus(void);
 
+/* ====================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds (STM32/TMS570/POSIX target) do not define
+ * UNIT_TEST, so these accessors never reach shipping firmware. They let
+ * the native ASW E2E harness verify the SWC's internal heartbeat state
+ * (alive counter, RX flags, comm status, E2E SM status).
+ * ==================================================================== */
+#ifdef UNIT_TEST
+uint8   Swc_Heartbeat_GetAliveCounter(void);
+boolean Swc_Heartbeat_GetFzcRxFlag(void);
+boolean Swc_Heartbeat_GetRzcRxFlag(void);
+uint8   Swc_Heartbeat_GetFzcCommStatus(void);
+uint8   Swc_Heartbeat_GetRzcCommStatus(void);
+uint8   Swc_Heartbeat_GetFzcSmStatus(void);
+uint8   Swc_Heartbeat_GetRzcSmStatus(void);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_HEARTBEAT_H */

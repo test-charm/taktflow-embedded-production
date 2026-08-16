@@ -186,6 +186,26 @@ class CvcCvcComRunBody(BaseModel):
     phases: list[CvcCvcComPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcHeartbeatPhase(BaseModel):
+    """One phase of the CVC heartbeat harness script.
+    Drives Swc_Heartbeat_Init / MainFunction / RxIndication / ResetCommStatus
+    against the real Swc_Heartbeat.c production code.
+    """
+    cycles: int = 1                # Swc_Heartbeat_MainFunction calls
+    skipInit: bool = False         # skip Swc_Heartbeat_Init (uninitialized guard)
+    vehicleState: int = 1          # RTE CVC_SIG_VEHICLE_STATE read at TX boundary
+    rxEcu: int = 0                 # Swc_Heartbeat_RxIndication arg (0=none, 2=FZC, 3=RZC, else unknown)
+    resetComm: bool = False        # call Swc_Heartbeat_ResetCommStatus after cycles
+
+
+class CvcHeartbeatSetupBody(BaseModel):
+    phases: list[CvcHeartbeatPhase] = []
+
+
+class CvcHeartbeatRunBody(BaseModel):
+    phases: list[CvcHeartbeatPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -398,6 +418,9 @@ _stored_estop_phases: list[CvcEStopPhase] = []
 # Stored CvcCom phase script for Given/When separation.
 _stored_cvccom_phases: list[CvcCvcComPhase] = []
 
+# Stored CVC heartbeat phase script for Given/When separation.
+_stored_cvc_heartbeat_phases: list[CvcHeartbeatPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -426,6 +449,7 @@ _CVC_PEDAL_HARNESS = "/app/bin/cvc_pedal_harness"
 _CVC_VSM_HARNESS = "/app/bin/cvc_vehiclestate_harness"
 _CVC_ESTOP_HARNESS = "/app/bin/cvc_estop_harness"
 _CVC_CVCCOM_HARNESS = "/app/bin/cvc_cvccom_harness"
+_CVC_HEARTBEAT_HARNESS = "/app/bin/cvc_heartbeat_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1060,6 +1084,7 @@ def _generate_coverage_html():
         ("cvc_vsm", _CVC_VSM_HARNESS),
         ("cvc_estop", _CVC_ESTOP_HARNESS),
         ("cvc_cvccom", _CVC_CVCCOM_HARNESS),
+        ("cvc_heartbeat", _CVC_HEARTBEAT_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -1427,6 +1452,69 @@ def run_cvc_cvccom(body: CvcCvcComRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC cvccom harness returned invalid JSON") from exc
+
+
+def _heartbeat_phase_to_line(p: CvcHeartbeatPhase) -> str:
+    """Serialize one heartbeat phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"vehicleState={p.vehicleState}",
+        f"rxEcu={p.rxEcu}",
+        f"resetComm={_b(p.resetComm)}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/heartbeat/setup")
+def setup_cvc_heartbeat(body: CvcHeartbeatSetupBody):
+    """Store the heartbeat phase script for subsequent run calls that omit phases."""
+    global _stored_cvc_heartbeat_phases
+    _stored_cvc_heartbeat_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/heartbeat")
+def run_cvc_heartbeat(body: CvcHeartbeatRunBody):
+    """Execute the real CVC heartbeat ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. an RX indication baseline). `body.phases` carries the stimulus phases.
+    The harness runs the concatenated precondition + stimulus script against
+    the real Swc_Heartbeat.c production code (Init + MainFunction +
+    RxIndication + ResetCommStatus).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvc_heartbeat_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_heartbeat_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_heartbeat_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_HEARTBEAT_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC heartbeat harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC heartbeat harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC heartbeat harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC heartbeat harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:

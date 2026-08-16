@@ -209,3 +209,47 @@ void Swc_Heartbeat_ResetCommStatus(void)
     (void)Rte_Write(CVC_SIG_FZC_COMM_STATUS, (uint32)CVC_COMM_OK);
     (void)Rte_Write(CVC_SIG_RZC_COMM_STATUS, (uint32)CVC_COMM_OK);
 }
+
+/* ====================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * never reach shipping firmware. The native ASW E2E harness uses them to
+ * verify heartbeat internal state (alive counter, RX flags, comm status,
+ * E2E SM status) that is otherwise not externally observable.
+ * ==================================================================== */
+#ifdef UNIT_TEST
+uint8 Swc_Heartbeat_GetAliveCounter(void)
+{
+    return alive_counter;
+}
+
+boolean Swc_Heartbeat_GetFzcRxFlag(void)
+{
+    return fzc_rx_flag;
+}
+
+boolean Swc_Heartbeat_GetRzcRxFlag(void)
+{
+    return rzc_rx_flag;
+}
+
+uint8 Swc_Heartbeat_GetFzcCommStatus(void)
+{
+    return fzc_comm_status;
+}
+
+uint8 Swc_Heartbeat_GetRzcCommStatus(void)
+{
+    return rzc_comm_status;
+}
+
+uint8 Swc_Heartbeat_GetFzcSmStatus(void)
+{
+    return (uint8)fzc_sm_state.Status;
+}
+
+uint8 Swc_Heartbeat_GetRzcSmStatus(void)
+{
+    return (uint8)rzc_sm_state.Status;
+}
+#endif /* UNIT_TEST */
