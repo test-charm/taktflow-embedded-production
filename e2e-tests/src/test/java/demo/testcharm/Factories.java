@@ -5,6 +5,7 @@ import demo.testcharm.dto.CvcCvcComSetup;
 import demo.testcharm.dto.CvcCanMonitorSetup;
 import demo.testcharm.dto.CvcHeartbeatSetup;
 import demo.testcharm.dto.CvcSelfTestSetup;
+import demo.testcharm.dto.CvcSchedulerSetup;
 import demo.testcharm.dto.CvcWatchdogSetup;
 import demo.testcharm.dto.CvcPedalSetup;
 import demo.testcharm.dto.CvcVehicleStateSetup;
@@ -52,6 +53,7 @@ public class Factories {
                 .registerByType(CvcCanMonitorSetup.class, new CvcCanMonitorSetupDataRepository(restfulStep))
                 .registerByType(CvcWatchdogSetup.class, new CvcWatchdogSetupDataRepository(restfulStep))
                 .registerByType(CvcSelfTestSetup.class, new CvcSelfTestSetupDataRepository(restfulStep))
+                .registerByType(CvcSchedulerSetup.class, new CvcSchedulerSetupDataRepository(restfulStep))
                 .registerByType(FzcSteeringSetup.class, new FzcSteeringSetupDataRepository(restfulStep))
                 .registerByType(FzcBrakeSetup.class, new FzcBrakeSetupDataRepository(restfulStep))
                 .registerByType(FzcLidarSetup.class, new FzcLidarSetupDataRepository(restfulStep))
@@ -178,6 +180,21 @@ public class Factories {
         public void save(Object object) {
             super.save(object);
             restfulStep.postObjectInJson("/api/test/asw/cvc/selftest/setup", object);
+        }
+    }
+
+    public static class CvcSchedulerSetupDataRepository extends MemoryDataRepository {
+
+        private final RestfulStep restfulStep;
+
+        public CvcSchedulerSetupDataRepository(RestfulStep restfulStep) {
+            this.restfulStep = restfulStep;
+        }
+
+        @Override
+        public void save(Object object) {
+            super.save(object);
+            restfulStep.postObjectInJson("/api/test/asw/cvc/scheduler/setup", object);
         }
     }
 

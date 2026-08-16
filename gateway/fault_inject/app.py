@@ -275,6 +275,27 @@ class CvcSelfTestRunBody(BaseModel):
     phases: list[CvcSelfTestPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcSchedulerPhase(BaseModel):
+    """One phase of the CVC scheduler harness script.
+    Drives Swc_Scheduler_Init against the real Swc_Scheduler.c production
+    code with config-guard pinning (NULL config / null runnables / zero count)
+    and runnable-table selection for valid initialization.
+    """
+    skipInit: bool = False        # skip Swc_Scheduler_Init (uninitialized guard)
+    initNull: bool = False        # Swc_Scheduler_Init(NULL_PTR) (NULL-config guard)
+    nullRunnables: bool = False   # Init with config.runnables == NULL (guard)
+    zeroCount: bool = False       # Init with config.runnableCount == 0 (guard)
+    tableIndex: int = 0           # valid-init table: 0=production 8-run, 1=min 1-run, 2=max 16-run
+
+
+class CvcSchedulerSetupBody(BaseModel):
+    phases: list[CvcSchedulerPhase] = []
+
+
+class CvcSchedulerRunBody(BaseModel):
+    phases: list[CvcSchedulerPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -499,6 +520,9 @@ _stored_cvc_watchdog_phases: list[CvcWatchdogPhase] = []
 # Stored CVC self-test phase script for Given/When separation.
 _stored_cvc_selftest_phases: list[CvcSelfTestPhase] = []
 
+# Stored CVC scheduler phase script for Given/When separation.
+_stored_cvc_scheduler_phases: list[CvcSchedulerPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -531,6 +555,7 @@ _CVC_HEARTBEAT_HARNESS = "/app/bin/cvc_heartbeat_harness"
 _CVC_CANMONITOR_HARNESS = "/app/bin/cvc_canmonitor_harness"
 _CVC_WATCHDOG_HARNESS = "/app/bin/cvc_watchdog_harness"
 _CVC_SELFTEST_HARNESS = "/app/bin/cvc_selftest_harness"
+_CVC_SCHEDULER_HARNESS = "/app/bin/cvc_scheduler_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1169,6 +1194,7 @@ def _generate_coverage_html():
         ("cvc_canmonitor", _CVC_CANMONITOR_HARNESS),
         ("cvc_watchdog", _CVC_WATCHDOG_HARNESS),
         ("cvc_selftest", _CVC_SELFTEST_HARNESS),
+        ("cvc_scheduler", _CVC_SCHEDULER_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -1802,6 +1828,70 @@ def run_cvc_selftest(body: CvcSelfTestRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC self-test harness returned invalid JSON") from exc
+
+
+def _scheduler_phase_to_line(p: CvcSchedulerPhase) -> str:
+    """Serialize one scheduler phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"skipInit={_b(p.skipInit)}",
+        f"initNull={_b(p.initNull)}",
+        f"nullRunnables={_b(p.nullRunnables)}",
+        f"zeroCount={_b(p.zeroCount)}",
+        f"tableIndex={p.tableIndex or 0}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/scheduler/setup")
+def setup_cvc_scheduler(body: CvcSchedulerSetupBody):
+    """Store the scheduler phase script for subsequent run calls that omit phases."""
+    global _stored_cvc_scheduler_phases
+    _stored_cvc_scheduler_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/scheduler")
+def run_cvc_scheduler(body: CvcSchedulerRunBody):
+    """Execute the real CVC scheduler ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. an earlier valid initialization). `body.phases` carries the stimulus
+    phases. The harness runs the concatenated precondition + stimulus script
+    against the real Swc_Scheduler.c production code (Init + GetConfig +
+    GetRunnableCount), exercising the NULL-config / null-runnables / zero-count
+    guards, config replacement on re-init, and table data checks.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvc_scheduler_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_scheduler_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_scheduler_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_SCHEDULER_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC scheduler harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC scheduler harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC scheduler harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC scheduler harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:

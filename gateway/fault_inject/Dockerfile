@@ -210,6 +210,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/cvc_selftest_harness.c \
       /app/firmware/ecu/cvc/src/Swc_SelfTest.c \
       -o /app/bin/cvc_selftest_harness && \
+    # CVC scheduler harness (links Swc_Scheduler.c only — runnable table
+    # Init/GetConfig/GetRunnableCount with NULL / null-runnables / zero-count
+    # guards, config replacement, and table data checks)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/cvc/include -I/app/firmware/ecu/cvc/cfg \
+      -I/app/firmware/ecu/cvc/cfg/platform_posix \
+      /app/fault_inject/native/cvc_scheduler_harness.c \
+      /app/firmware/ecu/cvc/src/Swc_Scheduler.c \
+      -o /app/bin/cvc_scheduler_harness && \
     # FZC steering harness (links Swc_Steering.c only — servo control chain)
     clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
       -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \

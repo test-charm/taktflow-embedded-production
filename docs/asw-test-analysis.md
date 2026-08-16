@@ -342,7 +342,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `Swc_Heartbeat.c` | 心跳 TX/RX 监控 | `test_Swc_Heartbeat_asilc.c` | `test_cvc_full.py`、`test_hil_heartbeat.py`、`pil_005_cvc_e2e_integrity.yaml` | 对等心跳状态、周期性节拍 | 心跳载荷、超时检测、存活计数器 |
 | `Swc_Nvm.c` | DTC 持久化/校准 NVM | `test_Swc_Nvm_asild.c` | 通过 DCM/故障场景间接覆盖 | 存储的故障/校准记录 | 持久化/恢复行为 |
 | `Swc_Pedal.c` | 双踏板处理和扭矩映射 | `test_Swc_Pedal_asild.c` | `sil_002_pedal_ramp.yaml` | 踏板传感器值、合理性故障、模式限制 | 扭矩请求、故障检测、钳位 |
-| `Swc_Scheduler.c` | 可运行实体表和时序配置 | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py` | 调度器表内容/周期 | 可运行实体配置正确性 |
+| `Swc_Scheduler.c` | 可运行实体表和时序配置 | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py`、`cvc_scheduler.feature`（ASW E2E：生产 8 项表装载/三种守卫/NULL 清除与恢复/计数边界/优先级与 WCET 数据检查） | 调度器表内容/周期 | 可运行实体配置正确性 |
 | `Swc_SelfTest.c` | 启动自检序列 | `test_Swc_SelfTest_asild.c` | `test_hil_selftest.py`、启动 SIL/HIL 流程、`cvc_selftest.feature`（ASW E2E：7 项启动自检/关键失败立即终止/DTC 上报/OLED 非关键） | 自检前提条件和失败 | 通过/失败顺序和门控 |
 | `Swc_VehicleState.c` | 权威 CVC VSM | `test_Swc_VehicleState_asild.c` | `test_vsm_fault_transitions.py`、`test_hil_vsm.py`、SIL 电池/过温/紧急停止场景、`cvc_vehicle_state.feature`（ASW E2E） | 故障、通信丢失、紧急停止、电池、对等状态 | 状态转换、锁存、模式输出 |
 | `Swc_Watchdog.c` | 外部看门狗喂狗门控 | `test_Swc_Watchdog_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_hil_wdgm.py`、`cvc_watchdog.feature`（ASW E2E：四条件喂狗门控/NULL 配置/未初始化守卫） | 主循环完成、栈金丝雀、RAM 模式测试、CAN bus-off | WDI 喂狗使能/禁用、翻转计数和故障门控 |
@@ -508,9 +508,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **15 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，332 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **16 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，344 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
-- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）
+- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）
 - **FZC**：`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
@@ -553,16 +553,29 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > `test-design/cvc-selftest-e2e.md`。设计文档另记录一处生产代码注释与行为
 > 不一致（L91 注释称 NVM 失败「continue」，实际 L94-95 立即返回 FAILED），
 > 用例按实际行为断言并固化。
+>
+> CVC `Swc_Scheduler`（2026-08-16 新增）：`cvc_scheduler.feature` 12 场景驱动
+> 真实 `Swc_Scheduler.c`（可运行实体表装载：生产 8 项表 SWR-CVC-032 正确读回、
+> NULL 配置/空 runnables/零计数守卫拒绝初始化、未初始化守卫、重复 Init 配置
+> 替换与 NULL 清除、失败后恢复、最小 1 项/最大 16 项计数边界、安全任务优先级
+> 高于 QM、总 WCET 在最短周期内）。覆盖报告：行 92.5%（37/40）、分支 91.7%
+> （11/12）、函数 100%（3/3）。无需新增观测 getter：`GetConfig` /
+> `GetRunnableCount` 为既有公开 API，**生产代码零改动**。详见
+> `test-design/cvc-scheduler-e2e.md`。唯一未覆盖分支为
+> `Swc_Scheduler_GetRunnableCount` 中 `Sched_CfgPtr == NULL_PTR` 防御守卫的
+> true 侧（3 行）：`Sched_Initialized` 与 `Sched_CfgPtr` 在 Init 中同步赋值，
+> 二者满足 `Sched_Initialized==TRUE ⟹ Sched_CfgPtr!=NULL` 不变式，GetRunnableCount
+> 先检查初始化标志，该分支经公开 API 不可达，属合理豁免（与 `Swc_Watchdog`
+> 的 `Wdg_CfgPtr == NULL_PTR` 守卫同理，详见设计文档「无法覆盖的代码说明」）。
 
 ### 扩展优先级
 
-以下为**未**被现有 15 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 16 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| CVC | `Swc_Scheduler` | asild | `test_hil_scheduler.py` |
 | CVC | `Swc_Nvm` | asild | DCM/故障场景 |
 | FZC | `Swc_FzcCom` | asild | `test_cvc_fzc_dual.py`、HIL 车身/心跳（与 `cvc_cvccom.feature` 对偶，最优先） |
 | FZC | `Swc_Heartbeat` | asilc | `test_cvc_fzc_dual.py`、`test_hil_heartbeat.py` |
