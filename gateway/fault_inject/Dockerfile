@@ -220,6 +220,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/cvc_scheduler_harness.c \
       /app/firmware/ecu/cvc/src/Swc_Scheduler.c \
       -o /app/bin/cvc_scheduler_harness && \
+    # CVC NVM harness (links Swc_Nvm.c only — DTC persistence 20-slot circular
+    # buffer with CRC-16 corruption detection, calibration read/write with
+    # CRC-16 protection and fallback to compiled defaults on corruption)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/cvc/include -I/app/firmware/ecu/cvc/cfg \
+      -I/app/firmware/ecu/cvc/cfg/platform_posix \
+      /app/fault_inject/native/cvc_nvm_harness.c \
+      /app/firmware/ecu/cvc/src/Swc_Nvm.c \
+      -o /app/bin/cvc_nvm_harness && \
     # FZC steering harness (links Swc_Steering.c only — servo control chain)
     clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
       -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \

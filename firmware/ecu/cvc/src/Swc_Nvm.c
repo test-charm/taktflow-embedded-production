@@ -305,3 +305,47 @@ Std_ReturnType Swc_Nvm_WriteCal(const Swc_Nvm_CalDataType* calData)
 
     return E_OK;
 }
+
+/* ==================================================================
+ * Test-only observation/corruption API — compiled only when UNIT_TEST
+ * is defined. Production firmware builds (STM32/TMS570/POSIX target)
+ * do not define UNIT_TEST, so these accessors never reach shipping
+ * firmware. They let the native ASW E2E harness:
+ *   - observe the module's internal state (initialized flag, circular
+ *     buffer write index, stored DTC count) that is otherwise hidden
+ *     behind static file-scope variables, and
+ *   - corrupt the stored CRC of a DTC slot / calibration block so the
+ *     harness can drive the corruption-detection paths (LoadDtc CRC
+ *     mismatch, ReadCal fallback to defaults).
+ * ================================================================== */
+#ifdef UNIT_TEST
+
+uint8 Swc_Nvm_TestGetInitialized(void)
+{
+    return Nvm_Initialized;
+}
+
+uint8 Swc_Nvm_TestGetDtcWriteIndex(void)
+{
+    return Nvm_DtcWriteIndex;
+}
+
+uint8 Swc_Nvm_TestGetDtcCount(void)
+{
+    return Nvm_DtcCount;
+}
+
+void Swc_Nvm_TestCorruptDtcCrc(uint8 slotIndex)
+{
+    if (slotIndex < NVM_MAX_DTC_SLOTS)
+    {
+        Nvm_DtcSlots[slotIndex].crc ^= 0xFFFFu;
+    }
+}
+
+void Swc_Nvm_TestCorruptCalCrc(void)
+{
+    Nvm_CalData.crc ^= 0xFFFFu;
+}
+
+#endif /* UNIT_TEST */

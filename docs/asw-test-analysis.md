@@ -340,7 +340,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `Swc_Dashboard.c` | OLED 仪表盘渲染 | `test_Swc_Dashboard_qm.c` | 通过启动/显示路径间接覆盖 | 车辆状态、速度、故障 | 渲染后的状态/故障呈现 |
 | `Swc_EStop.c` | 紧急停止消抖、锁存、广播 | `test_Swc_EStop_asilb.c` | `sil_003_emergency_stop.yaml` | GPIO/按钮式紧急停止信号 | 锁存、CAN 0x001、安全状态触发 |
 | `Swc_Heartbeat.c` | 心跳 TX/RX 监控 | `test_Swc_Heartbeat_asilc.c` | `test_cvc_full.py`、`test_hil_heartbeat.py`、`pil_005_cvc_e2e_integrity.yaml` | 对等心跳状态、周期性节拍 | 心跳载荷、超时检测、存活计数器 |
-| `Swc_Nvm.c` | DTC 持久化/校准 NVM | `test_Swc_Nvm_asild.c` | 通过 DCM/故障场景间接覆盖 | 存储的故障/校准记录 | 持久化/恢复行为 |
+| `Swc_Nvm.c` | DTC 持久化/校准 NVM | `test_Swc_Nvm_asild.c` | `cvc_nvm.feature`（ASW E2E：20-slot 循环缓冲 DTC 存储/回绕/CRC 损坏检测/冻结帧 + 校准读写/CRC 损坏回退默认值 + 未初始化守卫） | 存储的故障/校准记录 | 持久化/恢复行为 |
 | `Swc_Pedal.c` | 双踏板处理和扭矩映射 | `test_Swc_Pedal_asild.c` | `sil_002_pedal_ramp.yaml` | 踏板传感器值、合理性故障、模式限制 | 扭矩请求、故障检测、钳位 |
 | `Swc_Scheduler.c` | 可运行实体表和时序配置 | `test_Swc_Scheduler_asild.c` | `test_hil_scheduler.py`、`cvc_scheduler.feature`（ASW E2E：生产 8 项表装载/三种守卫/NULL 清除与恢复/计数边界/优先级与 WCET 数据检查） | 调度器表内容/周期 | 可运行实体配置正确性 |
 | `Swc_SelfTest.c` | 启动自检序列 | `test_Swc_SelfTest_asild.c` | `test_hil_selftest.py`、启动 SIL/HIL 流程、`cvc_selftest.feature`（ASW E2E：7 项启动自检/关键失败立即终止/DTC 上报/OLED 非关键） | 自检前提条件和失败 | 通过/失败顺序和门控 |
@@ -508,9 +508,9 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **16 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，344 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **17 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，365 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
-- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）
+- **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
 - **FZC**：`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
@@ -567,6 +567,17 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > 二者满足 `Sched_Initialized==TRUE ⟹ Sched_CfgPtr!=NULL` 不变式，GetRunnableCount
 > 先检查初始化标志，该分支经公开 API 不可达，属合理豁免（与 `Swc_Watchdog`
 > 的 `Wdg_CfgPtr == NULL_PTR` 守卫同理，详见设计文档「无法覆盖的代码说明」）。
+>
+> CVC `Swc_Nvm`（2026-08-16 新增）：`cvc_nvm.feature` 21 场景驱动真实
+> `Swc_Nvm.c`（DTC 持久化：20-slot 循环缓冲 + 每条目 CRC-16 损坏检测 +
+> 32B 冻结帧 NULL/模式两分支 + 回绕覆盖；校准数据：读写往返 + 自定义值 +
+> CRC 损坏回退编译期默认值 + 未初始化守卫；CRC-16/CCITT 公开 API 已知向量）。
+> 覆盖报告：行 100%（163/163）、分支 100%（42/42）、函数 100%（13/13，含 5 个
+> `#ifdef UNIT_TEST` 观测/损坏注入钩子，生产固件不含）。详见
+> `test-design/cvc-nvm-e2e.md`。为观测 SWC 内部静态状态（初始化标志/写索引/
+> DTC 计数）并驱动 CRC 损坏检测分支（LoadDtc 拒绝、ReadCal 回退默认值），在
+> `Swc_Nvm.c/.h` 增加了 UNIT_TEST 保护的观测 getter 与 CRC 损坏注入钩子
+> （仅测试编译，不影响交付固件）。
 
 ### 扩展优先级
 
@@ -576,7 +587,6 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| CVC | `Swc_Nvm` | asild | DCM/故障场景 |
 | FZC | `Swc_FzcCom` | asild | `test_cvc_fzc_dual.py`、HIL 车身/心跳（与 `cvc_cvccom.feature` 对偶，最优先） |
 | FZC | `Swc_Heartbeat` | asilc | `test_cvc_fzc_dual.py`、`test_hil_heartbeat.py` |
 | FZC | `Swc_FzcCanMonitor` | asilc | `sil_004_can_busoff_fzc.yaml` |

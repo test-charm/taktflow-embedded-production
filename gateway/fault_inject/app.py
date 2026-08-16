@@ -296,6 +296,41 @@ class CvcSchedulerRunBody(BaseModel):
     phases: list[CvcSchedulerPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcNvmPhase(BaseModel):
+    """One phase of the CVC NVM harness script.
+    Drives Swc_Nvm_Init / StoreDtc / LoadDtc / ReadCal / WriteCal /
+    CalcCrc16 against the real Swc_Nvm.c production code, with test-only
+    hooks to observe the internal circular-buffer state (write index /
+    DTC count) and to corrupt stored CRCs to drive the corruption-detection
+    paths (LoadDtc CRC mismatch, ReadCal fallback to defaults).
+    """
+    op: str = "init"                  # init|storeDtc|loadDtc|readCal|writeCal|
+                                      # corruptDtcCrc|corruptCalCrc|calcCrc
+    skipInit: bool = False            # skip Swc_Nvm_Init (uninitialized guard)
+    repeats: int = 1                  # storeDtc: store count
+    dtcId: int = 0                    # storeDtc: DTC event ID
+    status: int = 0                   # storeDtc: DTC status mask
+    ffMode: int = 0                   # storeDtc: 0=NULL freeze frame, 1=0xA0+i pattern
+    slot: int = 0                     # loadDtc/corruptDtcCrc: slot index
+    nullEntry: bool = False           # loadDtc: pass NULL_PTR as entry
+    nullCal: bool = False             # readCal/writeCal: pass NULL_PTR
+    pThreshold: int = 0               # writeCal: plausThreshold
+    pDebounce: int = 0                # writeCal: plausDebounce
+    stuckThreshold: int = 0           # writeCal: stuckThreshold
+    stuckCycles: int = 0              # writeCal: stuckCycles
+    lut0: int = 0                     # writeCal: torqueLut[0]
+    dataLen: int = 4                  # calcCrc: buffer length
+    nullCrc: bool = False             # calcCrc: pass NULL_PTR as data
+
+
+class CvcNvmSetupBody(BaseModel):
+    phases: list[CvcNvmPhase] = []
+
+
+class CvcNvmRunBody(BaseModel):
+    phases: list[CvcNvmPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -523,6 +558,9 @@ _stored_cvc_selftest_phases: list[CvcSelfTestPhase] = []
 # Stored CVC scheduler phase script for Given/When separation.
 _stored_cvc_scheduler_phases: list[CvcSchedulerPhase] = []
 
+# Stored CVC NVM phase script for Given/When separation.
+_stored_cvc_nvm_phases: list[CvcNvmPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -556,6 +594,7 @@ _CVC_CANMONITOR_HARNESS = "/app/bin/cvc_canmonitor_harness"
 _CVC_WATCHDOG_HARNESS = "/app/bin/cvc_watchdog_harness"
 _CVC_SELFTEST_HARNESS = "/app/bin/cvc_selftest_harness"
 _CVC_SCHEDULER_HARNESS = "/app/bin/cvc_scheduler_harness"
+_CVC_NVM_HARNESS = "/app/bin/cvc_nvm_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1195,6 +1234,7 @@ def _generate_coverage_html():
         ("cvc_watchdog", _CVC_WATCHDOG_HARNESS),
         ("cvc_selftest", _CVC_SELFTEST_HARNESS),
         ("cvc_scheduler", _CVC_SCHEDULER_HARNESS),
+        ("cvc_nvm", _CVC_NVM_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -1892,6 +1932,82 @@ def run_cvc_scheduler(body: CvcSchedulerRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC scheduler harness returned invalid JSON") from exc
+
+
+def _nvm_phase_to_line(p: CvcNvmPhase) -> str:
+    """Serialize one NVM phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"repeats={p.repeats}",
+        f"dtcId={p.dtcId}",
+        f"status={p.status}",
+        f"ffMode={p.ffMode}",
+        f"slot={p.slot}",
+        f"nullEntry={_b(p.nullEntry)}",
+        f"nullCal={_b(p.nullCal)}",
+        f"pThreshold={p.pThreshold}",
+        f"pDebounce={p.pDebounce}",
+        f"stuckThreshold={p.stuckThreshold}",
+        f"stuckCycles={p.stuckCycles}",
+        f"lut0={p.lut0}",
+        f"dataLen={p.dataLen}",
+        f"nullCrc={_b(p.nullCrc)}",
+    ])
+
+
+@app.post("/api/test/asw/cvc/nvm/setup")
+def setup_cvc_nvm(body: CvcNvmSetupBody):
+    """Store the NVM phase script for subsequent run calls that omit phases."""
+    global _stored_cvc_nvm_phases
+    _stored_cvc_nvm_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/nvm")
+def run_cvc_nvm(body: CvcNvmRunBody):
+    """Execute the real CVC NVM ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a stored DTC baseline). `body.phases` carries the stimulus phases.
+    The harness runs the concatenated precondition + stimulus script against
+    the real Swc_Nvm.c production code (Init / StoreDtc / LoadDtc / ReadCal /
+    WriteCal / CalcCrc16), with test-only hooks observing the internal
+    circular-buffer state and corrupting stored CRCs to drive the
+    corruption-detection paths.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_cvc_nvm_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_nvm_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "cvc_nvm_%p.profraw")
+        completed = subprocess.run(
+            [_CVC_NVM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="CVC NVM harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="CVC NVM harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "CVC NVM harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="CVC NVM harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:
