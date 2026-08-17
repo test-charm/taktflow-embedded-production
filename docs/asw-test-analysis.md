@@ -366,7 +366,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `Swc_FzcCanMonitor.c` | FZC CAN 丢失检测 | `test_Swc_FzcCanMonitor_asilc.c` | `sil_004_can_busoff_fzc.yaml`、集成心跳测试、`fzc_canmonitor.feature`（ASW E2E：500 周期宽限期/bus-off 立即安全状态/20 周期静默/TEC·REC≥96 错误警告/安全状态锁存 NO-recovery/NotifyRx 复位） | 总线关闭/静默/错误条件 | 故障检测/降级路径 |
 | `Swc_FzcCom.c` | FZC RX/TX + E2E | `test_Swc_FzcCom_asild.c` | `test_cvc_fzc_dual.py`、`test_cvc_fzc_full.py`、HIL 车身/心跳、`fzc_fzccom.feature`（ASW E2E：E2E 发送保护/alive 回绕 15→0/RX 周期/CRC·Data ID 拒绝/TX 周期调度 0x011·0x200·0x201·0x210·0x211·0x220） | 对等命令帧、本地状态信号 | 路由、E2E DataId、TX 状态帧 |
 | `Swc_FzcDcm.c` | FZC 诊断 | `test_Swc_FzcDcm_qm.c` | `test_hil_uds.py` | UDS 请求 | 服务处理和 DID 行为 |
-| `Swc_FzcNvm.c` | FZC DTC/校准持久化 | `test_Swc_FzcNvm_asild.c` | 通过诊断/安全流程间接覆盖 | 存储的校准和 DTC 记录 | 持久化行为 |
+| `Swc_FzcNvm.c` | FZC DTC/校准持久化 | `test_Swc_FzcNvm_asild.c`、`fzc_nvm.feature`（ASW E2E） | 诊断/安全流程 | 存储的校准和 DTC 记录 | 持久化行为、CRC 失效回退 |
 | `Swc_FzcSafety.c` | 本地安全聚合/看门狗 | `test_Swc_FzcSafety_asild.c` | HIL 看门狗/自检流程 | 本地故障、看门狗、自检状态 | 聚合故障行为和安全反应 |
 | `Swc_FzcScheduler.c` | 可运行实体时序配置 | `test_Swc_FzcScheduler_asild.c` | `test_hil_scheduler.py`、`hil_061_scheduler_cross_ecu.yaml`、`fzc_scheduler.feature`（ASW E2E：SWR-FZC-029 静态表读回/未初始化守卫/重复 Init 幂等/安全优先级/WCET 上限） | 调度器表定义 | 周期/优先级/WCET 正确性 |
 | `Swc_FzcSensorFeeder.c` | plant-sim 虚拟传感器 -> IoHwAb | 无 | `sil_008_sensor_disagreement.yaml`、`sil_011_steering_sensor_failure.yaml` | 注入的虚拟传感器数据 | 仅间接转向/激光雷达行为 |
@@ -526,10 +526,10 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **22 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，440 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **23 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，464 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
 - **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
-- **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_FzcScheduler` ✅（`fzc_scheduler.feature`，6 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
+- **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_FzcScheduler` ✅（`fzc_scheduler.feature`，6 场景，行/分支/函数 100%）、`Swc_FzcNvm` ✅（`fzc_nvm.feature`，24 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
 > FZC `Swc_FzcCom`（2026-08-16 新增）：`fzc_fzccom.feature` 21 场景驱动真实
@@ -592,6 +592,19 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > `test-design/fzc-scheduler-e2e.md`。与 CVC `Swc_Scheduler`（存在不可达的
 > `Sched_CfgPtr == NULL_PTR` 防御守卫豁免）不同，本模块唯一分支（GetTable 未
 > 初始化守卫）两侧均被覆盖，**无无法覆盖的代码**。
+>
+> FZC `Swc_FzcNvm`（2026-08-17 新增）：`fzc_nvm.feature` 24 场景驱动真实
+> `Swc_FzcNvm.c`（DTC 持久化：20 槽首空槽写入 + 满槽拒绝 + 重新 Init 后 NvM
+> 后端重载 + CRC-16 损坏检测；校准数据：舵机/制动/激光雷达 7 字段读写往返 +
+> 重新 Init 重载 + 后端 CRC 损坏在 Init 内回退默认值 + RAM CRC 损坏回退默认值；
+> 公开 CRC-16/CCITT API：NULL→0、零长度→0xFFFF、已知向量 0x89C3）。覆盖报告：
+> 行 100%（185/185）、分支 100%（44/44）、函数 100%（12/12，含 3 个
+> `#ifdef UNIT_TEST` 观测/损坏注入钩子，生产固件不含）。详见
+> `test-design/fzc-nvm-e2e.md`。为观测初始化标志并驱动运行期 DTC/校准 CRC
+> 损坏分支，在 `Swc_FzcNvm.c/.h` 增加了 UNIT_TEST 保护的
+> `TestGetInitialized` / `TestCorruptDtcCrc` / `TestCorruptCalCrc`；Init 阶段的
+> “后端校准 CRC 损坏”路径由 harness 的 `NvM_ReadBlock` mock 后端驱动，**生产
+> 代码零功能性改动**。全量 `./gradlew cucumber` 实测 **464 场景 / 2809 步全部通过**。
 >
 > CVC `Swc_Heartbeat`（2026-08-16 新增）：`cvc_heartbeat.feature` 12 场景驱动真实
 > `Swc_Heartbeat.c`（TX 50ms 边界、存活计数器 15 回绕、WdgM SE3、RX 指示、
@@ -660,13 +673,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### 扩展优先级
 
-以下为**未**被现有 21 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 23 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| FZC | `Swc_FzcNvm` | asild | 诊断/安全流程 |
 | RZC | `Swc_CurrentMonitor` | asila | `sil_007_overcurrent_motor.yaml`、`test_hil_overtemp.py` |
 | RZC | `Swc_Encoder` | asilc | 电机链测试 |
 | RZC | `Swc_Heartbeat` | asilc | `test_hil_heartbeat.py` |
@@ -724,8 +736,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 1. `RZC Swc_Heartbeat`（与已完成的 `cvc_heartbeat.feature` / `fzc_heartbeat.feature` 对偶，
    跨 ECU 一致，可复用 `test_hil_heartbeat.py`）
 2. `SC sc_state`（状态机天然适合 BDD）
-3. `FZC Swc_FzcNvm`（与已完成的 `cvc_nvm.feature` 对偶；`Swc_FzcSafety` 已于
-   2026-08-16 补建 `fzc_safety.feature`，`Swc_FzcScheduler` 已于 2026-08-17 补建
-   `fzc_scheduler.feature`，行/分支/函数 100%）
+3. `RZC Swc_CurrentMonitor`（与已完成的 `rzc_motor.feature` 紧耦合，可直接复用
+   电机链与 `sil_007_overcurrent_motor.yaml` 的故障注入语义）
 
 每个新 feature 需配套：`gateway/fault_inject/native/<swc>_harness.c`、`features/<ecu>_<swc>.feature`、`test-design/<name>-e2e.md`、Java DTO/spec/Factory。

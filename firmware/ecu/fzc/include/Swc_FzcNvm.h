@@ -144,4 +144,10 @@ Std_ReturnType Swc_FzcNvm_StoreCal(const Swc_FzcNvm_CalData* cal);
  */
 uint16 Swc_FzcNvm_Crc16(const uint8* data, uint16 length);
 
+#ifdef UNIT_TEST
+uint8 Swc_FzcNvm_TestGetInitialized(void);
+void  Swc_FzcNvm_TestCorruptDtcCrc(uint8 index);
+void  Swc_FzcNvm_TestCorruptCalCrc(void);
+#endif
+
 #endif /* SWC_FZC_NVM_H */

@@ -331,3 +331,23 @@ Std_ReturnType Swc_FzcNvm_StoreCal(const Swc_FzcNvm_CalData* cal)
 
     return E_OK;
 }
+
+#ifdef UNIT_TEST
+uint8 Swc_FzcNvm_TestGetInitialized(void)
+{
+    return FzcNvm_Initialized;
+}
+
+void Swc_FzcNvm_TestCorruptDtcCrc(uint8 index)
+{
+    if ((index < FZC_NVM_DTC_MAX_SLOTS) &&
+        (FzcNvm_DtcSlots[index].status != FZC_NVM_DTC_EMPTY)) {
+        FzcNvm_DtcSlots[index].crc ^= 0xFFFFu;
+    }
+}
+
+void Swc_FzcNvm_TestCorruptCalCrc(void)
+{
+    FzcNvm_CalData.crc ^= 0xFFFFu;
+}
+#endif

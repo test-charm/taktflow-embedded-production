@@ -230,6 +230,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/cvc_nvm_harness.c \
       /app/firmware/ecu/cvc/src/Swc_Nvm.c \
       -o /app/bin/cvc_nvm_harness && \
+    # FZC NVM harness (links Swc_FzcNvm.c only — DTC first-empty-slot
+    # persistence, full-slot rejection, CRC-16 corruption detection, and
+    # calibration read/write with NvM re-init reload + default fallback)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/fzc/include -I/app/firmware/ecu/fzc/cfg \
+      -I/app/firmware/ecu/fzc/cfg/platform_posix \
+      /app/fault_inject/native/fzc_nvm_harness.c \
+      /app/firmware/ecu/fzc/src/Swc_FzcNvm.c \
+      -o /app/bin/fzc_nvm_harness && \
     # FZC steering harness (links Swc_Steering.c only — servo control chain)
     clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
       -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \

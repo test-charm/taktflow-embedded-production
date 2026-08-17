@@ -331,6 +331,45 @@ class CvcNvmRunBody(BaseModel):
     phases: list[CvcNvmPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcNvmPhase(BaseModel):
+    """One phase of the FZC NVM harness script.
+    Drives Swc_FzcNvm_Init / StoreDtc / LoadDtc / LoadCal / StoreCal /
+    Crc16 against the real Swc_FzcNvm.c production code, with UNIT_TEST
+    hooks to observe initialization state and to corrupt in-RAM CRCs,
+    plus a mock NvM backend to verify re-init persistence and Init-time
+    fallback on backend calibration corruption.
+    """
+    op: str = "init"                  # init|storeDtc|loadDtc|readCal|writeCal|
+                                      # corruptDtcCrc|corruptCalCrc|
+                                      # corruptBackendCalCrc|calcCrc
+    skipInit: bool = False            # skip initial Swc_FzcNvm_Init on harness startup
+    repeats: int = 1                  # storeDtc: repeat count
+    dtcId: int = 0                    # storeDtc: DTC event ID
+    steerAngle: int = 0               # storeDtc: freezeSteer
+    brakePos: int = 0                 # storeDtc: freezeBrake
+    lidarDist: int = 0                # storeDtc: freezeLidar
+    slot: int = 0                     # loadDtc/corruptDtcCrc: slot index
+    nullRecord: bool = False          # loadDtc: pass NULL_PTR
+    nullCal: bool = False             # readCal/writeCal: pass NULL_PTR
+    steerCenterOffset: int = 0        # writeCal
+    steerGain: int = 0                # writeCal
+    brakePosOffset: int = 0           # writeCal
+    brakeGain: int = 0                # writeCal
+    lidarWarnCm: int = 0              # writeCal
+    lidarBrakeCm: int = 0             # writeCal
+    lidarEmergencyCm: int = 0         # writeCal
+    dataLen: int = 4                  # calcCrc: buffer length
+    nullCrc: bool = False             # calcCrc: pass NULL_PTR
+
+
+class FzcNvmSetupBody(BaseModel):
+    phases: list[FzcNvmPhase] = []
+
+
+class FzcNvmRunBody(BaseModel):
+    phases: list[FzcNvmPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class FzcSteeringPhase(BaseModel):
     """One phase of the FZC steering servo harness script.
 
@@ -690,6 +729,9 @@ _stored_cvc_scheduler_phases: list[CvcSchedulerPhase] = []
 # Stored CVC NVM phase script for Given/When separation.
 _stored_cvc_nvm_phases: list[CvcNvmPhase] = []
 
+# Stored FZC NVM phase script for Given/When separation.
+_stored_fzc_nvm_phases: list[FzcNvmPhase] = []
+
 # Stored FZC steering phase script for Given/When separation.
 _stored_fzc_steering_phases: list[FzcSteeringPhase] = []
 
@@ -739,6 +781,7 @@ _CVC_WATCHDOG_HARNESS = "/app/bin/cvc_watchdog_harness"
 _CVC_SELFTEST_HARNESS = "/app/bin/cvc_selftest_harness"
 _CVC_SCHEDULER_HARNESS = "/app/bin/cvc_scheduler_harness"
 _CVC_NVM_HARNESS = "/app/bin/cvc_nvm_harness"
+_FZC_NVM_HARNESS = "/app/bin/fzc_nvm_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
@@ -1384,6 +1427,7 @@ def _generate_coverage_html():
         ("cvc_selftest", _CVC_SELFTEST_HARNESS),
         ("cvc_scheduler", _CVC_SCHEDULER_HARNESS),
         ("cvc_nvm", _CVC_NVM_HARNESS),
+        ("fzc_nvm", _FZC_NVM_HARNESS),
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
@@ -2112,6 +2156,33 @@ def _nvm_phase_to_line(p: CvcNvmPhase) -> str:
     ])
 
 
+def _fzc_nvm_phase_to_line(p: FzcNvmPhase) -> str:
+    """Serialize one FZC NVM phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"repeats={p.repeats}",
+        f"dtcId={p.dtcId}",
+        f"steerAngle={p.steerAngle}",
+        f"brakePos={p.brakePos}",
+        f"lidarDist={p.lidarDist}",
+        f"slot={p.slot}",
+        f"nullRecord={_b(p.nullRecord)}",
+        f"nullCal={_b(p.nullCal)}",
+        f"steerCenterOffset={p.steerCenterOffset}",
+        f"steerGain={p.steerGain}",
+        f"brakePosOffset={p.brakePosOffset}",
+        f"brakeGain={p.brakeGain}",
+        f"lidarWarnCm={p.lidarWarnCm}",
+        f"lidarBrakeCm={p.lidarBrakeCm}",
+        f"lidarEmergencyCm={p.lidarEmergencyCm}",
+        f"dataLen={p.dataLen}",
+        f"nullCrc={_b(p.nullCrc)}",
+    ])
+
+
 @app.post("/api/test/asw/cvc/nvm/setup")
 def setup_cvc_nvm(body: CvcNvmSetupBody):
     """Store the NVM phase script for subsequent run calls that omit phases."""
@@ -2162,6 +2233,58 @@ def run_cvc_nvm(body: CvcNvmRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="CVC NVM harness returned invalid JSON") from exc
+
+
+@app.post("/api/test/asw/fzc/nvm/setup")
+def setup_fzc_nvm(body: FzcNvmSetupBody):
+    """Store the FZC NVM phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_nvm_phases
+    _stored_fzc_nvm_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/nvm")
+def run_fzc_nvm(body: FzcNvmRunBody):
+    """Execute the real FZC NVM ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real
+    Swc_FzcNvm.c production code (Init / StoreDtc / LoadDtc / LoadCal /
+    StoreCal / Crc16), with a mock NvM backend to verify re-init persistence
+    and Init-time fallback, plus test-only hooks observing initialization
+    state and corrupting in-RAM CRCs to drive fail-closed paths.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_nvm_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_nvm_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_nvm_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_NVM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC NVM harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC NVM harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC NVM harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC NVM harness returned invalid JSON") from exc
 
 
 def _fzc_steering_phase_to_line(p: FzcSteeringPhase) -> str:
