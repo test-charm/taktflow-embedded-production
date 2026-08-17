@@ -324,7 +324,17 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/fzc/cfg/platform_posix \
       /app/fault_inject/native/fzc_safety_harness.c \
       /app/firmware/ecu/fzc/src/Swc_FzcSafety.c \
-      -o /app/bin/fzc_safety_harness
+      -o /app/bin/fzc_safety_harness && \
+    # FZC scheduler harness (links Swc_FzcScheduler.c only — static const
+    # SWR-FZC-029 runnable table, uninitialized GetTable NULL guard, idempotent
+    # re-init, and table data checks)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/fzc/include -I/app/firmware/ecu/fzc/cfg \
+      -I/app/firmware/ecu/fzc/cfg/platform_posix \
+      /app/fault_inject/native/fzc_scheduler_harness.c \
+      /app/firmware/ecu/fzc/src/Swc_FzcScheduler.c \
+      -o /app/bin/fzc_scheduler_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 
