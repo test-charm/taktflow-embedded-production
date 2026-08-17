@@ -22,4 +22,12 @@ void Swc_FzcSafety_Init(void);
 void Swc_FzcSafety_MainFunction(void);
 uint8 Swc_FzcSafety_GetStatus(void);
 
+#ifdef UNIT_TEST
+uint8   Swc_FzcSafety_GetInitialized(void);
+uint16  Swc_FzcSafety_GetGraceCounter(void);
+uint8   Swc_FzcSafety_GetSelfTestDone(void);
+uint8   Swc_FzcSafety_GetWdiToggle(void);
+void    Swc_FzcSafety_SetSelfTestDone(uint8 done);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_FZC_SAFETY_H */

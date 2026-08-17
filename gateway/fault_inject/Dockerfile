@@ -314,7 +314,17 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/fzc/cfg/platform_posix \
       /app/fault_inject/native/fzc_canmonitor_harness.c \
       /app/firmware/ecu/fzc/src/Swc_FzcCanMonitor.c \
-      -o /app/bin/fzc_canmonitor_harness
+      -o /app/bin/fzc_canmonitor_harness && \
+    # FZC safety harness (links Swc_FzcSafety.c only — watchdog feed /
+    # fault aggregation / self-test / RX-quality bus-off detection / motor
+    # cutoff with post-INIT boot grace period)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/fzc/include -I/app/firmware/ecu/fzc/cfg \
+      -I/app/firmware/ecu/fzc/cfg/platform_posix \
+      /app/fault_inject/native/fzc_safety_harness.c \
+      /app/firmware/ecu/fzc/src/Swc_FzcSafety.c \
+      -o /app/bin/fzc_safety_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

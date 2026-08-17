@@ -255,3 +255,37 @@ uint8 Swc_FzcSafety_GetStatus(void)
 {
     return Safety_Status;
 }
+
+/* ==================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * do not enter the delivered firmware.
+ * ================================================================== */
+#ifdef UNIT_TEST
+
+uint8 Swc_FzcSafety_GetInitialized(void)
+{
+    return Safety_Initialized;
+}
+
+uint16 Swc_FzcSafety_GetGraceCounter(void)
+{
+    return Safety_GraceCounter;
+}
+
+uint8 Swc_FzcSafety_GetSelfTestDone(void)
+{
+    return Safety_SelfTestDone;
+}
+
+uint8 Swc_FzcSafety_GetWdiToggle(void)
+{
+    return Safety_WdiToggle;
+}
+
+void Swc_FzcSafety_SetSelfTestDone(uint8 done)
+{
+    Safety_SelfTestDone = done;
+}
+
+#endif /* UNIT_TEST */

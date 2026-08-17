@@ -602,6 +602,36 @@ class FzcCanMonitorRunBody(BaseModel):
     phases: list[FzcCanMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class FzcSafetyPhase(BaseModel):
+    """One phase of the FZC safety harness script.
+
+    Drives Swc_FzcSafety_Init / MainFunction / GetStatus against the real
+    Swc_FzcSafety.c production code (watchdog feed with 4-condition gate,
+    fault aggregation into unified mask, self-test fault handling, RX-quality
+    CAN-bus-off detection gated by the post-INIT boot grace period, motor
+    cutoff assertion, safety status publication).
+    """
+    cycles: int = 1                # Swc_FzcSafety_MainFunction calls
+    skipInit: bool = False         # skip Swc_FzcSafety_Init (uninitialized guard)
+    reinit: bool = False           # call Swc_FzcSafety_Init again at phase start
+    steerFault: int = 0            # RTE FZC_SIG_STEER_FAULT input (0 = no fault)
+    brakeFault: int = 0            # RTE FZC_SIG_BRAKE_FAULT input (0 = no fault)
+    lidarFault: int = 0            # RTE FZC_SIG_LIDAR_FAULT input (0 = no fault)
+    vehicleState: int = 1          # RTE FZC_SIG_VEHICLE_STATE input (1=RUN 5=SHUTDOWN)
+    selfTestResult: int = 1        # RTE FZC_SIG_SELF_TEST_RESULT input (1=PASS 0=FAIL)
+    selfTestDone: bool = False     # Safety_SelfTestDone injection (self-test completed)
+    steerCmdQuality: int = 0       # Com_GetRxPduQuality(STEER_CMD) (0=FRESH 2=TIMED_OUT)
+    brakeCmdQuality: int = 0       # Com_GetRxPduQuality(BRAKE_CMD) (0=FRESH 2=TIMED_OUT)
+
+
+class FzcSafetySetupBody(BaseModel):
+    phases: list[FzcSafetyPhase] = []
+
+
+class FzcSafetyRunBody(BaseModel):
+    phases: list[FzcSafetyPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -671,6 +701,9 @@ _stored_fzc_heartbeat_phases: list[FzcHeartbeatPhase] = []
 # Stored FZC CAN monitor phase script for Given/When separation.
 _stored_fzc_canmonitor_phases: list[FzcCanMonitorPhase] = []
 
+# Stored FZC safety phase script for Given/When separation.
+_stored_fzc_safety_phases: list[FzcSafetyPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -694,6 +727,7 @@ _RZC_RZCCOM_HARNESS = "/app/bin/rzc_rzccom_harness"
 _FZC_FZCCOM_HARNESS = "/app/bin/fzc_fzccom_harness"
 _FZC_HEARTBEAT_HARNESS = "/app/bin/fzc_heartbeat_harness"
 _FZC_CANMONITOR_HARNESS = "/app/bin/fzc_canmonitor_harness"
+_FZC_SAFETY_HARNESS = "/app/bin/fzc_safety_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1337,6 +1371,7 @@ def _generate_coverage_html():
         ("fzc_fzccom", _FZC_FZCCOM_HARNESS),
         ("fzc_heartbeat", _FZC_HEARTBEAT_HARNESS),
         ("fzc_canmonitor", _FZC_CANMONITOR_HARNESS),
+        ("fzc_safety", _FZC_SAFETY_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -2799,6 +2834,74 @@ def run_fzc_canmonitor(body: FzcCanMonitorRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="FZC CAN monitor harness returned invalid JSON") from exc
+
+
+def _fzc_safety_phase_to_line(p: FzcSafetyPhase) -> str:
+    """Serialize one FZC safety phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"reinit={_b(p.reinit)}",
+        f"steerFault={p.steerFault}",
+        f"brakeFault={p.brakeFault}",
+        f"lidarFault={p.lidarFault}",
+        f"vehicleState={p.vehicleState}",
+        f"selfTestResult={p.selfTestResult}",
+        f"selfTestDone={_b(p.selfTestDone)}",
+        f"steerCmdQuality={p.steerCmdQuality}",
+        f"brakeCmdQuality={p.brakeCmdQuality}",
+    ])
+
+
+@app.post("/api/test/asw/fzc/safety/setup")
+def setup_fzc_safety(body: FzcSafetySetupBody):
+    """Store the FZC safety phase script for subsequent run calls that omit phases."""
+    global _stored_fzc_safety_phases
+    _stored_fzc_safety_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/fzc/safety")
+def run_fzc_safety(body: FzcSafetyRunBody):
+    """Execute the real FZC safety ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a post-boot-grace baseline). `body.phases` carries the stimulus phases.
+    The harness runs the concatenated precondition + stimulus script against
+    the real Swc_FzcSafety.c production code (Init + MainFunction + GetStatus).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_fzc_safety_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_fzc_safety_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "fzc_safety_%p.profraw")
+        completed = subprocess.run(
+            [_FZC_SAFETY_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="FZC safety harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="FZC safety harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "FZC safety harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="FZC safety harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

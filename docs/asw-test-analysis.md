@@ -526,10 +526,10 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **20 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，413 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **21 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，434 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
 - **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
-- **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
+- **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
 > FZC `Swc_FzcCom`（2026-08-16 新增）：`fzc_fzccom.feature` 21 场景驱动真实
@@ -566,6 +566,21 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > （alive/cycle 计数器、初始化标志），在 `Swc_Heartbeat.c/.h` 增加了
 > UNIT_TEST 保护的观测 getter（仅测试编译，不影响交付固件）。TX 输出信号
 > 经 harness 的 mock RTE 信号表直接观测，**无需额外 getter**。
+>
+> FZC `Swc_FzcSafety`（2026-08-16 新增）：`fzc_safety.feature` 21 场景驱动真实
+> `Swc_FzcSafety.c`（看门狗 TPS3823 WDI 翻转四条件门控：关键故障/SHUTDOWN/
+> 自检失败抑制+DTC 上报、故障聚合 STEER/BRAKE/LIDAR 统一掩码、自检完成且失败
+> 置 SELF_TEST 掩码、宽限期后 CAN RX 质量 TIMED_OUT 置 CAN_BUS_OFF(0x0100)、
+> 电机切断宽限期抑制/结束后置位、安全状态 OK/DEGRADED/FAULT 发布、重复 Init
+> 复位）。覆盖报告：行 100%（120/120）、分支 100%（40/40）、函数 100%（8/8，
+> 含 5 个 `#ifdef UNIT_TEST` 观测 getter/注入钩子，生产固件不含）。详见
+> `test-design/fzc-safety-e2e.md`。为观测 SWC 内部静态状态（初始化标志/宽限
+> 计数/自检标志/WDI 翻转）并驱动自检失败分支（生产代码无 SelfTestDone 置位
+> 路径），在 `Swc_FzcSafety.c/.h` 增加了 UNIT_TEST 保护的观测 getter 与
+> `SetSelfTestDone` 注入钩子（仅测试编译，不影响交付固件）。WDI 翻转经
+> `Dio_WriteChannel` mock 计数观测，DTC 上报经 `Dem_ReportErrorStatus` mock
+> 计数观测。**无编译期排除项**（`#ifdef SIL_DIAG` 日志分支被预处理器排除，
+> 不计入行统计，见设计文档「无法覆盖的代码说明」）。
 >
 > CVC `Swc_Heartbeat`（2026-08-16 新增）：`cvc_heartbeat.feature` 12 场景驱动真实
 > `Swc_Heartbeat.c`（TX 50ms 边界、存活计数器 15 回绕、WdgM SE3、RX 指示、
@@ -634,13 +649,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### 扩展优先级
 
-以下为**未**被现有 20 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 21 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| FZC | `Swc_FzcSafety` | asild | HIL 看门狗/自检 |
 | FZC | `Swc_FzcScheduler` | asild | `test_hil_scheduler.py`、`hil_061_scheduler_cross_ecu.yaml` |
 | FZC | `Swc_FzcNvm` | asild | 诊断/安全流程 |
 | RZC | `Swc_CurrentMonitor` | asila | `sil_007_overcurrent_motor.yaml`、`test_hil_overtemp.py` |
@@ -700,7 +714,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 1. `RZC Swc_Heartbeat`（与已完成的 `cvc_heartbeat.feature` / `fzc_heartbeat.feature` 对偶，
    跨 ECU 一致，可复用 `test_hil_heartbeat.py`）
 2. `SC sc_state`（状态机天然适合 BDD）
-3. `FZC Swc_FzcSafety` / `FZC Swc_FzcScheduler` / `FZC Swc_FzcNvm`（与已完成的
-   `cvc_watchdog.feature` / `cvc_selftest.feature` / `cvc_scheduler.feature` / `cvc_nvm.feature` 对偶）
+3. `FZC Swc_FzcScheduler` / `FZC Swc_FzcNvm`（与已完成的 `cvc_scheduler.feature` /
+   `cvc_nvm.feature` 对偶；`Swc_FzcSafety` 已于 2026-08-16 补建 `fzc_safety.feature`）
 
 每个新 feature 需配套：`gateway/fault_inject/native/<swc>_harness.c`、`features/<ecu>_<swc>.feature`、`test-design/<name>-e2e.md`、Java DTO/spec/Factory。
