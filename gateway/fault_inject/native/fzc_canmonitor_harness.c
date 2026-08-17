@@ -41,6 +41,8 @@
 #include "Can.h"
 #include "Dem.h"
 
+#include "harness_common.h"
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 
 static uint32_t mock_rte_signals[MOCK_RTE_MAX_SIGNALS];
@@ -92,11 +94,6 @@ void Dem_ReportErrorStatus(Dem_EventIdType EventId, Dem_EventStatusType EventSta
  * Phase parsing
  * ================================================================== */
 
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 0);
-}
-
 typedef struct {
     uint32_t cycles;
     uint8_t  skip_init;
@@ -127,9 +124,29 @@ static int run_phase(const Phase* p)
  * main
  * ================================================================== */
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->cycles = 1u;
+    p->can_mode = CAN_CS_STARTED;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    uint32_t val = harness_parse_uint(value);
+    if (strcmp(key, "cycles") == 0)        p->cycles = val;
+    else if (strcmp(key, "skipInit") == 0) p->skip_init = (uint8_t)val;
+    else if (strcmp(key, "canMode") == 0)  p->can_mode = val;
+    else if (strcmp(key, "tec") == 0)      p->tec = val;
+    else if (strcmp(key, "rec") == 0)      p->rec = val;
+    else if (strcmp(key, "notifyRx") == 0) p->notify_rx = (uint8_t)val;
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -139,41 +156,15 @@ int main(void)
     mock_can_mode = CAN_CS_STARTED;
 
     /* ---- parse all phases first (skipInit is decided on phase[0]) ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.cycles = 1u;
-        p.can_mode = CAN_CS_STARTED;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    uint32_t val = parse_uint(eq + 1);
-                    if (strcmp(key, "cycles") == 0)        p.cycles = val;
-                    else if (strcmp(key, "skipInit") == 0) p.skip_init = (uint8_t)val;
-                    else if (strcmp(key, "canMode") == 0)  p.can_mode = val;
-                    else if (strcmp(key, "tec") == 0)      p.tec = val;
-                    else if (strcmp(key, "rec") == 0)      p.rec = val;
-                    else if (strcmp(key, "notifyRx") == 0) p.notify_rx = (uint8_t)val;
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     /* Init once per harness run unless the first phase skips it
      * (exercises the uninitialized no-op guard in Check). */

@@ -42,6 +42,8 @@
 #include "Swc_SelfTest.h"
 #include "Dem.h"
 
+#include "harness_common.h"
+
 /* ==================================================================
  * Hardware check mocks — return E_OK / E_NOT_OK as pinned by the phase
  * ================================================================== */
@@ -115,11 +117,6 @@ void Dem_ReportErrorStatus(Dem_EventIdType EventId, Dem_EventStatusType EventSta
  * Phase parsing
  * ================================================================== */
 
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 10);
-}
-
 typedef struct {
     uint8_t  spi;
     uint8_t  can;
@@ -148,9 +145,35 @@ static int run_phase(const Phase* p, int* last_result)
  * main
  * ================================================================== */
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->spi = 1u;
+    p->can = 1u;
+    p->nvm = 1u;
+    p->oled = 1u;
+    p->mpu = 1u;
+    p->canary = 1u;
+    p->ram = 1u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    uint32_t val = harness_parse_uint(value);
+    if (strcmp(key, "spi") == 0)         p->spi = (uint8_t)val;
+    else if (strcmp(key, "can") == 0)    p->can = (uint8_t)val;
+    else if (strcmp(key, "nvm") == 0)    p->nvm = (uint8_t)val;
+    else if (strcmp(key, "oled") == 0)   p->oled = (uint8_t)val;
+    else if (strcmp(key, "mpu") == 0)    p->mpu = (uint8_t)val;
+    else if (strcmp(key, "canary") == 0) p->canary = (uint8_t)val;
+    else if (strcmp(key, "ram") == 0)    p->ram = (uint8_t)val;
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -161,47 +184,15 @@ int main(void)
     pre_results = Swc_SelfTest_GetResults();
 
     /* ---- parse all phases ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.spi = 1u;
-        p.can = 1u;
-        p.nvm = 1u;
-        p.oled = 1u;
-        p.mpu = 1u;
-        p.canary = 1u;
-        p.ram = 1u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    uint32_t val = parse_uint(eq + 1);
-                    if (strcmp(key, "spi") == 0)         p.spi = (uint8_t)val;
-                    else if (strcmp(key, "can") == 0)    p.can = (uint8_t)val;
-                    else if (strcmp(key, "nvm") == 0)    p.nvm = (uint8_t)val;
-                    else if (strcmp(key, "oled") == 0)   p.oled = (uint8_t)val;
-                    else if (strcmp(key, "mpu") == 0)    p.mpu = (uint8_t)val;
-                    else if (strcmp(key, "canary") == 0) p.canary = (uint8_t)val;
-                    else if (strcmp(key, "ram") == 0)    p.ram = (uint8_t)val;
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     for (pi = 0u; pi < phase_count; pi++) {
         if (run_phase(&phases[pi], &last_result) != 0) {

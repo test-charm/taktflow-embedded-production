@@ -35,6 +35,8 @@
 #include "Std_Types.h"
 #include "Swc_Watchdog.h"
 
+#include "harness_common.h"
+
 /* ==================================================================
  * Dio_FlipChannel mock — counts toggles and records the last channel
  * ================================================================== */
@@ -52,11 +54,6 @@ uint8 Dio_FlipChannel(uint8 ChannelId)
 /* ==================================================================
  * Phase parsing
  * ================================================================== */
-
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 10);
-}
 
 typedef struct {
     uint8_t  skip_init;
@@ -87,9 +84,33 @@ static int run_phase(const Phase* p, int* feed_result)
  * main
  * ================================================================== */
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->loop_complete = 1u;
+    p->canary_ok = 1u;
+    p->ram_ok = 1u;
+    p->can_ok = 1u;
+    p->feed_count = 1u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    uint32_t val = harness_parse_uint(value);
+    if (strcmp(key, "skipInit") == 0)      p->skip_init = (uint8_t)val;
+    else if (strcmp(key, "initNull") == 0) p->init_null = (uint8_t)val;
+    else if (strcmp(key, "loopComplete") == 0) p->loop_complete = (uint8_t)val;
+    else if (strcmp(key, "canaryOk") == 0) p->canary_ok = (uint8_t)val;
+    else if (strcmp(key, "ramOk") == 0)    p->ram_ok = (uint8_t)val;
+    else if (strcmp(key, "canOk") == 0)    p->can_ok = (uint8_t)val;
+    else if (strcmp(key, "feedCount") == 0) p->feed_count = val;
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -103,45 +124,15 @@ int main(void)
     wdg_config.wdiDioChannel = 6u;
 
     /* ---- parse all phases first (skipInit/initNull decided on phase[0]) ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.loop_complete = 1u;
-        p.canary_ok = 1u;
-        p.ram_ok = 1u;
-        p.can_ok = 1u;
-        p.feed_count = 1u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    uint32_t val = parse_uint(eq + 1);
-                    if (strcmp(key, "skipInit") == 0)      p.skip_init = (uint8_t)val;
-                    else if (strcmp(key, "initNull") == 0) p.init_null = (uint8_t)val;
-                    else if (strcmp(key, "loopComplete") == 0) p.loop_complete = (uint8_t)val;
-                    else if (strcmp(key, "canaryOk") == 0) p.canary_ok = (uint8_t)val;
-                    else if (strcmp(key, "ramOk") == 0)    p.ram_ok = (uint8_t)val;
-                    else if (strcmp(key, "canOk") == 0)    p.can_ok = (uint8_t)val;
-                    else if (strcmp(key, "feedCount") == 0) p.feed_count = val;
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     /* Init once per harness run unless the first phase skips it
      * (exercises the uninitialized no-op guard in Feed). initNull

@@ -67,6 +67,8 @@
 #include "Dem.h"
 #include "Swc_RzcSafety.h"
 
+#include "harness_common.h"
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 #define MOCK_COM_MAX_SIGNALS 256u
 #define MOCK_DEM_MAX_EVENTS 16u
@@ -139,16 +141,6 @@ void Swc_RzcSafety_NotifyCanRx(void)
 /* ==================================================================
  * Helpers
  * ================================================================== */
-
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 0);
-}
-
-static int32_t parse_int(const char* s)
-{
-    return (int32_t)strtol(s, NULL, 10);
-}
 
 static int hex_nibble(char c)
 {
@@ -242,9 +234,70 @@ static int parse_op(const char* s)
  * main
  * ================================================================== */
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->cycles       = 1u;
+    p->repeats      = 1u;
+    p->data_len     = 8u;
+    p->vehicle_state = 1u;
+    p->derating_pct = 100u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    const char* val = value;
+    if (strcmp(key, "op") == 0)          p->op = (uint8_t)parse_op(val);
+    else if (strcmp(key, "pduId") == 0)  p->pdu_id = harness_parse_uint(val);
+    else if (strcmp(key, "cycles") == 0) p->cycles = harness_parse_uint(val);
+    else if (strcmp(key, "repeats") == 0) p->repeats = harness_parse_uint(val);
+    else if (strcmp(key, "skipInit") == 0) p->skip_init = (uint8_t)harness_parse_uint(val);
+    else if (strcmp(key, "len") == 0)    p->data_len = (uint8_t)harness_parse_uint(val);
+    else if (strcmp(key, "data") == 0) {
+        if (strcmp(val, "null") == 0) {
+            p->data_is_null = 1u;
+        } else {
+            int n = parse_hex(val, p->data, 8u);
+            if (n < 0) {
+                fprintf(stderr, "bad hex data: %s\n", val);
+                return 1;
+            }
+            p->data_len = (uint8_t)n;
+        }
+    }
+    else if (strcmp(key, "estop") == 0)       p->estop = harness_parse_uint(val);
+    else if (strcmp(key, "vehicleState") == 0) p->vehicle_state = harness_parse_uint(val);
+    else if (strcmp(key, "torqueCmd") == 0)   p->torque_cmd = harness_parse_int(val);
+    else if (strcmp(key, "faultMask") == 0)   p->fault_mask = harness_parse_uint(val);
+    else if (strcmp(key, "torqueEcho") == 0)  p->torque_echo = harness_parse_uint(val);
+    else if (strcmp(key, "speedRpm") == 0)    p->speed_rpm = harness_parse_uint(val);
+    else if (strcmp(key, "motorDir") == 0)    p->motor_dir = harness_parse_uint(val);
+    else if (strcmp(key, "motorEnable") == 0) p->motor_enable = harness_parse_uint(val);
+    else if (strcmp(key, "motorFault") == 0)  p->motor_fault = harness_parse_uint(val);
+    else if (strcmp(key, "currentMa") == 0)   p->current_ma = harness_parse_uint(val);
+    else if (strcmp(key, "overcurrent") == 0) p->overcurrent = harness_parse_uint(val);
+    else if (strcmp(key, "temp1Dc") == 0)     p->temp1_dc = harness_parse_uint(val);
+    else if (strcmp(key, "temp2Dc") == 0)     p->temp2_dc = harness_parse_uint(val);
+    else if (strcmp(key, "deratingPct") == 0) p->derating_pct = harness_parse_uint(val);
+    else if (strcmp(key, "batteryMv") == 0)   p->battery_mv = harness_parse_uint(val);
+    else if (strcmp(key, "batteryStatus") == 0) p->battery_status = harness_parse_uint(val);
+    return 0;
+}
+
+static int finish_phase(void* phase, size_t index)
+{
+    Phase* p = (Phase*)phase;
+    if (p->op == 0) {
+        fprintf(stderr, "missing/unknown op in phase %zu\n", index);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -255,77 +308,15 @@ int main(void)
 
     reset_state();
 
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, finish_phase);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.cycles       = 1u;
-        p.repeats      = 1u;
-        p.data_len     = 8u;
-        p.vehicle_state = 1u;
-        p.derating_pct = 100u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    const char* val = eq + 1;
-                    if (strcmp(key, "op") == 0)          p.op = (uint8_t)parse_op(val);
-                    else if (strcmp(key, "pduId") == 0)  p.pdu_id = parse_uint(val);
-                    else if (strcmp(key, "cycles") == 0) p.cycles = parse_uint(val);
-                    else if (strcmp(key, "repeats") == 0) p.repeats = parse_uint(val);
-                    else if (strcmp(key, "skipInit") == 0) p.skip_init = (uint8_t)parse_uint(val);
-                    else if (strcmp(key, "len") == 0)    p.data_len = (uint8_t)parse_uint(val);
-                    else if (strcmp(key, "data") == 0) {
-                        if (strcmp(val, "null") == 0) {
-                            p.data_is_null = 1u;
-                        } else {
-                            int n = parse_hex(val, p.data, 8u);
-                            if (n < 0) {
-                                fprintf(stderr, "bad hex data: %s\n", val);
-                                return 2;
-                            }
-                            p.data_len = (uint8_t)n;
-                        }
-                    }
-                    else if (strcmp(key, "estop") == 0)       p.estop = parse_uint(val);
-                    else if (strcmp(key, "vehicleState") == 0) p.vehicle_state = parse_uint(val);
-                    else if (strcmp(key, "torqueCmd") == 0)   p.torque_cmd = parse_int(val);
-                    else if (strcmp(key, "faultMask") == 0)   p.fault_mask = parse_uint(val);
-                    else if (strcmp(key, "torqueEcho") == 0)  p.torque_echo = parse_uint(val);
-                    else if (strcmp(key, "speedRpm") == 0)    p.speed_rpm = parse_uint(val);
-                    else if (strcmp(key, "motorDir") == 0)    p.motor_dir = parse_uint(val);
-                    else if (strcmp(key, "motorEnable") == 0) p.motor_enable = parse_uint(val);
-                    else if (strcmp(key, "motorFault") == 0)  p.motor_fault = parse_uint(val);
-                    else if (strcmp(key, "currentMa") == 0)   p.current_ma = parse_uint(val);
-                    else if (strcmp(key, "overcurrent") == 0) p.overcurrent = parse_uint(val);
-                    else if (strcmp(key, "temp1Dc") == 0)     p.temp1_dc = parse_uint(val);
-                    else if (strcmp(key, "temp2Dc") == 0)     p.temp2_dc = parse_uint(val);
-                    else if (strcmp(key, "deratingPct") == 0) p.derating_pct = parse_uint(val);
-                    else if (strcmp(key, "batteryMv") == 0)   p.battery_mv = parse_uint(val);
-                    else if (strcmp(key, "batteryStatus") == 0) p.battery_status = parse_uint(val);
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        if (p.op == 0) {
-            fprintf(stderr, "missing/unknown op in phase %zu\n", phase_count);
-            return 2;
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     global_skip_init = (phase_count == 0u) ? 0u : phases[0].skip_init;
     if (global_skip_init == 0u) {

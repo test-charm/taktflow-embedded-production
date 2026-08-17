@@ -52,6 +52,8 @@
 #include "Dio.h"
 #include "Dem.h"
 
+#include "harness_common.h"
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 
 /* FZC_COM_RX_* PDU range 0..36 (Fzc_Cfg.h) */
@@ -116,11 +118,6 @@ void Dem_ReportErrorStatus(Dem_EventIdType EventId, Dem_EventStatusType EventSta
  * Phase parsing
  * ================================================================== */
 
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 0);
-}
-
 typedef struct {
     uint32_t cycles;
     uint8_t  skip_init;
@@ -167,9 +164,37 @@ static int run_phase(const Phase* p)
  * main
  * ================================================================== */
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->cycles = 1u;
+    p->vehicle_state = FZC_STATE_RUN;
+    p->self_test_result = FZC_SELF_TEST_PASS;
+    p->steer_cmd_quality = COM_SIGNAL_QUALITY_FRESH;
+    p->brake_cmd_quality = COM_SIGNAL_QUALITY_FRESH;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    uint32_t val = harness_parse_uint(value);
+    if (strcmp(key, "cycles") == 0)        p->cycles = val;
+    else if (strcmp(key, "skipInit") == 0) p->skip_init = (uint8_t)val;
+    else if (strcmp(key, "reinit") == 0)   p->reinit = (uint8_t)val;
+    else if (strcmp(key, "steerFault") == 0) p->steer_fault = val;
+    else if (strcmp(key, "brakeFault") == 0) p->brake_fault = val;
+    else if (strcmp(key, "lidarFault") == 0) p->lidar_fault = val;
+    else if (strcmp(key, "vehicleState") == 0) p->vehicle_state = val;
+    else if (strcmp(key, "selfTestResult") == 0) p->self_test_result = val;
+    else if (strcmp(key, "selfTestDone") == 0) p->self_test_done = (uint8_t)val;
+    else if (strcmp(key, "steerCmdQuality") == 0) p->steer_cmd_quality = val;
+    else if (strcmp(key, "brakeCmdQuality") == 0) p->brake_cmd_quality = val;
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -180,49 +205,15 @@ int main(void)
     mock_rte_signals[FZC_SIG_VEHICLE_STATE] = FZC_STATE_RUN;
 
     /* ---- parse all phases first (skipInit is decided on phase[0]) ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.cycles = 1u;
-        p.vehicle_state = FZC_STATE_RUN;
-        p.self_test_result = FZC_SELF_TEST_PASS;
-        p.steer_cmd_quality = COM_SIGNAL_QUALITY_FRESH;
-        p.brake_cmd_quality = COM_SIGNAL_QUALITY_FRESH;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    uint32_t val = parse_uint(eq + 1);
-                    if (strcmp(key, "cycles") == 0)        p.cycles = val;
-                    else if (strcmp(key, "skipInit") == 0) p.skip_init = (uint8_t)val;
-                    else if (strcmp(key, "reinit") == 0)   p.reinit = (uint8_t)val;
-                    else if (strcmp(key, "steerFault") == 0) p.steer_fault = val;
-                    else if (strcmp(key, "brakeFault") == 0) p.brake_fault = val;
-                    else if (strcmp(key, "lidarFault") == 0) p.lidar_fault = val;
-                    else if (strcmp(key, "vehicleState") == 0) p.vehicle_state = val;
-                    else if (strcmp(key, "selfTestResult") == 0) p.self_test_result = val;
-                    else if (strcmp(key, "selfTestDone") == 0) p.self_test_done = (uint8_t)val;
-                    else if (strcmp(key, "steerCmdQuality") == 0) p.steer_cmd_quality = val;
-                    else if (strcmp(key, "brakeCmdQuality") == 0) p.brake_cmd_quality = val;
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     /* Init once per harness run unless the first phase skips it
      * (exercises the uninitialized no-op guard in MainFunction). */

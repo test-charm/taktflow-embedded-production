@@ -46,6 +46,8 @@
 #include "Rte.h"
 #include "Dem.h"
 
+#include "harness_common.h"
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 #define MOCK_DEM_MAX_EVENTS  32u
 
@@ -115,11 +117,6 @@ Std_ReturnType Uart_ReadRxData(uint8* Buffer, uint8 Length, uint8* BytesRead)
 /* ==================================================================
  * Helpers
  * ================================================================== */
-
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 10);
-}
 
 /* Build a TFMini-S 9-byte frame in the mock UART buffer */
 static void build_tfmini_frame(uint16 dist_cm, uint16 strength, uint8 bad_checksum)
@@ -209,9 +206,33 @@ static void run_phase(const Phase* p)
     }
 }
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->cycles = 1u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    if (strcmp(key, "cycles") == 0)          p->cycles = harness_parse_uint(value);
+    else if (strcmp(key, "skipInit") == 0)   p->skip_init = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "initNull") == 0)   p->init_null = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "distCm") == 0)     p->dist_cm = harness_parse_uint(value);
+    else if (strcmp(key, "signal") == 0)     p->signal = harness_parse_uint(value);
+    else if (strcmp(key, "noFrame") == 0)    p->no_frame = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "badChecksum") == 0) p->bad_checksum = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "garbageHeader") == 0) p->garbage_header = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "partialFrame") == 0) p->partial_frame = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "uartFailAt") == 0) p->uart_fail_at = harness_parse_uint(value);
+    else if (strcmp(key, "getDist") == 0)   p->get_dist = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "getDistNull") == 0) p->get_dist_null = (uint8_t)harness_parse_uint(value);
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -236,45 +257,15 @@ int main(void)
     reset_state();
 
     /* ---- parse all phases ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.cycles = 1u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    if (strcmp(key, "cycles") == 0)          p.cycles = parse_uint(eq + 1);
-                    else if (strcmp(key, "skipInit") == 0)   p.skip_init = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "initNull") == 0)   p.init_null = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "distCm") == 0)     p.dist_cm = parse_uint(eq + 1);
-                    else if (strcmp(key, "signal") == 0)     p.signal = parse_uint(eq + 1);
-                    else if (strcmp(key, "noFrame") == 0)    p.no_frame = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "badChecksum") == 0) p.bad_checksum = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "garbageHeader") == 0) p.garbage_header = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "partialFrame") == 0) p.partial_frame = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "uartFailAt") == 0) p.uart_fail_at = parse_uint(eq + 1);
-                    else if (strcmp(key, "getDist") == 0)   p.get_dist = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "getDistNull") == 0) p.get_dist_null = (uint8_t)parse_uint(eq + 1);
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     global_skip_init = (phase_count == 0u) ? 0u : phases[0].skip_init;
     if (global_skip_init == 0u) {

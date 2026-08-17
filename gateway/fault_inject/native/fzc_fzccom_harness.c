@@ -65,6 +65,8 @@
 #include "Rte.h"
 #include "Swc_FzcCanMonitor.h"
 
+#include "harness_common.h"
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 #define MOCK_COM_MAX_SIGNALS 256u
 
@@ -117,11 +119,6 @@ void Swc_FzcCanMonitor_NotifyRx(void)
 /* ==================================================================
  * Helpers
  * ================================================================== */
-
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 0);
-}
 
 static int hex_nibble(char c)
 {
@@ -203,9 +200,63 @@ static int parse_op(const char* s)
  * main
  * ================================================================== */
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->cycles        = 1u;
+    p->data_len      = 8u;
+    p->repeats       = 1u;
+    p->vehicle_state = 1u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    const char* val = value;
+    if (strcmp(key, "op") == 0)          p->op = (uint8_t)parse_op(val);
+    else if (strcmp(key, "cycles") == 0) p->cycles = harness_parse_uint(val);
+    else if (strcmp(key, "skipInit") == 0) p->skip_init = (uint8_t)harness_parse_uint(val);
+    else if (strcmp(key, "dataId") == 0) p->data_id = harness_parse_uint(val);
+    else if (strcmp(key, "len") == 0)    p->data_len = (uint8_t)harness_parse_uint(val);
+    else if (strcmp(key, "repeats") == 0) p->repeats = harness_parse_uint(val);
+    else if (strcmp(key, "data") == 0) {
+        if (strcmp(val, "null") == 0) {
+            p->data_is_null = 1u;
+        } else {
+            int n = parse_hex(val, p->data, 8u);
+            if (n < 0) {
+                fprintf(stderr, "bad hex data: %s\n", val);
+                return 1;
+            }
+            p->data_len = (uint8_t)n;
+        }
+    }
+    else if (strcmp(key, "vehicleState") == 0) p->vehicle_state = harness_parse_uint(val);
+    else if (strcmp(key, "faultMask") == 0)   p->fault_mask = harness_parse_uint(val);
+    else if (strcmp(key, "steerAngle") == 0)  p->steer_angle = harness_parse_uint(val);
+    else if (strcmp(key, "steerFault") == 0)  p->steer_fault = harness_parse_uint(val);
+    else if (strcmp(key, "brakePos") == 0)    p->brake_pos = harness_parse_uint(val);
+    else if (strcmp(key, "brakeFault") == 0)  p->brake_fault = harness_parse_uint(val);
+    else if (strcmp(key, "motorCutoff") == 0) p->motor_cutoff = harness_parse_uint(val);
+    else if (strcmp(key, "lidarZone") == 0)   p->lidar_zone = harness_parse_uint(val);
+    else if (strcmp(key, "lidarDist") == 0)   p->lidar_dist = harness_parse_uint(val);
+    else if (strcmp(key, "lidarSignal") == 0) p->lidar_signal = harness_parse_uint(val);
+    return 0;
+}
+
+static int finish_phase(void* phase, size_t index)
+{
+    Phase* p = (Phase*)phase;
+    if (p->op == 0) {
+        fprintf(stderr, "missing/unknown op in phase %zu\n", index);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -214,70 +265,15 @@ int main(void)
     char results_buf[64u * 256u];
     size_t rb = 0u;
 
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, finish_phase);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.cycles        = 1u;
-        p.data_len      = 8u;
-        p.repeats       = 1u;
-        p.vehicle_state = 1u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    const char* val = eq + 1;
-                    if (strcmp(key, "op") == 0)          p.op = (uint8_t)parse_op(val);
-                    else if (strcmp(key, "cycles") == 0) p.cycles = parse_uint(val);
-                    else if (strcmp(key, "skipInit") == 0) p.skip_init = (uint8_t)parse_uint(val);
-                    else if (strcmp(key, "dataId") == 0) p.data_id = parse_uint(val);
-                    else if (strcmp(key, "len") == 0)    p.data_len = (uint8_t)parse_uint(val);
-                    else if (strcmp(key, "repeats") == 0) p.repeats = parse_uint(val);
-                    else if (strcmp(key, "data") == 0) {
-                        if (strcmp(val, "null") == 0) {
-                            p.data_is_null = 1u;
-                        } else {
-                            int n = parse_hex(val, p.data, 8u);
-                            if (n < 0) {
-                                fprintf(stderr, "bad hex data: %s\n", val);
-                                return 2;
-                            }
-                            p.data_len = (uint8_t)n;
-                        }
-                    }
-                    else if (strcmp(key, "vehicleState") == 0) p.vehicle_state = parse_uint(val);
-                    else if (strcmp(key, "faultMask") == 0)   p.fault_mask = parse_uint(val);
-                    else if (strcmp(key, "steerAngle") == 0)  p.steer_angle = parse_uint(val);
-                    else if (strcmp(key, "steerFault") == 0)  p.steer_fault = parse_uint(val);
-                    else if (strcmp(key, "brakePos") == 0)    p.brake_pos = parse_uint(val);
-                    else if (strcmp(key, "brakeFault") == 0)  p.brake_fault = parse_uint(val);
-                    else if (strcmp(key, "motorCutoff") == 0) p.motor_cutoff = parse_uint(val);
-                    else if (strcmp(key, "lidarZone") == 0)   p.lidar_zone = parse_uint(val);
-                    else if (strcmp(key, "lidarDist") == 0)   p.lidar_dist = parse_uint(val);
-                    else if (strcmp(key, "lidarSignal") == 0) p.lidar_signal = parse_uint(val);
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        if (p.op == 0) {
-            fprintf(stderr, "missing/unknown op in phase %zu\n", phase_count);
-            return 2;
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     global_skip_init = (phase_count == 0u) ? 0u : phases[0].skip_init;
     if (global_skip_init == 0u) {

@@ -47,6 +47,7 @@
 #include "Rte.h"
 #include "BswM.h"
 #include "Dem.h"
+#include "harness_common.h"
 #include "Com.h"
 
 #define MOCK_RTE_MAX_SIGNALS  256u
@@ -203,16 +204,6 @@ typedef struct {
     uint8_t  motor_pdu_timed_out; /* Com_GetRxPduQuality(MOTOR_STATUS) = TIMED_OUT */
 } Phase;
 
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 10);
-}
-
-static int32_t parse_int(const char* s)
-{
-    return (int32_t)strtol(s, NULL, 10);
-}
-
 static void apply_phase(const Phase* p)
 {
     mock_rte_signals[CVC_SIG_PEDAL_FAULT]     = p->pedal_fault;
@@ -326,7 +317,7 @@ int main(void)
                 *eq = '\0';
                 {
                     const char* key = token;
-                    uint32_t val = parse_uint(eq + 1);
+                    uint32_t val = harness_parse_uint(eq + 1);
                     if (strcmp(key, "cycles") == 0)          p.cycles = val;
                     else if (strcmp(key, "selfTestPass") == 0) p.self_test_pass = (uint8_t)val;
                     else if (strcmp(key, "estop") == 0)        p.estop = val;
@@ -343,8 +334,8 @@ int main(void)
                     else if (strcmp(key, "torqueRequest") == 0) p.torque_request = val;
                     else if (strcmp(key, "pedalPosition") == 0) p.pedal_position = val;
                     else if (strcmp(key, "pedalFaultDual") == 0) p.pedal_fault_dual = (uint8_t)val;
-                    else if (strcmp(key, "comBrakeFault") == 0) p.com_brake_fault = parse_int(eq + 1);
-                    else if (strcmp(key, "comMotorCutoff") == 0) p.com_motor_cutoff = parse_int(eq + 1);
+                    else if (strcmp(key, "comBrakeFault") == 0) p.com_brake_fault = harness_parse_int(eq + 1);
+                    else if (strcmp(key, "comMotorCutoff") == 0) p.com_motor_cutoff = harness_parse_int(eq + 1);
                     else if (strcmp(key, "motorPduTimedOut") == 0) p.motor_pdu_timed_out = (uint8_t)val;
                 }
             }

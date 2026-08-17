@@ -44,6 +44,8 @@
 #include "Std_Types.h"
 #include "Swc_Scheduler.h"
 
+#include "harness_common.h"
+
 /* ==================================================================
  * Runnable tables (mirror SWR-CVC-032 default configuration)
  * ================================================================== */
@@ -116,11 +118,6 @@ static void init_cfgs(void)
 /* ==================================================================
  * Phase parsing
  * ================================================================== */
-
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 10);
-}
 
 typedef struct {
     uint8_t  skip_init;
@@ -233,9 +230,27 @@ static int data_checks_ok(const Swc_Scheduler_ConfigType* cfg,
     return 0;
 }
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->table_index = 0u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    uint32_t val = harness_parse_uint(value);
+    if (strcmp(key, "skipInit") == 0)          p->skip_init = (uint8_t)val;
+    else if (strcmp(key, "initNull") == 0)     p->init_null = (uint8_t)val;
+    else if (strcmp(key, "nullRunnables") == 0) p->null_runnables = (uint8_t)val;
+    else if (strcmp(key, "zeroCount") == 0)    p->zero_count = (uint8_t)val;
+    else if (strcmp(key, "tableIndex") == 0)   p->table_index = val;
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -247,39 +262,15 @@ int main(void)
     init_cfgs();
 
     /* ---- parse all phases ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.table_index = 0u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    uint32_t val = parse_uint(eq + 1);
-                    if (strcmp(key, "skipInit") == 0)          p.skip_init = (uint8_t)val;
-                    else if (strcmp(key, "initNull") == 0)     p.init_null = (uint8_t)val;
-                    else if (strcmp(key, "nullRunnables") == 0) p.null_runnables = (uint8_t)val;
-                    else if (strcmp(key, "zeroCount") == 0)    p.zero_count = (uint8_t)val;
-                    else if (strcmp(key, "tableIndex") == 0)   p.table_index = val;
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     for (pi = 0u; pi < phase_count; pi++) {
         if (run_phase(&phases[pi]) != 0) {

@@ -37,6 +37,8 @@
 #include "Rte.h"
 #include "Dem.h"
 
+#include "harness_common.h"
+
 #define MOCK_RTE_MAX_SIGNALS 256u
 #define MOCK_DEM_MAX_EVENTS 16u
 
@@ -86,16 +88,6 @@ void Dem_ReportErrorStatus(Dem_EventIdType EventId, Dem_EventStatusType EventSta
  * Helpers
  * ================================================================== */
 
-static uint32_t parse_uint(const char* s)
-{
-    return (uint32_t)strtoul(s, NULL, 10);
-}
-
-static int32_t parse_int(const char* s)
-{
-    return (int32_t)strtol(s, NULL, 10);
-}
-
 typedef struct {
     uint32_t cycles;
     uint8_t  skip_init;
@@ -125,9 +117,24 @@ static void run_phase(const Phase* p)
     }
 }
 
+
+static void reset_phase(void* phase)
+{
+    Phase* p = (Phase*)phase;
+    p->cycles = 1u;
+}
+
+static int set_phase_field(void* phase, const char* key, const char* value)
+{
+    Phase* p = (Phase*)phase;
+    if (strcmp(key, "cycles") == 0)         p->cycles     = harness_parse_uint(value);
+    else if (strcmp(key, "skipInit") == 0)  p->skip_init  = (uint8_t)harness_parse_uint(value);
+    else if (strcmp(key, "voltageMv") == 0) p->voltage_mv = (uint32_t)harness_parse_int(value);
+    return 0;
+}
+
 int main(void)
 {
-    char line[1024];
     Phase phases[64];
     size_t phase_count = 0u;
     size_t pi;
@@ -136,36 +143,15 @@ int main(void)
     reset_state();
 
     /* ---- parse all phases ---- */
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        Phase p;
-        char* token;
-        char* saveptr = NULL;
-
-        if (phase_count >= sizeof(phases) / sizeof(phases[0])) {
-            fprintf(stderr, "too many phases (max 64)\n");
+        {
+        int n = harness_read_phases(phases, sizeof(phases[0]), reset_phase,
+                                    set_phase_field, NULL);
+        if (n < 0) {
             return 2;
         }
-
-        memset(&p, 0, sizeof(p));
-        p.cycles = 1u;
-
-        token = strtok_r(line, " \t\r\n", &saveptr);
-        while (token != NULL) {
-            char* eq = strchr(token, '=');
-            if (eq != NULL) {
-                *eq = '\0';
-                {
-                    const char* key = token;
-                    if (strcmp(key, "cycles") == 0)         p.cycles     = parse_uint(eq + 1);
-                    else if (strcmp(key, "skipInit") == 0)  p.skip_init  = (uint8_t)parse_uint(eq + 1);
-                    else if (strcmp(key, "voltageMv") == 0) p.voltage_mv = (uint32_t)parse_int(eq + 1);
-                }
-            }
-            token = strtok_r(NULL, " \t\r\n", &saveptr);
-        }
-
-        phases[phase_count++] = p;
+        phase_count = (size_t)n;
     }
+
 
     global_skip_init = (phase_count == 0u) ? 0u : phases[0].skip_init;
     if (global_skip_init == 0u) {
