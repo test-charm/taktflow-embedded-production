@@ -473,6 +473,30 @@ class RzcCurrentMonitorRunBody(BaseModel):
     phases: list[RzcCurrentMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcEncoderPhase(BaseModel):
+    """One phase of the RZC encoder harness script.
+
+    Drives Swc_Encoder_MainFunction() against injected encoder count /
+    direction and commanded motor direction / torque echo, and reports the
+    computed speed, encoder direction, stall flag, DEM, and DIO outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_Encoder_Init (uninitialized guard)
+    count: int | None = None       # absolute encoder counter before this phase
+    deltaPerCycle: int = 0         # encoder count increment before each cycle
+    encoderDir: int = 0            # 0=FORWARD 1=REVERSE 2=STOP (IoHwAb feedback)
+    commandedDir: int = 0          # 0=FORWARD 1=REVERSE 2=STOP (RTE command)
+    torqueEcho: int = 0            # RTE torque echo % for stall detection
+
+
+class RzcEncoderSetupBody(BaseModel):
+    phases: list[RzcEncoderPhase] = []
+
+
+class RzcEncoderRunBody(BaseModel):
+    phases: list[RzcEncoderPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class RzcMotorPhase(BaseModel):
     """One phase of the RZC motor harness script.
 
@@ -761,6 +785,9 @@ _stored_fzc_brake_phases: list[FzcBrakePhase] = []
 # Stored FZC lidar phase script for Given/When separation.
 _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 
+# Stored RZC encoder phase script for Given/When separation.
+_stored_rzc_encoder_phases: list[RzcEncoderPhase] = []
+
 # Stored RZC current-monitor phase script for Given/When separation.
 _stored_rzc_currentmonitor_phases: list[RzcCurrentMonitorPhase] = []
 
@@ -808,6 +835,7 @@ _FZC_NVM_HARNESS = "/app/bin/fzc_nvm_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
+_RZC_ENCODER_HARNESS = "/app/bin/rzc_encoder_harness"
 _RZC_CURRENTMONITOR_HARNESS = "/app/bin/rzc_currentmonitor_harness"
 _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 _RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
@@ -1455,6 +1483,7 @@ def _generate_coverage_html():
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
+        ("rzc_encoder", _RZC_ENCODER_HARNESS),
         ("rzc_currentmonitor", _RZC_CURRENTMONITOR_HARNESS),
         ("rzc_motor", _RZC_MOTOR_HARNESS),
         ("rzc_battery", _RZC_BATTERY_HARNESS),
@@ -2546,6 +2575,75 @@ def _rzc_currentmonitor_phase_to_line(p: RzcCurrentMonitorPhase) -> str:
         f"skipInit={_b(p.skipInit)}",
         f"currentMa={p.currentMa}",
     ])
+
+
+def _rzc_encoder_phase_to_line(p: RzcEncoderPhase) -> str:
+    """Serialize one RZC encoder phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    parts = [
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"deltaPerCycle={p.deltaPerCycle}",
+        f"encoderDir={p.encoderDir}",
+        f"commandedDir={p.commandedDir}",
+        f"torqueEcho={p.torqueEcho}",
+    ]
+    if p.count is not None:
+        parts.insert(2, f"count={p.count}")
+    return " ".join(parts)
+
+
+@app.post("/api/test/asw/rzc/encoder/setup")
+def setup_rzc_encoder(body: RzcEncoderSetupBody):
+    """Store the RZC encoder phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_encoder_phases
+    _stored_rzc_encoder_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/encoder")
+def run_rzc_encoder(body: RzcEncoderRunBody):
+    """Execute the real RZC encoder ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a baseline count / direction history). `body.phases` carries the
+    stimulus phases — the final speed, stall, wrap-around, and direction
+    plausibility actions under test. The harness runs the concatenated
+    precondition + stimulus script against the real Swc_Encoder.c production
+    code (Init, RPM computation, reversal grace windows, stall detection,
+    direction mismatch detection, Dio disable, DEM DTC, RTE outputs).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_encoder_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_encoder_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_encoder_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_ENCODER_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC encoder harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC encoder harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC encoder harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC encoder harness returned invalid JSON") from exc
 
 
 @app.post("/api/test/asw/rzc/currentmonitor/setup")

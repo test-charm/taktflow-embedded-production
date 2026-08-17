@@ -389,7 +389,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 |---|---|---|---|---|---|
 | `Swc_Battery.c` | 电池电压监控 | `test_Swc_Battery_qm.c` | `test_battery_chain.py`、`test_hil_battery.py`、`sil_006_battery_undervoltage.yaml`、`rzc_battery.feature`（ASW E2E，行/分支/函数覆盖 100%） | 电池电压采样/注入的低压条件 | 平均电压、CAN 0x303、状态反应 |
 | `Swc_CurrentMonitor.c` | 电机电流采样/滤波 | `test_Swc_CurrentMonitor_asila.c` | `sil_007_overcurrent_motor.yaml`、`test_hil_overtemp.py` | 电流传感器采样/故障阈值 | 平均电流、过流指示 |
-| `Swc_Encoder.c` | 速度/RPM 和堵转逻辑 | `test_Swc_Encoder_asilc.c` | 通过电机链测试间接覆盖 | 编码器脉冲/方向 | RPM、方向、堵转检测 |
+| `Swc_Encoder.c` | 速度/RPM 和堵转逻辑 | `test_Swc_Encoder_asilc.c` | `rzc_encoder.feature`（ASW E2E，行/分支/函数覆盖 100%）、电机链测试 | 编码器脉冲/方向 | RPM、方向、堵转检测 |
 | `Swc_Heartbeat.c` | RZC 心跳 | `test_Swc_Heartbeat_asilc.c` | `test_hil_heartbeat.py`、集成/调度器测试 | 周期性节拍和故障掩码 | 50ms 心跳载荷和时序 |
 | `Swc_Motor.c` | H 桥电机控制 | `test_Swc_Motor_asild.c` | `sil_007_overcurrent_motor.yaml`、`sil_003_emergency_stop.yaml`、`test_hil_overtemp.py` | 扭矩命令、紧急停止、过流/温度、车辆状态 | PWM 占空比、方向、使能、安全状态关断 |
 | `Swc_RzcCom.c` | RZC RX/TX + E2E | `test_Swc_RzcCom_asild.c` | `sil_009_e2e_corruption.yaml`、启动/系统总线测试 | 对等命令帧、本地状态值 | 路由、E2E 检查/保护、超时处理 |
@@ -526,11 +526,11 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **24 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，482 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **25 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，496 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
 - **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
 - **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_FzcScheduler` ✅（`fzc_scheduler.feature`，6 场景，行/分支/函数 100%）、`Swc_FzcNvm` ✅（`fzc_nvm.feature`，24 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
-- **RZC**：`Swc_CurrentMonitor` ✅（`rzc_currentmonitor.feature`，18 场景，行 96.2%/分支 94.1%/函数 100%）、`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
+- **RZC**：`Swc_Encoder` ✅（`rzc_encoder.feature`，14 场景，行/分支/函数 100%）、`Swc_CurrentMonitor` ✅（`rzc_currentmonitor.feature`，18 场景，行 96.2%/分支 94.1%/函数 100%）、`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
 > FZC `Swc_FzcCom`（2026-08-16 新增）：`fzc_fzccom.feature` 21 场景驱动真实
 > `Swc_FzcCom.c`（E2E 发送保护：CRC-8 0x1D + 4-bit alive 计数器 + Data ID 种子、
@@ -616,6 +616,15 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > （`count==0`、`count>window`），由于 `Swc_CurrentMonitor_MainFunction`
 > 先写入样本并将 `CM_AvgCount` 饱和到不超过窗口大小，故经公开 API 结构不可达。
 >
+> RZC `Swc_Encoder`（2026-08-17 新增）：`rzc_encoder.feature` 14 场景驱动真实
+> `Swc_Encoder.c`（36-count→600RPM、1-count→16RPM、uint32 计数回绕、反向方向
+> 输出、PWM=10% 边界不触发卡滞、49→50 周期卡滞确认与锁存、真实正反转后的
+> 20/10 周期宽限、命令 STOP 旁路、无位移不累计、4→5 周期方向故障确认与锁存）。
+> 覆盖报告：行 100%（96/96）、分支 100%（34/34）、函数 100%（3/3）。详见
+> `test-design/rzc-encoder-e2e.md`。**无需修改生产代码**：通过
+> `rzc_encoder_harness.c` 直接观测编码器输入、RTE 输出、DEM 计数与 DIO 使能脚。
+> 全量 `./gradlew cucumber` 实测 **496 场景 / 3001 步全部通过**。
+>
 > CVC `Swc_Heartbeat`（2026-08-16 新增）：`cvc_heartbeat.feature` 12 场景驱动真实
 > `Swc_Heartbeat.c`（TX 50ms 边界、存活计数器 15 回绕、WdgM SE3、RX 指示、
 > post-INIT 通信状态复位）。覆盖报告：行 100%（70/70）、分支 100%（10/10）、
@@ -683,13 +692,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### 扩展优先级
 
-以下为**未**被现有 24 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 25 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| RZC | `Swc_Encoder` | asilc | 电机链测试 |
 | RZC | `Swc_Heartbeat` | asilc | `test_hil_heartbeat.py` |
 | RZC | `Swc_RzcSafety` | asild | `test_hil_wdgm.py` |
 | RZC | `Swc_RzcSelfTest` | asild | `test_hil_selftest.py` |
