@@ -497,6 +497,30 @@ class RzcEncoderRunBody(BaseModel):
     phases: list[RzcEncoderPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcHeartbeatPhase(BaseModel):
+    """One phase of the RZC heartbeat harness script.
+
+    Drives Swc_Heartbeat_Init / MainFunction against the real
+    Swc_Heartbeat.c production code (TX 50ms boundary schedule, alive
+    counter 15 wrap, ECU ID write, vehicle state / fault-mask publication,
+    CAN fault + SAFE_STOP TX suppression).
+    """
+    cycles: int = 1                # Swc_Heartbeat_MainFunction calls
+    skipInit: bool = False         # skip Swc_Heartbeat_Init (uninitialized guard)
+    vehicleState: int = 1          # RTE RZC_SIG_VEHICLE_STATE read at TX boundary
+    faultMask: int = 0             # RTE RZC_SIG_FAULT_MASK read at TX boundary
+                                   # (bit3=RZC_FAULT_CAN; suppress only when
+                                   #  set AND vehicle_state == SAFE_STOP)
+
+
+class RzcHeartbeatSetupBody(BaseModel):
+    phases: list[RzcHeartbeatPhase] = []
+
+
+class RzcHeartbeatRunBody(BaseModel):
+    phases: list[RzcHeartbeatPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class RzcMotorPhase(BaseModel):
     """One phase of the RZC motor harness script.
 
@@ -788,6 +812,9 @@ _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 # Stored RZC encoder phase script for Given/When separation.
 _stored_rzc_encoder_phases: list[RzcEncoderPhase] = []
 
+# Stored RZC heartbeat phase script for Given/When separation.
+_stored_rzc_heartbeat_phases: list[RzcHeartbeatPhase] = []
+
 # Stored RZC current-monitor phase script for Given/When separation.
 _stored_rzc_currentmonitor_phases: list[RzcCurrentMonitorPhase] = []
 
@@ -836,6 +863,7 @@ _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
 _RZC_ENCODER_HARNESS = "/app/bin/rzc_encoder_harness"
+_RZC_HEARTBEAT_HARNESS = "/app/bin/rzc_heartbeat_harness"
 _RZC_CURRENTMONITOR_HARNESS = "/app/bin/rzc_currentmonitor_harness"
 _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 _RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
@@ -1484,6 +1512,7 @@ def _generate_coverage_html():
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
         ("rzc_encoder", _RZC_ENCODER_HARNESS),
+        ("rzc_heartbeat", _RZC_HEARTBEAT_HARNESS),
         ("rzc_currentmonitor", _RZC_CURRENTMONITOR_HARNESS),
         ("rzc_motor", _RZC_MOTOR_HARNESS),
         ("rzc_battery", _RZC_BATTERY_HARNESS),
@@ -2594,6 +2623,18 @@ def _rzc_encoder_phase_to_line(p: RzcEncoderPhase) -> str:
     return " ".join(parts)
 
 
+def _rzc_heartbeat_phase_to_line(p: RzcHeartbeatPhase) -> str:
+    """Serialize one RZC heartbeat phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"vehicleState={p.vehicleState}",
+        f"faultMask={p.faultMask}",
+    ])
+
+
 @app.post("/api/test/asw/rzc/encoder/setup")
 def setup_rzc_encoder(body: RzcEncoderSetupBody):
     """Store the RZC encoder phase script for subsequent run calls that omit phases."""
@@ -2644,6 +2685,56 @@ def run_rzc_encoder(body: RzcEncoderRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC encoder harness returned invalid JSON") from exc
+
+
+@app.post("/api/test/asw/rzc/heartbeat/setup")
+def setup_rzc_heartbeat(body: RzcHeartbeatSetupBody):
+    """Store the RZC heartbeat phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_heartbeat_phases
+    _stored_rzc_heartbeat_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/heartbeat")
+def run_rzc_heartbeat(body: RzcHeartbeatRunBody):
+    """Execute the real RZC heartbeat ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a vehicle-state / fault-mask baseline). `body.phases` carries the
+    stimulus phases. The harness runs the concatenated precondition + stimulus
+    script against the real Swc_Heartbeat.c production code (Init +
+    MainFunction with 50ms TX boundary schedule).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_heartbeat_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_heartbeat_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_heartbeat_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_HEARTBEAT_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC heartbeat harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC heartbeat harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC heartbeat harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC heartbeat harness returned invalid JSON") from exc
 
 
 @app.post("/api/test/asw/rzc/currentmonitor/setup")

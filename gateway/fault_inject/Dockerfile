@@ -312,6 +312,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/rzc_rzccom_harness.c \
       /app/firmware/ecu/rzc/src/Swc_RzcCom.c \
       -o /app/bin/rzc_rzccom_harness && \
+    # RZC heartbeat harness (links Swc_Heartbeat.c only — TX 50ms boundary
+    # schedule, alive counter 15 wrap, ECU ID write, vehicle state /
+    # fault-mask publication, CAN fault + SAFE_STOP TX suppression)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_heartbeat_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_Heartbeat.c \
+      -o /app/bin/rzc_heartbeat_harness && \
     # FZC COM harness (links Swc_FzcCom.c only — E2E protect/check, RX receive
     # with CAN-monitor notification, and TX transmit scheduling for heartbeat /
     # steering status / brake status / brake fault / motor cutoff / lidar distance)
