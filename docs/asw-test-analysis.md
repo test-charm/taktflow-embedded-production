@@ -526,11 +526,11 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **23 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，464 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **24 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，482 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
 - **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
 - **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_FzcScheduler` ✅（`fzc_scheduler.feature`，6 场景，行/分支/函数 100%）、`Swc_FzcNvm` ✅（`fzc_nvm.feature`，24 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
-- **RZC**：`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
+- **RZC**：`Swc_CurrentMonitor` ✅（`rzc_currentmonitor.feature`，18 场景，行 96.2%/分支 94.1%/函数 100%）、`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）
 
 > FZC `Swc_FzcCom`（2026-08-16 新增）：`fzc_fzccom.feature` 21 场景驱动真实
 > `Swc_FzcCom.c`（E2E 发送保护：CRC-8 0x1D + 4-bit alive 计数器 + Data ID 种子、
@@ -606,6 +606,16 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > “后端校准 CRC 损坏”路径由 harness 的 `NvM_ReadBlock` mock 后端驱动，**生产
 > 代码零功能性改动**。全量 `./gradlew cucumber` 实测 **464 场景 / 2809 步全部通过**。
 >
+> RZC `Swc_CurrentMonitor`（2026-08-17 新增）：`rzc_currentmonitor.feature` 18 场景
+> 驱动真实 `Swc_CurrentMonitor.c`（64 样本 zero-cal 双侧、4 样本移动平均与窗口
+> 环绕、>25A/10 周期去抖触发、过流持续上报、500ms 低于阈值恢复、恢复期间单次
+> 高原始采样清零恢复计数）。覆盖报告：行 96.2%（102/106）、分支 94.1%
+> （32/34）、函数 100%（4/4）。详见 `test-design/rzc-currentmonitor-e2e.md`。
+> **无需修改生产代码**：通过 `rzc_currentmonitor_harness.c` 直接观测 RTE/DEM/DIO。
+> 唯一未覆盖项为 `CM_ComputeAverage` 中 4 行 / 2 个分支的防御性守卫
+> （`count==0`、`count>window`），由于 `Swc_CurrentMonitor_MainFunction`
+> 先写入样本并将 `CM_AvgCount` 饱和到不超过窗口大小，故经公开 API 结构不可达。
+>
 > CVC `Swc_Heartbeat`（2026-08-16 新增）：`cvc_heartbeat.feature` 12 场景驱动真实
 > `Swc_Heartbeat.c`（TX 50ms 边界、存活计数器 15 回绕、WdgM SE3、RX 指示、
 > post-INIT 通信状态复位）。覆盖报告：行 100%（70/70）、分支 100%（10/10）、
@@ -673,13 +683,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### 扩展优先级
 
-以下为**未**被现有 23 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 24 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| RZC | `Swc_CurrentMonitor` | asila | `sil_007_overcurrent_motor.yaml`、`test_hil_overtemp.py` |
 | RZC | `Swc_Encoder` | asilc | 电机链测试 |
 | RZC | `Swc_Heartbeat` | asilc | `test_hil_heartbeat.py` |
 | RZC | `Swc_RzcSafety` | asild | `test_hil_wdgm.py` |
@@ -736,7 +745,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 1. `RZC Swc_Heartbeat`（与已完成的 `cvc_heartbeat.feature` / `fzc_heartbeat.feature` 对偶，
    跨 ECU 一致，可复用 `test_hil_heartbeat.py`）
 2. `SC sc_state`（状态机天然适合 BDD）
-3. `RZC Swc_CurrentMonitor`（与已完成的 `rzc_motor.feature` 紧耦合，可直接复用
-   电机链与 `sil_007_overcurrent_motor.yaml` 的故障注入语义）
+3. `RZC Swc_RzcSafety`（与已完成的 `rzc_motor.feature` / `rzc_currentmonitor.feature`
+   紧耦合，可复用电机切断与故障聚合语义）
 
 每个新 feature 需配套：`gateway/fault_inject/native/<swc>_harness.c`、`features/<ecu>_<swc>.feature`、`test-design/<name>-e2e.md`、Java DTO/spec/Factory。

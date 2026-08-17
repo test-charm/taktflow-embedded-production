@@ -453,6 +453,26 @@ class FzcLidarRunBody(BaseModel):
     phases: list[FzcLidarPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcCurrentMonitorPhase(BaseModel):
+    """One phase of the RZC current-monitor harness script.
+
+    Drives Swc_CurrentMonitor_MainFunction() against an injected raw motor
+    current via the IoHwAb mock, and reports the averaged current /
+    overcurrent flag / DEM / DIO outputs.
+    """
+    cycles: int = 1                # MainFunction calls
+    skipInit: bool = False         # skip Swc_CurrentMonitor_Init (uninitialized guard)
+    currentMa: int = 2048          # raw motor current (mA) injected to IoHwAb
+
+
+class RzcCurrentMonitorSetupBody(BaseModel):
+    phases: list[RzcCurrentMonitorPhase] = []
+
+
+class RzcCurrentMonitorRunBody(BaseModel):
+    phases: list[RzcCurrentMonitorPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class RzcMotorPhase(BaseModel):
     """One phase of the RZC motor harness script.
 
@@ -741,6 +761,9 @@ _stored_fzc_brake_phases: list[FzcBrakePhase] = []
 # Stored FZC lidar phase script for Given/When separation.
 _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 
+# Stored RZC current-monitor phase script for Given/When separation.
+_stored_rzc_currentmonitor_phases: list[RzcCurrentMonitorPhase] = []
+
 # Stored RZC motor phase script for Given/When separation.
 _stored_rzc_motor_phases: list[RzcMotorPhase] = []
 
@@ -785,6 +808,7 @@ _FZC_NVM_HARNESS = "/app/bin/fzc_nvm_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
+_RZC_CURRENTMONITOR_HARNESS = "/app/bin/rzc_currentmonitor_harness"
 _RZC_MOTOR_HARNESS = "/app/bin/rzc_motor_harness"
 _RZC_BATTERY_HARNESS = "/app/bin/rzc_battery_harness"
 _RZC_TEMPMONITOR_HARNESS = "/app/bin/rzc_temponitor_harness"
@@ -1431,6 +1455,7 @@ def _generate_coverage_html():
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
+        ("rzc_currentmonitor", _RZC_CURRENTMONITOR_HARNESS),
         ("rzc_motor", _RZC_MOTOR_HARNESS),
         ("rzc_battery", _RZC_BATTERY_HARNESS),
         ("rzc_temponitor", _RZC_TEMPMONITOR_HARNESS),
@@ -2510,6 +2535,68 @@ def _rzc_motor_phase_to_line(p: RzcMotorPhase) -> str:
         f"overcurrent={p.overcurrent}",
         f"tempFault={p.tempFault}",
     ])
+
+
+def _rzc_currentmonitor_phase_to_line(p: RzcCurrentMonitorPhase) -> str:
+    """Serialize one RZC current-monitor phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"currentMa={p.currentMa}",
+    ])
+
+
+@app.post("/api/test/asw/rzc/currentmonitor/setup")
+def setup_rzc_currentmonitor(body: RzcCurrentMonitorSetupBody):
+    """Store the RZC current-monitor phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_currentmonitor_phases
+    _stored_rzc_currentmonitor_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/currentmonitor")
+def run_rzc_currentmonitor(body: RzcCurrentMonitorRunBody):
+    """Execute the real RZC current-monitor ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a healthy 2048mA zero-cal baseline). `body.phases` carries the
+    stimulus phases — the final raw current profile under test. The harness
+    runs the concatenated precondition + stimulus script against the real
+    Swc_CurrentMonitor.c production code (Init zero-cal, 4-sample moving
+    average, overcurrent debounce, DIO disable, DEM DTC, recovery timing).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_currentmonitor_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_currentmonitor_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_currentmonitor_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_CURRENTMONITOR_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC current-monitor harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC current-monitor harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC current-monitor harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC current-monitor harness returned invalid JSON") from exc
 
 
 @app.post("/api/test/asw/rzc/motor/setup")
