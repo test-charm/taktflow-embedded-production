@@ -54,4 +54,28 @@ boolean SC_Relay_IsKilled(void);
  */
 uint8 SC_Relay_GetKillReason(void);
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+/**
+ * @brief  Test hook: read the kill latch state
+ * @return relay_killed value (0/1)
+ */
+boolean SC_Relay_TestGetKilled(void);
+
+/**
+ * @brief  Test hook: read the commanded relay state
+ * @return relay_commanded value (0/1)
+ */
+boolean SC_Relay_TestGetCommanded(void);
+
+/**
+ * @brief  Test hook: read the GPIO readback mismatch counter
+ * @return readback_mismatch_count value
+ */
+uint8 SC_Relay_TestGetReadbackMismatchCount(void);
+#endif /* UNIT_TEST */
+
 #endif /* SC_RELAY_H */

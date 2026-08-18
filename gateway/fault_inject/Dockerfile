@@ -442,7 +442,22 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/platform/posix/include \
       /app/fault_inject/native/sc_e2e_harness.c \
       /app/firmware/ecu/sc/src/sc_e2e.c \
-      -o /app/bin/sc_e2e_harness
+      -o /app/bin/sc_e2e_harness && \
+    # SC relay harness (links sc_relay.c only — SWR-SC-010/011/012 kill relay
+    # GPIO control: Init LOW safe-state, Energize/DeEnergize with permanent
+    # kill latch, and the 10ms CheckTriggers cascade — E-Stop, heartbeat
+    # confirmed timeout, plausibility fault, creep guard, E2E critical
+    # failure, self-test failure, ESM lockstep error, CAN bus-off, bus
+    # silence, and 2-consecutive GPIO readback mismatch. External module
+    # getters are injected mocks; the relay GIO pin is mocked. Compiled
+    # with the production TMS570 logic — no PLATFORM_POSIX/HIL.)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_relay_harness.c \
+      /app/firmware/ecu/sc/src/sc_relay.c \
+      -o /app/bin/sc_relay_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

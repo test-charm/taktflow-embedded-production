@@ -341,7 +341,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### sc_crc8（L58-L76，内部静态）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L59-L62 | 函数入口 + 声明 | 90 | 全部 `check` 用例（`SC_E2E_Check` 每帧经 L135 调用） |
 | L64 | `for (i = 0u; i < len; i++)` | 686 | true 侧 `sequential_alive_accepted`/`crc_corrupt_rejected` 等（payload_len≥1）；false 侧 `crc8_empty_null`（len=0 循环不执行） |
 | L65 | `crc ^= data[i];` | 596 | 全部非空 CRC 计算 |
@@ -355,7 +355,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### SC_E2E_Init（L82-L92）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L83-L84 | 函数入口 + 声明 | 126 | 全部用例（harness 启动自动 init + 显式 `init` 阶段） |
 | L85 | `for (i = 0u; i < SC_MB_COUNT; i++)` | 882 | true/false 两侧（6 邮箱 × 每 init） |
 | L86-L90 | 清零 last_alive/first_rx/fail_count/failed | 756 | 全部用例 |
@@ -365,7 +365,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### SC_E2E_Check（L94-L173）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L96-L106 | 函数入口 + 声明 | 94 | 全部 `check` 用例 |
 | L108 | `if ((data == NULL_PTR) \|\| (msgIndex >= SC_MB_COUNT) \|\| (dlc < 2u))` | 94 | 三子条件 true 侧：`null_data_rejected`（data==NULL）、`invalid_msg_index_rejected`（msgIndex=6）、`short_dlc_rejected`（dlc=1/0）；false 侧其余 |
 | L109-L110 | `return FALSE;` | 8 | 三守卫 true 侧用例 |
@@ -398,7 +398,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### SC_E2E_IsMsgFailed（L175-L181）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L176 | 函数体 | 2048 | 全部用例（harness 每阶段快照 6 邮箱 + guardProbe） |
 | L177 | `if (msgIndex >= SC_MB_COUNT)` | 2048 | true 侧 guardProbe（512 次）；false 侧正常索引（1536 次） |
 | L178-L179 | `return TRUE;` | 512 | guardProbe 越界 |
@@ -407,7 +407,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### SC_E2E_IsAnyCriticalFailed（L183-L221）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L184 | 函数体 | 78 | 全部 `drainGrace` 用例 |
 | L196 | `if (e2e_grace_remaining > 0u)` | 78 | true 侧宽限期内（68 次）；false 侧 `grace_expired_enforces_critical` 等宽限结束后（10 次） |
 | L197 | `e2e_grace_remaining--;` | 68 | 宽限期内 drainGrace |
@@ -424,7 +424,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### SC_E2E_ComputeCRC8（L223-L242）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L224-L229 | 函数入口 + 声明 | 8 | 全部 `compute` 用例 |
 | L231 | `if (data == NULL_PTR)` | 8 | true 侧 `compute_crc8_null_returns_zero`（2 次）；false 侧其余 |
 | L232-L233 | `return 0u;` | 2 | `compute_crc8_null_returns_zero` |
@@ -439,7 +439,7 @@ SC 平台对 6 个接收邮箱（E-Stop、CVC/FZC/RZC 心跳、VehicleState、Mo
 #### UNIT_TEST getter（L250-L291，仅测试编译，生产固件不含）
 
 | 行号 | 代码 | 实测命中 | 覆盖场景 |
-|---|---|---|---:|---|
+|---|---|---:|---|
 | L252-L257 | `TestGetLastAlive` 越界守卫 + 正常返回 | 1792 / 256 / 1536 | 全部用例（每阶段快照）+ guardProbe 越界 |
 | L260-L265 | `TestGetFirstRx` | 1792 / 256 / 1536 | 全部用例 + guardProbe |
 | L268-L273 | `TestGetFailCount` | 1792 / 256 / 1536 | 全部用例 + guardProbe |

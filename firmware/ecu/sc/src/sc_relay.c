@@ -238,3 +238,24 @@ uint8 SC_Relay_GetKillReason(void)
     return kill_reason;
 }
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+boolean SC_Relay_TestGetKilled(void)
+{
+    return relay_killed;
+}
+
+boolean SC_Relay_TestGetCommanded(void)
+{
+    return relay_commanded;
+}
+
+uint8 SC_Relay_TestGetReadbackMismatchCount(void)
+{
+    return readback_mismatch_count;
+}
+#endif /* UNIT_TEST */
+

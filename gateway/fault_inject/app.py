@@ -968,6 +968,43 @@ class ScE2eRunBody(BaseModel):
     phases: list[ScE2ePhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScRelayPhase(BaseModel):
+    """One phase of the SC relay harness script.
+
+    Drives SC_Relay_Init / Energize / DeEnergize / CheckTriggers / IsKilled /
+    GetKillReason against the real sc_relay.c production code (SWR-SC-010/011/
+    012: kill relay GPIO control with permanent de-energize latch, and the
+    10ms trigger cascade — E-Stop, heartbeat confirmed timeout, plausibility
+    fault, creep guard, E2E critical failure, self-test failure, ESM lockstep
+    error, CAN bus-off, bus silence, and 2-consecutive GPIO readback
+    mismatch), with injected mocks for every external module getter and a
+    mocked relay GIO pin whose readback can be overridden to drive the
+    readback-mismatch branches. UNIT_TEST hooks observe the internal
+    commanded/killed flags and the mismatch counter.
+    """
+    op: str = "init"                  # init|energize|deEnergize|checkTriggers|setMock|setReadback
+    skipInit: bool = False            # skip initial SC_Relay_Init on harness startup
+    repeats: int = 1                  # checkTriggers: SC_Relay_CheckTriggers call count
+    estop: int = 0                    # setMock: SC_CAN_IsEStopActive
+    hb: int = 0                       # setMock: SC_Heartbeat_IsAnyConfirmed
+    plaus: int = 0                    # setMock: SC_Plausibility_IsFaulted
+    creep: int = 0                    # setMock: SC_Plausibility_IsCreepFaulted
+    e2e: int = 0                      # setMock: SC_E2E_IsAnyCriticalFailed
+    selftest: int = 1                 # setMock: SC_SelfTest_IsHealthy (1=healthy)
+    esm: int = 0                      # setMock: SC_ESM_IsErrorActive
+    busoff: int = 0                   # setMock: SC_CAN_IsBusOff
+    busSilent: int = 0                # setMock: SC_CAN_IsBusSilent
+    value: int = 0                    # setReadback: GIO relay pin readback value
+
+
+class ScRelaySetupBody(BaseModel):
+    phases: list[ScRelayPhase] = []
+
+
+class ScRelayRunBody(BaseModel):
+    phases: list[ScRelayPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -1076,6 +1113,9 @@ _stored_sc_heartbeat_phases: list[ScHeartbeatPhase] = []
 # Stored SC E2E phase script for Given/When separation.
 _stored_sc_e2e_phases: list[ScE2ePhase] = []
 
+# Stored SC relay phase script for Given/When separation.
+_stored_sc_relay_phases: list[ScRelayPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1112,6 +1152,7 @@ _RZC_NVM_HARNESS = "/app/bin/rzc_nvm_harness"
 _SC_STATE_HARNESS = "/app/bin/sc_state_harness"
 _SC_HEARTBEAT_HARNESS = "/app/bin/sc_heartbeat_harness"
 _SC_E2E_HARNESS = "/app/bin/sc_e2e_harness"
+_SC_RELAY_HARNESS = "/app/bin/sc_relay_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1768,6 +1809,7 @@ def _generate_coverage_html():
         ("sc_state", _SC_STATE_HARNESS),
         ("sc_heartbeat", _SC_HEARTBEAT_HARNESS),
         ("sc_e2e", _SC_E2E_HARNESS),
+        ("sc_relay", _SC_RELAY_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -4127,6 +4169,86 @@ def run_sc_e2e(body: ScE2eRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="SC E2E harness returned invalid JSON") from exc
+
+
+def _sc_relay_phase_to_line(p: ScRelayPhase) -> str:
+    """Serialize one SC relay phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"repeats={p.repeats}",
+        f"estop={p.estop}",
+        f"hb={p.hb}",
+        f"plaus={p.plaus}",
+        f"creep={p.creep}",
+        f"e2e={p.e2e}",
+        f"selftest={p.selftest}",
+        f"esm={p.esm}",
+        f"busoff={p.busoff}",
+        f"busSilent={p.busSilent}",
+        f"value={p.value}",
+    ])
+
+
+@app.post("/api/test/asw/sc/relay/setup")
+def setup_sc_relay(body: ScRelaySetupBody):
+    """Store the SC relay phase script for subsequent run calls that omit phases."""
+    global _stored_sc_relay_phases
+    _stored_sc_relay_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/relay")
+def run_sc_relay(body: ScRelayRunBody):
+    """Execute the real SC kill relay control in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real sc_relay.c
+    production code (SC_Relay_Init / Energize / DeEnergize / CheckTriggers /
+    IsKilled / GetKillReason), exercising the SWR-SC-010/011/012 kill relay
+    GPIO control: Init LOW safe-state without clearing the kill latch,
+    Energize gated by the latch, DeEnergize latching de-energized state, and
+    the 10ms CheckTriggers cascade (E-Stop, heartbeat confirmed timeout,
+    plausibility fault, creep guard, E2E critical failure, self-test failure,
+    ESM lockstep error, CAN bus-off, bus silence, and 2-consecutive GPIO
+    readback mismatch), with injected mocks for every external module getter
+    and a mocked relay GIO pin whose readback can be overridden to drive the
+    readback-mismatch branches. The harness is compiled with the production
+    TMS570 logic (no PLATFORM_POSIX/HIL), so the latch and all triggers apply.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_relay_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_relay_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_relay_%p.profraw")
+        completed = subprocess.run(
+            [_SC_RELAY_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC relay harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC relay harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC relay harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC relay harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

@@ -419,7 +419,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `sc_monitoring.c` | SC_Status 广播 | 无 | `test_sc_integration.py` | 内部 SC 监控状态 | 系统总线上的 0x013 载荷可见性和 E2E |
 | `sc_os_cfg.c` | OSEK 任务/告警配置 | 无 | 通过 SC 启动/时序间接覆盖 | 周期性任务/告警配置 | 仅间接执行 |
 | `sc_plausibility.c` | 扭矩-电流交叉检查 | `test_sc_plausibility_asilc.c` | 通过安全场景间接覆盖 | 扭矩/电流组合 | 合理性失败处理 |
-| `sc_relay.c` | 切断继电器控制 | `test_sc_relay_asild.c` | `sil_005_watchdog_timeout_cvc.yaml`、`test_sc_integration.py` | 继电器请求/故障状态 | 继电器吸合/断开逻辑 |
+| `sc_relay.c` | 切断继电器控制 | `test_sc_relay_asild.c` | `sc_relay.feature`（ASW E2E，行/分支/函数 100%）、`sil_005_watchdog_timeout_cvc.yaml`、`test_sc_integration.py` | 继电器请求/故障状态 | 继电器吸合/断开逻辑、全部触发条件与锁存 |
 | `sc_selftest.c` | 启动/运行时自检 | `test_sc_selftest_asild.c` | SC 启动序列 | 自检条件 | 启动/运行时自检处理 |
 | `sc_startup.S` | TMS570 启动汇编 | 无 | 未找到明确的专用测试 | 引导/启动上下文 | 当前未直接单元测试 |
 | `sc_state.c` | SC 运行时状态机 | `test_sc_state_asild.c` | `sc_state.feature`（ASW E2E，行/分支/函数 100%） | 对等故障/故障组合 | SC 模式转换 |
@@ -527,12 +527,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **33 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，658 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **34 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，682 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
 - **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
 - **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_FzcScheduler` ✅（`fzc_scheduler.feature`，6 场景，行/分支/函数 100%）、`Swc_FzcNvm` ✅（`fzc_nvm.feature`，24 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Encoder` ✅（`rzc_encoder.feature`，14 场景，行/分支/函数 100%）、`Swc_CurrentMonitor` ✅（`rzc_currentmonitor.feature`，18 场景，行 96.2%/分支 94.1%/函数 100%）、`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）、`Swc_Heartbeat` ✅（`rzc_heartbeat.feature`，15 场景，行/分支/函数 100%）、`Swc_RzcSafety` ✅（`rzc_safety.feature`，29 场景，行/分支/函数 100%）、`Swc_RzcSelfTest` ✅（`rzc_selftest.feature`，20 场景，行/分支/函数 100%）、`Swc_RzcScheduler` ✅（`rzc_scheduler.feature`，10 场景，行 100%/函数 100%/分支 85.7%）、`Swc_RzcNvm` ✅（`rzc_nvm.feature`，16 场景，行/分支/函数 100%）
-- **SC**：`sc_state` ✅（`sc_state.feature`，15 场景，行/分支/函数 100%）、`sc_heartbeat` ✅（`sc_heartbeat.feature`，26 场景，行 100%/函数 100%/分支 97.6%）、`sc_e2e` ✅（`sc_e2e.feature`，31 场景，行 100%/分支 100%/函数 100%）
+- **SC**：`sc_state` ✅（`sc_state.feature`，15 场景，行/分支/函数 100%）、`sc_heartbeat` ✅（`sc_heartbeat.feature`，26 场景，行 100%/函数 100%/分支 97.6%）、`sc_e2e` ✅（`sc_e2e.feature`，31 场景，行 100%/分支 100%/函数 100%）、`sc_relay` ✅（`sc_relay.feature`，24 场景，行/分支/函数 100%）
 
 > FZC `Swc_FzcCom`（2026-08-16 新增）：`fzc_fzccom.feature` 21 场景驱动真实
 > `Swc_FzcCom.c`（E2E 发送保护：CRC-8 0x1D + 4-bit alive 计数器 + Data ID 种子、
@@ -757,13 +757,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### 扩展优先级
 
-以下为**未**被现有 33 个 feature 覆盖、但具备补建条件的模块。
+以下为**未**被现有 34 个 feature 覆盖、但具备补建条件的模块。
 
 #### 高优先级（ASIL 类单测 + 现成 SIL/HIL 参考）
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| SC | `sc_relay` | asild | `sil_005_watchdog_timeout_cvc.yaml`、`test_sc_integration.py` |
 | SC | `sc_plausibility` | asilc | 安全场景 |
 | SC | `sc_watchdog` | asild | `test_hil_wdgm.py` |
 | SC | `sc_selftest` | asild | SC 启动序列 |
@@ -806,8 +805,6 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 - **入口点**：各 ECU `main.c`（集成/SIL/HIL 已覆盖）
 
 #### 建议扩展顺序
-
-1. `SC sc_relay`（asild，`sil_005_watchdog_timeout_cvc.yaml` 与 `test_sc_integration.py` 参考现成）
 
 > `RZC Swc_Heartbeat` 已于 2026-08-17 完成（`rzc_heartbeat.feature` 15 场景，
 > 行/分支/函数 100%），从高优先级列表移入已覆盖清单。
@@ -883,5 +880,25 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > `test_hil_e2e.py` 覆盖），与 `Swc_RzcScheduler` 的编译期只读表防御分支
 > 不同，本模块 66/66 分支全部两侧命中。全量 `./gradlew cucumber` 实测
 > **658 场景 / 3977 步全部通过**（含本 feature 31 场景）。
+>
+> `SC sc_relay` 已于 2026-08-18 完成（`sc_relay.feature` 24 场景：SWR-SC-010/
+> 011/012 切断继电器控制——Init 置继电器 LOW 安全态且不清除 kill 锁存、
+> Energize 受锁存门控、DeEnergize 永久锁存断开（仅断电复位）、10ms
+> CheckTriggers 级联触发（E-Stop 最高优先级、心跳确认超时、合理性故障、
+> 蠕动防护 SSR-SC-018、E2E 关键邮箱持久失败 GAP-SC-002、自检失败、ESM
+> 锁步错误、CAN bus-off、CAN 静默、GPIO 读回连续 2 次失配）及优先级交叉
+> 验证）。覆盖报告：**行 100%（122/122）、分支 100%（30/30）、函数 100%
+> （9/9，含 3 个 `#ifdef UNIT_TEST` 观测 getter，生产固件不含）**。详见
+> `test-design/sc-relay-e2e.md`。为观测模块内部静态状态（命令状态/锁存/
+> 读回失配计数），在 `sc_relay.c/.h` 增加了 UNIT_TEST 保护的观测 getter
+> （仅测试编译，不影响交付固件）；外部模块 getter 为 harness 注入 mock，
+> 继电器 GIO 读回值经 `setReadback` 注入驱动读回失配分支，公开
+> `SC_Relay_IsKilled` 经 harness `killedApi` 观测交叉验证，**生产逻辑零改动**。
+> **无无法覆盖的代码**——`#ifdef PLATFORM_HIL` 的 DeEnergize 空操作块与
+> `#if defined(PLATFORM_POSIX) || defined(PLATFORM_HIL)` 的 IsKilled 抑制块
+> 由预处理器排除（HIL/SIL 测试 `sil_005_watchdog_timeout_cvc.yaml`、
+> `test_sc_integration.py` 覆盖），本模块 30/30 分支全部两侧命中。全量
+> `./gradlew cucumber` 实测 **682 场景 / 4121 步全部通过**（含本 feature
+> 24 场景）。从高优先级列表移入已覆盖清单。
 
 每个新 feature 需配套：`gateway/fault_inject/native/<swc>_harness.c`、`features/<ecu>_<swc>.feature`、`test-design/<name>-e2e.md`、Java DTO/spec/Factory。
