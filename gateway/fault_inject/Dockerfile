@@ -341,6 +341,15 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/rzc_heartbeat_harness.c \
       /app/firmware/ecu/rzc/src/Swc_Heartbeat.c \
       -o /app/bin/rzc_heartbeat_harness && \
+    # RZC NVM harness (links Swc_RzcNvm.c only — 20-slot circular-buffer DTC
+    # persistence with CRC-16/CCITT per-entry integrity, freeze-frame storage,
+    # write-index wrap, fail-closed LoadDtc on CRC corruption)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_nvm_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_RzcNvm.c \
+      -o /app/bin/rzc_nvm_harness && \
     # FZC COM harness (links Swc_FzcCom.c only — E2E protect/check, RX receive
     # with CAN-monitor notification, and TX transmit scheduling for heartbeat /
     # steering status / brake status / brake fault / motor cutoff / lidar distance)

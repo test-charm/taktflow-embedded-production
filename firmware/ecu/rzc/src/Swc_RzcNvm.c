@@ -226,3 +226,27 @@ uint8 Swc_RzcNvm_GetWriteIndex(void)
 {
     return RzcNvm_WriteIndex;
 }
+
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+uint8 Swc_RzcNvm_TestGetInitialized(void)
+{
+    return RzcNvm_Initialized;
+}
+
+void Swc_RzcNvm_TestCorruptDtcCrc(uint8 slotIndex)
+{
+    if (slotIndex < RZC_NVM_DTC_MAX_SLOTS)
+    {
+        RzcNvm_Storage[slotIndex].crc16 ^= 0xFFFFu;
+    }
+}
+
+uint16 Swc_RzcNvm_TestCrc16(const uint8 *data, uint16 length)
+{
+    return RzcNvm_Crc16(data, length);
+}
+#endif /* UNIT_TEST */

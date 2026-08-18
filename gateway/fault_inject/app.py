@@ -845,6 +845,42 @@ class RzcSchedulerRunBody(BaseModel):
     phases: list[RzcSchedulerPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcNvmPhase(BaseModel):
+    """One phase of the RZC NVM harness script.
+
+    Drives Swc_RzcNvm_Init / StoreDtc / LoadDtc / GetWriteIndex against the
+    real Swc_RzcNvm.c production code (20-slot circular-buffer DTC persistence,
+    CRC-16/CCITT per-entry integrity, freeze-frame storage, write-index wrap),
+    with UNIT_TEST hooks to observe the initialization flag, corrupt stored
+    DTC CRCs to drive the LoadDtc fail-closed path, and verify the static
+    CRC-16 calculator on known vectors.
+    """
+    op: str = "init"                  # init|storeDtc|loadDtc|corruptDtcCrc|calcCrc
+    skipInit: bool = False            # skip initial Swc_RzcNvm_Init on harness startup
+    repeats: int = 1                  # storeDtc: repeat count
+    dtcId: int = 0                    # storeDtc: DTC event ID
+    status: int = 0                   # storeDtc: DTC status byte
+    timestamp: int = 0                # storeDtc: system tick at storage
+    motorCurrentMa: int = 0           # storeDtc: freeze-frame motor current (mA)
+    motorTempDdc: int = 0             # storeDtc: freeze-frame motor temp (deci-deg C)
+    motorSpeedRpm: int = 0            # storeDtc: freeze-frame motor speed (RPM)
+    batteryMv: int = 0                # storeDtc: freeze-frame battery voltage (mV)
+    torqueCmdPct: int = 0             # storeDtc: freeze-frame torque command (%)
+    vehicleState: int = 0             # storeDtc: freeze-frame vehicle state
+    slot: int = 0                     # loadDtc/corruptDtcCrc: slot index
+    nullFreeze: bool = False          # storeDtc: pass NULL_PTR as freeze frame
+    nullEntry: bool = False           # loadDtc: pass NULL_PTR as entry
+    dataLen: int = 4                  # calcCrc: buffer length
+
+
+class RzcNvmSetupBody(BaseModel):
+    phases: list[RzcNvmPhase] = []
+
+
+class RzcNvmRunBody(BaseModel):
+    phases: list[RzcNvmPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -941,6 +977,9 @@ _stored_fzc_scheduler_phases: list[FzcSchedulerPhase] = []
 # Stored RZC scheduler phase script for Given/When separation.
 _stored_rzc_scheduler_phases: list[RzcSchedulerPhase] = []
 
+# Stored RZC NVM phase script for Given/When separation.
+_stored_rzc_nvm_phases: list[RzcNvmPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -973,6 +1012,7 @@ _FZC_CANMONITOR_HARNESS = "/app/bin/fzc_canmonitor_harness"
 _FZC_SAFETY_HARNESS = "/app/bin/fzc_safety_harness"
 _FZC_SCHEDULER_HARNESS = "/app/bin/fzc_scheduler_harness"
 _RZC_SCHEDULER_HARNESS = "/app/bin/rzc_scheduler_harness"
+_RZC_NVM_HARNESS = "/app/bin/rzc_nvm_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1625,6 +1665,7 @@ def _generate_coverage_html():
         ("fzc_safety", _FZC_SAFETY_HARNESS),
         ("fzc_scheduler", _FZC_SCHEDULER_HARNESS),
         ("rzc_scheduler", _RZC_SCHEDULER_HARNESS),
+        ("rzc_nvm", _RZC_NVM_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -3694,6 +3735,83 @@ def run_rzc_scheduler(body: RzcSchedulerRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC scheduler harness returned invalid JSON") from exc
+
+
+def _rzc_nvm_phase_to_line(p: RzcNvmPhase) -> str:
+    """Serialize one RZC NVM phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"repeats={p.repeats}",
+        f"dtcId={p.dtcId}",
+        f"status={p.status}",
+        f"timestamp={p.timestamp}",
+        f"motorCurrentMa={p.motorCurrentMa}",
+        f"motorTempDdc={p.motorTempDdc}",
+        f"motorSpeedRpm={p.motorSpeedRpm}",
+        f"batteryMv={p.batteryMv}",
+        f"torqueCmdPct={p.torqueCmdPct}",
+        f"vehicleState={p.vehicleState}",
+        f"slot={p.slot}",
+        f"nullFreeze={_b(p.nullFreeze)}",
+        f"nullEntry={_b(p.nullEntry)}",
+        f"dataLen={p.dataLen}",
+    ])
+
+
+@app.post("/api/test/asw/rzc/nvm/setup")
+def setup_rzc_nvm(body: RzcNvmSetupBody):
+    """Store the RZC NVM phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_nvm_phases
+    _stored_rzc_nvm_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/nvm")
+def run_rzc_nvm(body: RzcNvmRunBody):
+    """Execute the real RZC NVM ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real
+    Swc_RzcNvm.c production code (Init / StoreDtc / LoadDtc / GetWriteIndex),
+    exercising the 20-slot circular-buffer DTC persistence, per-entry CRC-16
+    integrity, freeze-frame storage, write-index wrap, and fail-closed LoadDtc
+    on CRC corruption, with UNIT_TEST hooks observing the initialization flag,
+    corrupting stored CRCs, and verifying the static CRC-16 calculator.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_nvm_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_nvm_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_nvm_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_NVM_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC NVM harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC NVM harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC NVM harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC NVM harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

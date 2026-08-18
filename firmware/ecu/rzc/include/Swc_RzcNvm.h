@@ -100,4 +100,31 @@ Std_ReturnType Swc_RzcNvm_LoadDtc(uint8 slotIndex,
  */
 uint8 Swc_RzcNvm_GetWriteIndex(void);
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+/**
+ * @brief  Test hook: read the module initialization flag
+ * @return RzcNvm_Initialized (TRUE after Init, otherwise FALSE)
+ */
+uint8 Swc_RzcNvm_TestGetInitialized(void);
+
+/**
+ * @brief  Test hook: flip the CRC-16 of a stored DTC slot
+ * @param  slotIndex  Slot index (0..19); out-of-range requests are ignored
+ * @note   Drives the LoadDtc CRC-mismatch fail-closed path.
+ */
+void Swc_RzcNvm_TestCorruptDtcCrc(uint8 slotIndex);
+
+/**
+ * @brief  Test hook: expose the static CRC-16/CCITT calculator
+ * @param  data   Data buffer (NULL is not a valid input)
+ * @param  length Number of bytes
+ * @return CRC-16 result (zero length returns RZC_NVM_CRC16_INIT)
+ */
+uint16 Swc_RzcNvm_TestCrc16(const uint8 *data, uint16 length);
+#endif /* UNIT_TEST */
+
 #endif /* SWC_RZC_NVM_H */
