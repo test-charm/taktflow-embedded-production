@@ -824,6 +824,27 @@ class FzcSchedulerRunBody(BaseModel):
     phases: list[FzcSchedulerPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcSchedulerPhase(BaseModel):
+    """One phase of the RZC scheduler harness script.
+
+    Drives Swc_RzcScheduler_Init / Tick / GetTable / GetUtilPct against the
+    real Swc_RzcScheduler.c production code (static const SWR-RZC-028
+    runnable table, Tick dispatch with per-runnable elapsed counters,
+    uninitialized guard, idempotent re-init, util computation).
+    """
+    skipInit: bool = False        # skip Swc_RzcScheduler_Init (uninitialized guard)
+    reinit: bool = False          # call Swc_RzcScheduler_Init again at phase start
+    ticks: int = 0                # Swc_RzcScheduler_Tick calls (dispatch simulation)
+
+
+class RzcSchedulerSetupBody(BaseModel):
+    phases: list[RzcSchedulerPhase] = []
+
+
+class RzcSchedulerRunBody(BaseModel):
+    phases: list[RzcSchedulerPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -917,6 +938,9 @@ _stored_fzc_safety_phases: list[FzcSafetyPhase] = []
 # Stored FZC scheduler phase script for Given/When separation.
 _stored_fzc_scheduler_phases: list[FzcSchedulerPhase] = []
 
+# Stored RZC scheduler phase script for Given/When separation.
+_stored_rzc_scheduler_phases: list[RzcSchedulerPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -948,6 +972,7 @@ _FZC_HEARTBEAT_HARNESS = "/app/bin/fzc_heartbeat_harness"
 _FZC_CANMONITOR_HARNESS = "/app/bin/fzc_canmonitor_harness"
 _FZC_SAFETY_HARNESS = "/app/bin/fzc_safety_harness"
 _FZC_SCHEDULER_HARNESS = "/app/bin/fzc_scheduler_harness"
+_RZC_SCHEDULER_HARNESS = "/app/bin/rzc_scheduler_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1599,6 +1624,7 @@ def _generate_coverage_html():
         ("fzc_canmonitor", _FZC_CANMONITOR_HARNESS),
         ("fzc_safety", _FZC_SAFETY_HARNESS),
         ("fzc_scheduler", _FZC_SCHEDULER_HARNESS),
+        ("rzc_scheduler", _RZC_SCHEDULER_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -3606,6 +3632,68 @@ def run_fzc_scheduler(body: FzcSchedulerRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="FZC scheduler harness returned invalid JSON") from exc
+
+
+def _rzc_scheduler_phase_to_line(p: RzcSchedulerPhase) -> str:
+    """Serialize one RZC scheduler phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"skipInit={_b(p.skipInit)}",
+        f"reinit={_b(p.reinit)}",
+        f"ticks={p.ticks}",
+    ])
+
+
+@app.post("/api/test/asw/rzc/scheduler/setup")
+def setup_rzc_scheduler(body: RzcSchedulerSetupBody):
+    """Store the RZC scheduler phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_scheduler_phases
+    _stored_rzc_scheduler_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/scheduler")
+def run_rzc_scheduler(body: RzcSchedulerRunBody):
+    """Execute the real RZC scheduler ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real
+    Swc_RzcScheduler.c production code (Init + Tick + GetTable + GetUtilPct),
+    exercising the uninitialized guard, idempotent re-init, per-runnable Tick
+    dispatch counters, and SWR-RZC-028 table / util data checks.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_scheduler_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_scheduler_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_scheduler_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_SCHEDULER_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC scheduler harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC scheduler harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC scheduler harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC scheduler harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

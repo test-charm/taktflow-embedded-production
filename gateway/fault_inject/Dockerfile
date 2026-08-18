@@ -389,7 +389,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/fzc/cfg/platform_posix \
       /app/fault_inject/native/fzc_scheduler_harness.c \
       /app/firmware/ecu/fzc/src/Swc_FzcScheduler.c \
-      -o /app/bin/fzc_scheduler_harness
+      -o /app/bin/fzc_scheduler_harness && \
+    # RZC scheduler harness (links Swc_RzcScheduler.c only — SWR-RZC-028
+    # static const runnable table, Tick dispatch with per-runnable elapsed
+    # counters, uninitialized guard, idempotent re-init, util computation)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_scheduler_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_RzcScheduler.c \
+      -o /app/bin/rzc_scheduler_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

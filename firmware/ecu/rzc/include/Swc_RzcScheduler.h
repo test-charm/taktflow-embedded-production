@@ -90,4 +90,20 @@ const Swc_RzcSched_RunnableType* Swc_RzcScheduler_GetTable(void);
  */
 uint8 Swc_RzcScheduler_GetUtilPct(void);
 
+/* ==================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * are absent from delivery builds.
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+
+/**
+ * @brief  Read back the module initialization flag (test-only)
+ * @return TRUE when Swc_RzcScheduler_Init has been called, else FALSE
+ */
+uint8 Swc_RzcScheduler_GetInitialized(void);
+
+#endif /* UNIT_TEST */
+
 #endif /* SWC_RZC_SCHEDULER_H */

@@ -159,3 +159,18 @@ uint8 Swc_RzcScheduler_GetUtilPct(void)
     /* total_util is in 0.01% units; convert to percent */
     return (uint8)(total_util / 100u);
 }
+
+/* ==================================================================
+ * Test-only observation API — compiled only when UNIT_TEST is defined.
+ * Production firmware builds do not define UNIT_TEST, so these accessors
+ * are absent from delivery builds and carry zero production footprint.
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+
+uint8 Swc_RzcScheduler_GetInitialized(void)
+{
+    return RzcSched_Initialized;
+}
+
+#endif /* UNIT_TEST */
