@@ -424,7 +424,7 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 | `sc_startup.S` | TMS570 启动汇编 | 无 | 未找到明确的专用测试 | 引导/启动上下文 | 当前未直接单元测试 |
 | `sc_state.c` | SC 运行时状态机 | `test_sc_state_asild.c` | `sc_state.feature`（ASW E2E，行/分支/函数 100%） | 对等故障/故障组合 | SC 模式转换 |
 | `sc_uds_shim.c` | 仅 HIL UDS shim | 无 | 未找到明确的专用 HIL 测试 | 诊断别名流量 | 当前未直接覆盖 |
-| `sc_watchdog.c` | 外部看门狗喂狗控制 | `test_sc_watchdog_asild.c` | `test_hil_wdgm.py` | 看门狗条件 | 喂狗使能/禁用行为 |
+| `sc_watchdog.c` | 外部看门狗喂狗控制 | `test_sc_watchdog_asild.c` | `sc_watchdog.feature`（ASW E2E，行/分支/函数 100%）、`test_hil_wdgm.py` | 看门狗条件 | 喂狗使能/禁用行为 |
 | `sc_xcp_eth.c` | XCP-over-Ethernet 从站 | `test_sc_xcp_eth.c` | 台架遥测/XCP 流程 | UDP/XCP 命令 | 最小 XCP 服务路径 |
 
 ### TCU
@@ -527,12 +527,12 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 ### ASW E2E 覆盖情况
 
-已建成 **35 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，725 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
+已建成 **36 条 ASW E2E 链**（`e2e-tests/src/test/resources/features/`，735 场景，原生 harness 链接真实 SWC 生产代码），覆盖以下 ASW 模型：
 
 - **CVC**：`Swc_Pedal` ✅（`cvc_pedal_torque_request.feature`，17 场景）、`Swc_VehicleState` ✅（`cvc_vehicle_state.feature`，42 场景）、`Swc_EStop` ✅（`cvc_estop.feature`，6 场景）、`Swc_CvcCom` ✅（`cvc_cvccom.feature`，18 场景）、`Swc_Heartbeat` ✅（`cvc_heartbeat.feature`，12 场景，行/分支/函数 100%）、`Swc_CanMonitor` ✅（`cvc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_Watchdog` ✅（`cvc_watchdog.feature`，10 场景，行 93.5%/分支 92.9%/函数 100%）、`Swc_SelfTest` ✅（`cvc_selftest.feature`，10 场景，行/分支/函数 100%）、`Swc_Scheduler` ✅（`cvc_scheduler.feature`，12 场景，行 92.5%/分支 91.7%/函数 100%）、`Swc_Nvm` ✅（`cvc_nvm.feature`，21 场景，行/分支/函数 100%）
 - **FZC**：`Swc_FzcCom` ✅（`fzc_fzccom.feature`，21 场景，行/分支/函数 100%）、`Swc_Heartbeat` ✅（`fzc_heartbeat.feature`，13 场景，行/分支/函数 100%）、`Swc_FzcCanMonitor` ✅（`fzc_canmonitor.feature`，14 场景，行/分支/函数 100%）、`Swc_FzcSafety` ✅（`fzc_safety.feature`，21 场景，行/分支/函数 100%）、`Swc_FzcScheduler` ✅（`fzc_scheduler.feature`，6 场景，行/分支/函数 100%）、`Swc_FzcNvm` ✅（`fzc_nvm.feature`，24 场景，行/分支/函数 100%）、`Swc_Steering` ✅（`fzc_steering.feature`，26 场景）、`Swc_Brake` ✅（`fzc_brake.feature`，22 场景）、`Swc_Lidar` ✅（`fzc_lidar.feature`，29 场景）
 - **RZC**：`Swc_Encoder` ✅（`rzc_encoder.feature`，14 场景，行/分支/函数 100%）、`Swc_CurrentMonitor` ✅（`rzc_currentmonitor.feature`，18 场景，行 96.2%/分支 94.1%/函数 100%）、`Swc_Motor` ✅（`rzc_motor.feature`，35 场景，行覆盖 93.8%/函数 100%）、`Swc_Battery` ✅（`rzc_battery.feature`，28 场景，行/分支/函数 100%）、`Swc_TempMonitor` ✅（`rzc_temponitor.feature`，31 场景，行 98.2%/函数 100%）、`Swc_RzcCom` ✅（`rzc_rzccom.feature`，32 场景，行 99.3%/分支 98.7%/函数 100%）、`Swc_Heartbeat` ✅（`rzc_heartbeat.feature`，15 场景，行/分支/函数 100%）、`Swc_RzcSafety` ✅（`rzc_safety.feature`，29 场景，行/分支/函数 100%）、`Swc_RzcSelfTest` ✅（`rzc_selftest.feature`，20 场景，行/分支/函数 100%）、`Swc_RzcScheduler` ✅（`rzc_scheduler.feature`，10 场景，行 100%/函数 100%/分支 85.7%）、`Swc_RzcNvm` ✅（`rzc_nvm.feature`，16 场景，行/分支/函数 100%）
-- **SC**：`sc_state` ✅（`sc_state.feature`，15 场景，行/分支/函数 100%）、`sc_heartbeat` ✅（`sc_heartbeat.feature`，26 场景，行 100%/函数 100%/分支 97.6%）、`sc_e2e` ✅（`sc_e2e.feature`，31 场景，行 100%/分支 100%/函数 100%）、`sc_relay` ✅（`sc_relay.feature`，24 场景，行/分支/函数 100%）、`sc_plausibility` ✅（`sc_plausibility.feature`，43 场景，行 98.1%/分支 96.3%/函数 100%）
+- **SC**：`sc_state` ✅（`sc_state.feature`，15 场景，行/分支/函数 100%）、`sc_heartbeat` ✅（`sc_heartbeat.feature`，26 场景，行 100%/函数 100%/分支 97.6%）、`sc_e2e` ✅（`sc_e2e.feature`，31 场景，行 100%/分支 100%/函数 100%）、`sc_relay` ✅（`sc_relay.feature`，24 场景，行/分支/函数 100%）、`sc_plausibility` ✅（`sc_plausibility.feature`，43 场景，行 98.1%/分支 96.3%/函数 100%）、`sc_watchdog` ✅（`sc_watchdog.feature`，10 场景，行/分支/函数 100%）
 
 > FZC `Swc_FzcCom`（2026-08-16 新增）：`fzc_fzccom.feature` 21 场景驱动真实
 > `Swc_FzcCom.c`（E2E 发送保护：CRC-8 0x1D + 4-bit alive 计数器 + Data ID 种子、
@@ -763,7 +763,6 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 
 | ECU | 模块 | 现有单测 | 可复用的系统级参考 |
 |---|---|---|---:|
-| SC | `sc_watchdog` | asild | `test_hil_wdgm.py` |
 | SC | `sc_selftest` | asild | SC 启动序列 |
 
 #### 中优先级（QM 单测 + 有系统参考）
@@ -922,5 +921,21 @@ PIL 验证一个真实 ECU 作为 DUT，测试框架模拟其对等节点。
 > `torque==0`/`torque>=100`/插值循环捕获）——共 3 行/2 分支豁免，其余
 > 52/54 分支全部两侧命中。全量 `./gradlew cucumber` 实测 **725 场景 /
 > 4379 步全部通过**（含本 feature 43 场景）。从高优先级列表移入已覆盖清单。
+>
+> `SC sc_watchdog` 已于 2026-08-18 完成（`sc_watchdog.feature` 10 场景：
+> SWR-SC-022 TPS3823 外部看门狗喂狗控制——Init 置 WDI 引脚 LOW、全部条件
+> 满足（allChecksOk==TRUE）时每次 Feed 翻转 WDI 引脚（0→1→0→1…）、
+> 任一条件失败（FALSE）时 Feed 不写引脚（看门狗饿死，TPS3823 超时复位）、
+> 失败恢复后从最后成功电平继续翻转、交替成功/失败保持最后成功状态、
+> 100 次长序列奇偶回绕边界、重复 Init 复位）。覆盖报告：**行 100%
+> （10/10）、分支 100%（2/2）、函数 100%（2/2）**。详见
+> `test-design/sc-watchdog-e2e.md`。**无需修改生产代码**：通过
+> `sc_watchdog_harness.c` 的 mock GIO 观测 WDI 引脚电平（wdiPin）与写入
+> 计数（wdiWriteCount）——`wdi_state` 与引脚电平一一对应，每次翻转必然
+> 伴随一次引脚写入，无需 UNIT_TEST 观测 getter。唯一分支（`allChecksOk ==
+> TRUE`）两侧均被覆盖，**无无法覆盖的代码**（模块无 `#ifdef PLATFORM_HIL`
+> / `SIL_DIAG` 分支、无防御性守卫）。全量 `./gradlew cucumber` 实测
+> **735 场景 / 4439 步全部通过**（含本 feature 10 场景）。从高优先级列表
+> 移入已覆盖清单。
 
 每个新 feature 需配套：`gateway/fault_inject/native/<swc>_harness.c`、`features/<ecu>_<swc>.feature`、`test-design/<name>-e2e.md`、Java DTO/spec/Factory。

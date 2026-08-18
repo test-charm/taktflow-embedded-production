@@ -1005,6 +1005,30 @@ class ScRelayRunBody(BaseModel):
     phases: list[ScRelayPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScWatchdogPhase(BaseModel):
+    """One phase of the SC watchdog harness script.
+
+    Drives SC_Watchdog_Init / SC_Watchdog_Feed against the real
+    sc_watchdog.c production code (SWR-SC-022: TPS3823 external watchdog feed
+    — Feed toggles the WDI pin only when allChecksOk==TRUE, otherwise the
+    watchdog starves and TPS3823 asserts RESET after its timeout). The WDI
+    GIO pin is mocked; every WDI write is counted so the toggle/starve
+    behavior is observable. Harness compiles the production TMS570 logic (no
+    PLATFORM_POSIX / PLATFORM_HIL).
+    """
+    op: str = "init"                  # init|feed
+    ok: int = 1                       # feed: allChecksOk (1=TRUE toggle, 0=FALSE starve)
+    repeats: int = 1                  # feed: SC_Watchdog_Feed call count
+
+
+class ScWatchdogSetupBody(BaseModel):
+    phases: list[ScWatchdogPhase] = []
+
+
+class ScWatchdogRunBody(BaseModel):
+    phases: list[ScWatchdogPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class ScPlausibilityPhase(BaseModel):
     """One phase of the SC plausibility harness script.
 
@@ -1154,6 +1178,9 @@ _stored_sc_relay_phases: list[ScRelayPhase] = []
 # Stored SC plausibility phase script for Given/When separation.
 _stored_sc_plausibility_phases: list[ScPlausibilityPhase] = []
 
+# Stored SC watchdog phase script for Given/When separation.
+_stored_sc_watchdog_phases: list[ScWatchdogPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1192,6 +1219,7 @@ _SC_HEARTBEAT_HARNESS = "/app/bin/sc_heartbeat_harness"
 _SC_E2E_HARNESS = "/app/bin/sc_e2e_harness"
 _SC_RELAY_HARNESS = "/app/bin/sc_relay_harness"
 _SC_PLAUSIBILITY_HARNESS = "/app/bin/sc_plausibility_harness"
+_SC_WATCHDOG_HARNESS = "/app/bin/sc_watchdog_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1850,6 +1878,7 @@ def _generate_coverage_html():
         ("sc_e2e", _SC_E2E_HARNESS),
         ("sc_relay", _SC_RELAY_HARNESS),
         ("sc_plausibility", _SC_PLAUSIBILITY_HARNESS),
+        ("sc_watchdog", _SC_WATCHDOG_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -4368,6 +4397,71 @@ def run_sc_plausibility(body: ScPlausibilityRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="SC plausibility harness returned invalid JSON") from exc
+
+
+def _sc_watchdog_phase_to_line(p: ScWatchdogPhase) -> str:
+    """Serialize one SC watchdog phase to a single key=value script line."""
+    return " ".join([
+        f"op={p.op}",
+        f"ok={p.ok}",
+        f"repeats={p.repeats}",
+    ])
+
+
+@app.post("/api/test/asw/sc/watchdog/setup")
+def setup_sc_watchdog(body: ScWatchdogSetupBody):
+    """Store the SC watchdog phase script for subsequent run calls that omit phases."""
+    global _stored_sc_watchdog_phases
+    _stored_sc_watchdog_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/watchdog")
+def run_sc_watchdog(body: ScWatchdogRunBody):
+    """Execute the real SC external watchdog feed control in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real sc_watchdog.c
+    production code (SC_Watchdog_Init / SC_Watchdog_Feed), exercising the
+    SWR-SC-022 TPS3823 feed semantics: Init drives the WDI pin LOW, Feed
+    toggles the WDI pin only when allChecksOk==TRUE (alternating
+    0→1→0→1...), and every FALSE feed starves the watchdog (pin unchanged,
+    no WDI write). The WDI GIO pin is mocked in-harness and every WDI write
+    is counted for observation. The harness is compiled with the production
+    TMS570 logic (no PLATFORM_POSIX/HIL), so the feed gate semantics are the
+    production ones.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_watchdog_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_watchdog_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_watchdog_%p.profraw")
+        completed = subprocess.run(
+            [_SC_WATCHDOG_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC watchdog harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC watchdog harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC watchdog harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC watchdog harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

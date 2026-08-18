@@ -472,7 +472,20 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/platform/posix/include \
       /app/fault_inject/native/sc_plausibility_harness.c \
       /app/firmware/ecu/sc/src/sc_plausibility.c \
-      -o /app/bin/sc_plausibility_harness
+      -o /app/bin/sc_plausibility_harness && \
+    # SC watchdog harness (links sc_watchdog.c only — SWR-SC-022 TPS3823
+    # external watchdog feed: SC_Watchdog_Init drives the WDI pin LOW, and
+    # SC_Watchdog_Feed toggles the WDI pin only when allChecksOk==TRUE —
+    # otherwise the watchdog starves and TPS3823 asserts RESET. The WDI GIO
+    # pin is mocked and every WDI write is counted for observation. Compiled
+    # with the production TMS570 logic — no PLATFORM_POSIX/HIL.)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_watchdog_harness.c \
+      /app/firmware/ecu/sc/src/sc_watchdog.c \
+      -o /app/bin/sc_watchdog_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 
