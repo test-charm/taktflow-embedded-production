@@ -905,6 +905,34 @@ class ScStateRunBody(BaseModel):
     phases: list[ScStatePhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScHeartbeatPhase(BaseModel):
+    """One phase of the SC heartbeat harness script.
+
+    Drives SC_Heartbeat_Init / NotifyRx / Monitor / ValidateContent against
+    the real sc_heartbeat.c production code (per-ECU CVC/FZC/RZC heartbeat
+    monitoring: independent 150ms timeout counters, 20-tick confirmation
+    window with latch, 3-HB recovery debounce, startup grace, LED drive, and
+    content validation SWR-SC-027/028), with UNIT_TEST hooks observing every
+    internal counter/flag and a mock GIO tracking the fault LED state.
+    """
+    op: str = "init"                  # init|monitor|notifyRx|validate
+    skipInit: bool = False            # skip initial SC_Heartbeat_Init on harness startup
+    ticks: int = 1                    # monitor: SC_Heartbeat_Monitor call count
+    ecu: int = 0                      # notifyRx/validate: SC_ECU_* index
+    repeats: int = 1                  # notifyRx/validate: repeat count
+    payload3: int = 0                 # validate: heartbeat byte 3 (mode|faults)
+    notifyA: int = 255                # monitor: ECU to NotifyRx once per tick (none=255)
+    notifyB: int = 255                # monitor: second ECU to NotifyRx once per tick (none=255)
+
+
+class ScHeartbeatSetupBody(BaseModel):
+    phases: list[ScHeartbeatPhase] = []
+
+
+class ScHeartbeatRunBody(BaseModel):
+    phases: list[ScHeartbeatPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -1007,6 +1035,9 @@ _stored_rzc_nvm_phases: list[RzcNvmPhase] = []
 # Stored SC state phase script for Given/When separation.
 _stored_sc_state_phases: list[ScStatePhase] = []
 
+# Stored SC heartbeat phase script for Given/When separation.
+_stored_sc_heartbeat_phases: list[ScHeartbeatPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1041,6 +1072,7 @@ _FZC_SCHEDULER_HARNESS = "/app/bin/fzc_scheduler_harness"
 _RZC_SCHEDULER_HARNESS = "/app/bin/rzc_scheduler_harness"
 _RZC_NVM_HARNESS = "/app/bin/rzc_nvm_harness"
 _SC_STATE_HARNESS = "/app/bin/sc_state_harness"
+_SC_HEARTBEAT_HARNESS = "/app/bin/sc_heartbeat_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1695,6 +1727,7 @@ def _generate_coverage_html():
         ("rzc_scheduler", _RZC_SCHEDULER_HARNESS),
         ("rzc_nvm", _RZC_NVM_HARNESS),
         ("sc_state", _SC_STATE_HARNESS),
+        ("sc_heartbeat", _SC_HEARTBEAT_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -3907,6 +3940,76 @@ def run_sc_state(body: ScStateRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="SC state harness returned invalid JSON") from exc
+
+
+def _sc_heartbeat_phase_to_line(p: ScHeartbeatPhase) -> str:
+    """Serialize one SC heartbeat phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"ticks={p.ticks}",
+        f"ecu={p.ecu}",
+        f"repeats={p.repeats}",
+        f"payload3={p.payload3}",
+        f"notifyA={p.notifyA}",
+        f"notifyB={p.notifyB}",
+    ])
+
+
+@app.post("/api/test/asw/sc/heartbeat/setup")
+def setup_sc_heartbeat(body: ScHeartbeatSetupBody):
+    """Store the SC heartbeat phase script for subsequent run calls that omit phases."""
+    global _stored_sc_heartbeat_phases
+    _stored_sc_heartbeat_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/heartbeat")
+def run_sc_heartbeat(body: ScHeartbeatRunBody):
+    """Execute the real SC heartbeat monitoring in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real sc_heartbeat.c
+    production code (SC_Heartbeat_Init / NotifyRx / Monitor / ValidateContent /
+    IsTimedOut / IsAnyConfirmed / IsContentFault / IsFzcBrakeFault),
+    exercising the per-ECU independent timeout counters, 150-tick timeout
+    detection, 20-tick confirmation latch, 3-HB recovery debounce, startup
+    grace, LED drive, and content validation thresholds (SWR-SC-027/028),
+    with UNIT_TEST hooks observing every internal counter/flag.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_heartbeat_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_heartbeat_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_heartbeat_%p.profraw")
+        completed = subprocess.run(
+            [_SC_HEARTBEAT_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC heartbeat harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC heartbeat harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC heartbeat harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC heartbeat harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

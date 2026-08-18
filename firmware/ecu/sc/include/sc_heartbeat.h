@@ -80,4 +80,79 @@ void SC_Heartbeat_ValidateContent(uint8 ecuIndex, const uint8* payload);
  */
 boolean SC_Heartbeat_IsContentFault(uint8 ecuIndex);
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+/**
+ * @brief  Test hook: read the timeout counter for an ECU
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return Current hb_counter value (0..0xFFFF)
+ */
+uint16 SC_Heartbeat_TestGetCounter(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the startup grace counter
+ * @return Current hb_startup_grace value
+ */
+uint16 SC_Heartbeat_TestGetStartupGrace(void);
+
+/**
+ * @brief  Test hook: read the timeout-detected flag for an ECU
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_timed_out value (0/1)
+ */
+boolean SC_Heartbeat_TestGetTimedOut(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the confirmed-timeout latch flag for an ECU
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_confirmed value (0/1)
+ */
+boolean SC_Heartbeat_TestGetConfirmed(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the recovery debounce counter for an ECU
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_recovery_count value
+ */
+uint8 SC_Heartbeat_TestGetRecoveryCount(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the confirmation-window counter for an ECU
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_confirm_counter value
+ */
+uint8 SC_Heartbeat_TestGetConfirmCounter(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the stuck-degraded accumulation counter
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_stuck_degraded_cnt value
+ */
+uint8 SC_Heartbeat_TestGetStuckDegradedCnt(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the fault-escalate accumulation counter
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_fault_escalate_cnt value
+ */
+uint8 SC_Heartbeat_TestGetFaultEscalateCnt(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the content-fault latch flag for an ECU
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_content_fault value (0/1)
+ */
+boolean SC_Heartbeat_TestGetContentFault(uint8 ecuIndex);
+
+/**
+ * @brief  Test hook: read the last observed FaultStatus bitmask
+ * @param  ecuIndex  SC_ECU_CVC / SC_ECU_FZC / SC_ECU_RZC
+ * @return hb_last_fault_status value
+ */
+uint8 SC_Heartbeat_TestGetLastFaultStatus(uint8 ecuIndex);
+#endif /* UNIT_TEST */
+
 #endif /* SC_HEARTBEAT_H */

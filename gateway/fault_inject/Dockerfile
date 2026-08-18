@@ -417,7 +417,18 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/platform/posix/include \
       /app/fault_inject/native/sc_state_harness.c \
       /app/firmware/ecu/sc/src/sc_state.c \
-      -o /app/bin/sc_state_harness
+      -o /app/bin/sc_state_harness && \
+    # SC heartbeat harness (links sc_heartbeat.c only — per-ECU CVC/FZC/RZC
+    # heartbeat monitoring: independent 150ms timeout counters, 20ms
+    # confirmation window with latch, 3-HB recovery debounce, startup grace,
+    # LED drive, and content validation SWR-SC-027/028)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_heartbeat_harness.c \
+      /app/firmware/ecu/sc/src/sc_heartbeat.c \
+      -o /app/bin/sc_heartbeat_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

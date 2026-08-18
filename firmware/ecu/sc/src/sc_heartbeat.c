@@ -249,3 +249,86 @@ boolean SC_Heartbeat_IsContentFault(uint8 ecuIndex)
     }
     return hb_content_fault[ecuIndex];
 }
+
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+uint16 SC_Heartbeat_TestGetCounter(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return 0u;
+    }
+    return hb_counter[ecuIndex];
+}
+
+uint16 SC_Heartbeat_TestGetStartupGrace(void)
+{
+    return hb_startup_grace;
+}
+
+boolean SC_Heartbeat_TestGetTimedOut(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return FALSE;
+    }
+    return hb_timed_out[ecuIndex];
+}
+
+boolean SC_Heartbeat_TestGetConfirmed(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return FALSE;
+    }
+    return hb_confirmed[ecuIndex];
+}
+
+uint8 SC_Heartbeat_TestGetRecoveryCount(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return 0u;
+    }
+    return hb_recovery_count[ecuIndex];
+}
+
+uint8 SC_Heartbeat_TestGetConfirmCounter(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return 0u;
+    }
+    return hb_confirm_counter[ecuIndex];
+}
+
+uint8 SC_Heartbeat_TestGetStuckDegradedCnt(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return 0u;
+    }
+    return hb_stuck_degraded_cnt[ecuIndex];
+}
+
+uint8 SC_Heartbeat_TestGetFaultEscalateCnt(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return 0u;
+    }
+    return hb_fault_escalate_cnt[ecuIndex];
+}
+
+boolean SC_Heartbeat_TestGetContentFault(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return FALSE;
+    }
+    return hb_content_fault[ecuIndex];
+}
+
+uint8 SC_Heartbeat_TestGetLastFaultStatus(uint8 ecuIndex)
+{
+    if (ecuIndex >= SC_ECU_COUNT) {
+        return 0u;
+    }
+    return hb_last_fault_status[ecuIndex];
+}
+#endif /* UNIT_TEST */
