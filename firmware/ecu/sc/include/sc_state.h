@@ -47,4 +47,18 @@ uint8 SC_State_Get(void);
  */
 boolean SC_State_Transition(uint8 new_state);
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+/**
+ * @brief  Test hook: write the internal runtime state directly
+ * @param  state  Raw state value (may be an invalid/unknown value)
+ * @note   Drives the Transition() `default` fail-closed branch
+ *         (unknown state forces KILL). Test-only, never in production.
+ */
+void SC_State_TestSetRaw(uint8 state);
+#endif /* UNIT_TEST */
+
 #endif /* SC_STATE_H */

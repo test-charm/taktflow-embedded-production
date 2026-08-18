@@ -881,6 +881,30 @@ class RzcNvmRunBody(BaseModel):
     phases: list[RzcNvmPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScStatePhase(BaseModel):
+    """One phase of the SC state harness script.
+
+    Drives SC_State_Init / SC_State_Get / SC_State_Transition against the
+    real sc_state.c production code (GAP-SC-006 authoritative runtime state
+    machine: INIT/MONITORING/FAULT/KILL valid edges, invalid transitions
+    rejected fail-closed, unknown state forces KILL), with a UNIT_TEST hook
+    to inject an unknown internal state and drive the default fail-closed
+    branch.
+    """
+    op: str = "init"                  # init|transition|setRaw
+    skipInit: bool = False            # skip initial SC_State_Init on harness startup
+    newState: int = 0                 # transition: target state (SC_STATE_*)
+    state: int = 0                    # setRaw: raw state value to inject
+
+
+class ScStateSetupBody(BaseModel):
+    phases: list[ScStatePhase] = []
+
+
+class ScStateRunBody(BaseModel):
+    phases: list[ScStatePhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -980,6 +1004,9 @@ _stored_rzc_scheduler_phases: list[RzcSchedulerPhase] = []
 # Stored RZC NVM phase script for Given/When separation.
 _stored_rzc_nvm_phases: list[RzcNvmPhase] = []
 
+# Stored SC state phase script for Given/When separation.
+_stored_sc_state_phases: list[ScStatePhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1013,6 +1040,7 @@ _FZC_SAFETY_HARNESS = "/app/bin/fzc_safety_harness"
 _FZC_SCHEDULER_HARNESS = "/app/bin/fzc_scheduler_harness"
 _RZC_SCHEDULER_HARNESS = "/app/bin/rzc_scheduler_harness"
 _RZC_NVM_HARNESS = "/app/bin/rzc_nvm_harness"
+_SC_STATE_HARNESS = "/app/bin/sc_state_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1666,6 +1694,7 @@ def _generate_coverage_html():
         ("fzc_scheduler", _FZC_SCHEDULER_HARNESS),
         ("rzc_scheduler", _RZC_SCHEDULER_HARNESS),
         ("rzc_nvm", _RZC_NVM_HARNESS),
+        ("sc_state", _SC_STATE_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -3812,6 +3841,72 @@ def run_rzc_nvm(body: RzcNvmRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC NVM harness returned invalid JSON") from exc
+
+
+def _sc_state_phase_to_line(p: ScStatePhase) -> str:
+    """Serialize one SC state phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"newState={p.newState}",
+        f"state={p.state}",
+    ])
+
+
+@app.post("/api/test/asw/sc/state/setup")
+def setup_sc_state(body: ScStateSetupBody):
+    """Store the SC state phase script for subsequent run calls that omit phases."""
+    global _stored_sc_state_phases
+    _stored_sc_state_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/state")
+def run_sc_state(body: ScStateRunBody):
+    """Execute the real SC state machine in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real sc_state.c
+    production code (SC_State_Init / SC_State_Get / SC_State_Transition),
+    exercising the GAP-SC-006 authoritative runtime state machine: valid
+    INIT→MONITORING→FAULT/KILL and FAULT→KILL edges, all invalid transitions
+    rejected fail-closed with state unchanged, the KILL terminal state, and
+    the unknown-state default branch that forces KILL (driven by the UNIT_TEST
+    `setRaw` injection hook).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_state_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_state_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_state_%p.profraw")
+        completed = subprocess.run(
+            [_SC_STATE_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC state harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC state harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC state harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC state harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

@@ -70,3 +70,14 @@ boolean SC_State_Transition(uint8 new_state)
 
     return FALSE;
 }
+
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+void SC_State_TestSetRaw(uint8 state)
+{
+    sc_state = state;
+}
+#endif /* UNIT_TEST */

@@ -407,7 +407,17 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
       /app/fault_inject/native/rzc_scheduler_harness.c \
       /app/firmware/ecu/rzc/src/Swc_RzcScheduler.c \
-      -o /app/bin/rzc_scheduler_harness
+      -o /app/bin/rzc_scheduler_harness && \
+    # SC state harness (links sc_state.c only — GAP-SC-006 authoritative
+    # runtime state machine: INIT/MONITORING/FAULT/KILL valid edges, invalid
+    # transitions rejected fail-closed, unknown state forces KILL)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_state_harness.c \
+      /app/firmware/ecu/sc/src/sc_state.c \
+      -o /app/bin/sc_state_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 
