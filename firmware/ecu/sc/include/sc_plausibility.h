@@ -56,4 +56,52 @@ void SC_CreepGuard_Check(void);
  */
 boolean SC_Plausibility_IsCreepFaulted(void);
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+/**
+ * @brief  Test hook: read the plausibility debounce counter
+ * @return Current plaus_debounce value
+ */
+uint8 SC_Plausibility_TestGetDebounce(void);
+
+/**
+ * @brief  Test hook: read the backup cutoff counter (SWR-SC-024)
+ * @return Current backup_cutoff_counter value
+ */
+uint8 SC_Plausibility_TestGetBackupCutoffCounter(void);
+
+/**
+ * @brief  Test hook: read the startup grace counter
+ * @return Current plaus_startup_grace value
+ */
+uint16 SC_Plausibility_TestGetStartupGrace(void);
+
+/**
+ * @brief  Test hook: read the creep-guard debounce counter (SSR-SC-018)
+ * @return Current creep_debounce value
+ */
+uint8 SC_Plausibility_TestGetCreepDebounce(void);
+
+/**
+ * @brief  Test hook: directly drive the internal torque-to-current lookup
+ *         so every LUT bracket / interpolation branch is exercised.
+ * @param  torque_pct  Torque percentage (0-255)
+ * @return Expected motor current in mA
+ */
+uint16 SC_Plausibility_TestLookupExpectedCurrent(uint8 torque_pct);
+
+/**
+ * @brief  Test hook: directly drive the internal implausibility comparator
+ *         so both threshold policies (near-zero absolute / relative+floor)
+ *         and every comparison branch are exercised.
+ * @param  expected_ma  Expected current from LUT
+ * @param  actual_ma    Measured motor current
+ * @return TRUE if actual deviates beyond the plausibility threshold
+ */
+boolean SC_Plausibility_TestIsImplausible(uint16 expected_ma, uint16 actual_ma);
+#endif /* UNIT_TEST */
+
 #endif /* SC_PLAUSIBILITY_H */

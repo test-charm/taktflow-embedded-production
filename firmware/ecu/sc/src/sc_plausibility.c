@@ -274,3 +274,42 @@ boolean SC_Plausibility_IsCreepFaulted(void)
 {
     return creep_faulted;
 }
+
+/* ==================================================================
+ * UNIT_TEST observation hooks — only compiled for the native test
+ * harness (sc_plausibility_harness.c); never part of the production
+ * TMS570 firmware, which does not define UNIT_TEST.
+ * ================================================================== */
+#ifdef UNIT_TEST
+
+uint8 SC_Plausibility_TestGetDebounce(void)
+{
+    return plaus_debounce;
+}
+
+uint8 SC_Plausibility_TestGetBackupCutoffCounter(void)
+{
+    return backup_cutoff_counter;
+}
+
+uint16 SC_Plausibility_TestGetStartupGrace(void)
+{
+    return plaus_startup_grace;
+}
+
+uint8 SC_Plausibility_TestGetCreepDebounce(void)
+{
+    return creep_debounce;
+}
+
+uint16 SC_Plausibility_TestLookupExpectedCurrent(uint8 torque_pct)
+{
+    return lookup_expected_current(torque_pct);
+}
+
+boolean SC_Plausibility_TestIsImplausible(uint16 expected_ma, uint16 actual_ma)
+{
+    return is_implausible(expected_ma, actual_ma);
+}
+
+#endif /* UNIT_TEST */

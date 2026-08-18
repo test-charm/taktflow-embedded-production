@@ -457,7 +457,22 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/platform/posix/include \
       /app/fault_inject/native/sc_relay_harness.c \
       /app/firmware/ecu/sc/src/sc_relay.c \
-      -o /app/bin/sc_relay_harness
+      -o /app/bin/sc_relay_harness && \
+    # SC plausibility harness (links sc_plausibility.c only — SWR-SC-007/008/
+    # 009/024 torque-vs-current cross-check: 16-entry LUT linear interpolation,
+    # 20% relative / 2000mA absolute threshold with debounce, fault latch +
+    # system LED, FZC-brake-fault backup cutoff, and the SSR-SC-018 standstill
+    # creep guard. CAN data / heartbeat fault / GIO LED are injected mocks.
+    # UNIT_TEST hooks observe every internal counter and the lookup/
+    # is_implausible statics. Compiled with the production TMS570 logic — no
+    # PLATFORM_POSIX/HIL.)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_plausibility_harness.c \
+      /app/firmware/ecu/sc/src/sc_plausibility.c \
+      -o /app/bin/sc_plausibility_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

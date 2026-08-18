@@ -1005,6 +1005,41 @@ class ScRelayRunBody(BaseModel):
     phases: list[ScRelayPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScPlausibilityPhase(BaseModel):
+    """One phase of the SC plausibility harness script.
+
+    Drives SC_Plausibility_Init / SC_Plausibility_Check / IsFaulted /
+    SC_CreepGuard_Check / IsCreepFaulted against the real sc_plausibility.c
+    production code (SWR-SC-007/008/009/024 torque-vs-current cross-check
+    with 16-entry LUT linear interpolation, 20% relative / 2000mA absolute
+    threshold and debounce, fault latch + system LED, FZC-brake-fault backup
+    cutoff, and the SSR-SC-018 standstill creep guard), with UNIT_TEST hooks
+    observing every internal counter and the lookup/is_implausible statics.
+    CAN data (torque / current), heartbeat brake-fault flag, and GIO system
+    LED are injected mocks. Harness compiles the production TMS570 logic (no
+    PLATFORM_POSIX / PLATFORM_HIL).
+    """
+    op: str = "init"                  # init|check|creep|drainGrace|lookup|implausible
+    skipInit: bool = False            # skip initial SC_Plausibility_Init on harness startup
+    torque: int = 0                   # check/creep/lookup: torque percentage (0-255)
+    current: int = 0                  # check/creep: motor current in mA
+    vehValid: int = 1                 # check/creep: vehicle-state mailbox valid
+    curValid: int = 1                 # check/creep: motor-current mailbox valid
+    brakeFault: int = 0               # check: FZC brake fault (backup cutoff)
+    repeats: int = 1                  # check/creep: SC_Plausibility_Check/CreepGuard call count
+    ticks: int = 1                    # drainGrace: SC_Plausibility_Check call count
+    expected: int = 0                 # implausible: expected current in mA
+    actual: int = 0                   # implausible: measured current in mA
+
+
+class ScPlausibilitySetupBody(BaseModel):
+    phases: list[ScPlausibilityPhase] = []
+
+
+class ScPlausibilityRunBody(BaseModel):
+    phases: list[ScPlausibilityPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -1116,6 +1151,9 @@ _stored_sc_e2e_phases: list[ScE2ePhase] = []
 # Stored SC relay phase script for Given/When separation.
 _stored_sc_relay_phases: list[ScRelayPhase] = []
 
+# Stored SC plausibility phase script for Given/When separation.
+_stored_sc_plausibility_phases: list[ScPlausibilityPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1153,6 +1191,7 @@ _SC_STATE_HARNESS = "/app/bin/sc_state_harness"
 _SC_HEARTBEAT_HARNESS = "/app/bin/sc_heartbeat_harness"
 _SC_E2E_HARNESS = "/app/bin/sc_e2e_harness"
 _SC_RELAY_HARNESS = "/app/bin/sc_relay_harness"
+_SC_PLAUSIBILITY_HARNESS = "/app/bin/sc_plausibility_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1810,6 +1849,7 @@ def _generate_coverage_html():
         ("sc_heartbeat", _SC_HEARTBEAT_HARNESS),
         ("sc_e2e", _SC_E2E_HARNESS),
         ("sc_relay", _SC_RELAY_HARNESS),
+        ("sc_plausibility", _SC_PLAUSIBILITY_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -4249,6 +4289,85 @@ def run_sc_relay(body: ScRelayRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="SC relay harness returned invalid JSON") from exc
+
+
+def _sc_plausibility_phase_to_line(p: ScPlausibilityPhase) -> str:
+    """Serialize one SC plausibility phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"torque={p.torque}",
+        f"current={p.current}",
+        f"vehValid={p.vehValid}",
+        f"curValid={p.curValid}",
+        f"brakeFault={p.brakeFault}",
+        f"repeats={p.repeats}",
+        f"ticks={p.ticks}",
+        f"expected={p.expected}",
+        f"actual={p.actual}",
+    ])
+
+
+@app.post("/api/test/asw/sc/plausibility/setup")
+def setup_sc_plausibility(body: ScPlausibilitySetupBody):
+    """Store the SC plausibility phase script for subsequent run calls that omit phases."""
+    global _stored_sc_plausibility_phases
+    _stored_sc_plausibility_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/plausibility")
+def run_sc_plausibility(body: ScPlausibilityRunBody):
+    """Execute the real SC torque-vs-current cross-check in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real
+    sc_plausibility.c production code (SC_Plausibility_Init / Check /
+    IsFaulted / CreepGuard_Check / IsCreepFaulted), exercising the SWR-SC-007
+    torque-to-current LUT (16 entries, linear interpolation), the SWR-SC-008
+    plausibility comparator with 20% relative / 2000mA absolute threshold and
+    debounce, the SWR-SC-009 fault latch + system LED, the SWR-SC-024
+    FZC-brake-fault backup cutoff, and the SSR-SC-018 standstill creep guard
+    (torque==0 with current>500mA for 2 cycles → non-clearable latch), with
+    UNIT_TEST hooks observing every internal counter and the lookup/
+    is_implausible statics. CAN data / heartbeat brake-fault / GIO system LED
+    are injected mocks. The harness is compiled with the production TMS570
+    logic (no PLATFORM_POSIX/HIL), so the strict 10-tick debounce and
+    1500-tick startup grace apply.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_plausibility_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_plausibility_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_plausibility_%p.profraw")
+        completed = subprocess.run(
+            [_SC_PLAUSIBILITY_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC plausibility harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC plausibility harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC plausibility harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC plausibility harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")
