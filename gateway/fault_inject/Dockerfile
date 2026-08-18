@@ -297,6 +297,16 @@ RUN mkdir -p /app/bin /app/coverage && \
       /app/fault_inject/native/rzc_safety_harness.c \
       /app/firmware/ecu/rzc/src/Swc_RzcSafety.c \
       -o /app/bin/rzc_safety_harness && \
+    # RZC self-test harness (links Swc_RzcSelfTest.c only — 8 injected
+    # hardware diagnostic callbacks with early-abort on any failure, motor
+    # disable, per-item DTC reporting, uninitialized / NULL-config guards,
+    # and result-bitmask readback)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/rzc/include -I/app/firmware/ecu/rzc/cfg \
+      /app/fault_inject/native/rzc_selftest_harness.c \
+      /app/firmware/ecu/rzc/src/Swc_RzcSelfTest.c \
+      -o /app/bin/rzc_selftest_harness && \
     # RZC battery harness (links Swc_Battery.c only — battery voltage monitor
     # with 4-sample moving average, 5-state thresholds and hysteresis)
     clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \

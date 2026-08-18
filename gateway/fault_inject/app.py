@@ -533,6 +533,36 @@ class RzcSafetyRunBody(BaseModel):
     phases: list[RzcSafetyPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcSelfTestPhase(BaseModel):
+    """One phase of the RZC self-test harness script.
+
+    Drives Swc_RzcSelfTest_Init / Startup against the real
+    Swc_RzcSelfTest.c production code (8 injected hardware diagnostic
+    callbacks: BTS7960 enable-pin toggle / ACS723 baseline cal / NTC range /
+    Encoder connectivity / CAN loopback / MPU verify / stack canary / RAM
+    pattern). Any single failure aborts the sequence with motor disable +
+    DTC. Values: 1=pass (E_OK), 0=fail (E_NOT_OK), 2=NULL callback (guard).
+    """
+    skipInit: bool = False            # skip Swc_RzcSelfTest_Init (uninitialized guard)
+    initNull: bool = False            # call Swc_RzcSelfTest_Init(NULL_PTR) (NULL-config guard)
+    bts7960: int = 1                  # BTS7960 enable-pin toggle result
+    acs723: int = 1                   # ACS723 baseline calibration result
+    ntc: int = 1                      # NTC temperature range check result
+    encoder: int = 1                  # Encoder connectivity result
+    can: int = 1                      # CAN loopback result
+    mpu: int = 1                      # MPU region verify result
+    canary: int = 1                   # Stack canary plant result
+    ram: int = 1                      # RAM pattern test result
+
+
+class RzcSelfTestSetupBody(BaseModel):
+    phases: list[RzcSelfTestPhase] = []
+
+
+class RzcSelfTestRunBody(BaseModel):
+    phases: list[RzcSelfTestPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class RzcHeartbeatPhase(BaseModel):
     """One phase of the RZC heartbeat harness script.
 
@@ -848,6 +878,9 @@ _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 # Stored RZC safety phase script for Given/When separation.
 _stored_rzc_safety_phases: list[RzcSafetyPhase] = []
 
+# Stored RZC self-test phase script for Given/When separation.
+_stored_rzc_selftest_phases: list[RzcSelfTestPhase] = []
+
 # Stored RZC encoder phase script for Given/When separation.
 _stored_rzc_encoder_phases: list[RzcEncoderPhase] = []
 
@@ -902,6 +935,7 @@ _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
 _RZC_SAFETY_HARNESS = "/app/bin/rzc_safety_harness"
+_RZC_SELFTEST_HARNESS = "/app/bin/rzc_selftest_harness"
 _RZC_ENCODER_HARNESS = "/app/bin/rzc_encoder_harness"
 _RZC_HEARTBEAT_HARNESS = "/app/bin/rzc_heartbeat_harness"
 _RZC_CURRENTMONITOR_HARNESS = "/app/bin/rzc_currentmonitor_harness"
@@ -1552,6 +1586,7 @@ def _generate_coverage_html():
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
         ("rzc_safety", _RZC_SAFETY_HARNESS),
+        ("rzc_selftest", _RZC_SELFTEST_HARNESS),
         ("rzc_encoder", _RZC_ENCODER_HARNESS),
         ("rzc_heartbeat", _RZC_HEARTBEAT_HARNESS),
         ("rzc_currentmonitor", _RZC_CURRENTMONITOR_HARNESS),
@@ -2901,6 +2936,76 @@ def run_rzc_safety(body: RzcSafetyRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC safety harness returned invalid JSON") from exc
+
+
+def _rzc_selftest_phase_to_line(p: RzcSelfTestPhase) -> str:
+    """Serialize one RZC self-test phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"skipInit={_b(p.skipInit)}",
+        f"initNull={_b(p.initNull)}",
+        f"bts7960={p.bts7960}",
+        f"acs723={p.acs723}",
+        f"ntc={p.ntc}",
+        f"encoder={p.encoder}",
+        f"can={p.can}",
+        f"mpu={p.mpu}",
+        f"canary={p.canary}",
+        f"ram={p.ram}",
+    ])
+
+
+@app.post("/api/test/asw/rzc/selftest/setup")
+def setup_rzc_selftest(body: RzcSelfTestSetupBody):
+    """Store the RZC self-test phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_selftest_phases
+    _stored_rzc_selftest_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/selftest")
+def run_rzc_selftest(body: RzcSelfTestRunBody):
+    """Execute the real RZC self-test ASW in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a failed first run). `body.phases` carries the stimulus phases. The
+    harness runs the concatenated precondition + stimulus script against the
+    real Swc_RzcSelfTest.c production code (Init + Startup + GetResultMask),
+    pinning the pass/fail result of each of the eight hardware diagnostic
+    callbacks (value 2 pins a NULL callback pointer to exercise the guard)
+    and counting the reported Dem DTC events plus motor-disable outputs.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_selftest_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_selftest_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_selftest_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_SELFTEST_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC self-test harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC self-test harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC self-test harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC self-test harness returned invalid JSON") from exc
 
 
 @app.post("/api/test/asw/rzc/motor/setup")
