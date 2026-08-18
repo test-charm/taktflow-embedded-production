@@ -497,6 +497,42 @@ class RzcEncoderRunBody(BaseModel):
     phases: list[RzcEncoderPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class RzcSafetyPhase(BaseModel):
+    """One phase of the RZC safety harness script.
+
+    Drives Swc_RzcSafety_Init / MainFunction / NotifyCanRx against the real
+    Swc_RzcSafety.c production code (watchdog feed with 4-condition gate,
+    fault aggregation, CAN bus loss detection with silence / error-warning /
+    bus-off / latch, motor disable on CAN loss, safety status publication,
+    WATCHDOG_FAIL edge DTC report).
+    """
+    cycles: int = 1                # Swc_RzcSafety_MainFunction calls
+    skipInit: bool = False         # skip Swc_RzcSafety_Init (uninitialized guard)
+    reinit: bool = False           # call Swc_RzcSafety_Init again at phase start
+    overcurrent: int = 0           # RTE RZC_SIG_OVERCURRENT input
+    overtemp: int = 0              # RTE RZC_SIG_TEMP_FAULT input
+    directionFault: int = 0        # RTE RZC_SIG_ENCODER_DIR input
+    stallFault: int = 0            # RTE RZC_SIG_ENCODER_STALL input
+    batteryFault: int = 0          # RTE RZC_SIG_BATTERY_STATUS input
+    selfTestResult: int = 1        # RTE RZC_SIG_SELF_TEST_RESULT input (1=PASS 0=FAIL)
+    estopActive: int = 0           # RTE RZC_SIG_ESTOP_ACTIVE input
+    vehicleState: int = 1          # RTE RZC_SIG_VEHICLE_STATE input
+                                   # (0=INIT 1=RUN 2=DEGRADED 3=LIMP
+                                   #  4=SAFE_STOP 5=SHUTDOWN)
+    canErrorState: int = 0         # Can_GetControllerErrorState(0)
+                                   # (0=ACTIVE 1=WARNING 2=BUSOFF)
+    notifyCanRx: bool = False      # call Swc_RzcSafety_NotifyCanRx before each
+                                   # MainFunction call (resets silence counter)
+
+
+class RzcSafetySetupBody(BaseModel):
+    phases: list[RzcSafetyPhase] = []
+
+
+class RzcSafetyRunBody(BaseModel):
+    phases: list[RzcSafetyPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class RzcHeartbeatPhase(BaseModel):
     """One phase of the RZC heartbeat harness script.
 
@@ -809,6 +845,9 @@ _stored_fzc_brake_phases: list[FzcBrakePhase] = []
 # Stored FZC lidar phase script for Given/When separation.
 _stored_fzc_lidar_phases: list[FzcLidarPhase] = []
 
+# Stored RZC safety phase script for Given/When separation.
+_stored_rzc_safety_phases: list[RzcSafetyPhase] = []
+
 # Stored RZC encoder phase script for Given/When separation.
 _stored_rzc_encoder_phases: list[RzcEncoderPhase] = []
 
@@ -862,6 +901,7 @@ _FZC_NVM_HARNESS = "/app/bin/fzc_nvm_harness"
 _FZC_STEERING_HARNESS = "/app/bin/fzc_steering_harness"
 _FZC_BRAKE_HARNESS = "/app/bin/fzc_brake_harness"
 _FZC_LIDAR_HARNESS = "/app/bin/fzc_lidar_harness"
+_RZC_SAFETY_HARNESS = "/app/bin/rzc_safety_harness"
 _RZC_ENCODER_HARNESS = "/app/bin/rzc_encoder_harness"
 _RZC_HEARTBEAT_HARNESS = "/app/bin/rzc_heartbeat_harness"
 _RZC_CURRENTMONITOR_HARNESS = "/app/bin/rzc_currentmonitor_harness"
@@ -1511,6 +1551,7 @@ def _generate_coverage_html():
         ("fzc_steering", _FZC_STEERING_HARNESS),
         ("fzc_brake", _FZC_BRAKE_HARNESS),
         ("fzc_lidar", _FZC_LIDAR_HARNESS),
+        ("rzc_safety", _RZC_SAFETY_HARNESS),
         ("rzc_encoder", _RZC_ENCODER_HARNESS),
         ("rzc_heartbeat", _RZC_HEARTBEAT_HARNESS),
         ("rzc_currentmonitor", _RZC_CURRENTMONITOR_HARNESS),
@@ -2595,6 +2636,27 @@ def _rzc_motor_phase_to_line(p: RzcMotorPhase) -> str:
     ])
 
 
+def _rzc_safety_phase_to_line(p: RzcSafetyPhase) -> str:
+    """Serialize one RZC safety phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"cycles={p.cycles}",
+        f"skipInit={_b(p.skipInit)}",
+        f"reinit={_b(p.reinit)}",
+        f"overcurrent={p.overcurrent}",
+        f"overtemp={p.overtemp}",
+        f"directionFault={p.directionFault}",
+        f"stallFault={p.stallFault}",
+        f"batteryFault={p.batteryFault}",
+        f"selfTestResult={p.selfTestResult}",
+        f"estopActive={p.estopActive}",
+        f"vehicleState={p.vehicleState}",
+        f"canErrorState={p.canErrorState}",
+        f"notifyCanRx={_b(p.notifyCanRx)}",
+    ])
+
+
 def _rzc_currentmonitor_phase_to_line(p: RzcCurrentMonitorPhase) -> str:
     """Serialize one RZC current-monitor phase to a single key=value script line."""
     def _b(v: bool) -> int:
@@ -2786,6 +2848,59 @@ def run_rzc_currentmonitor(body: RzcCurrentMonitorRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="RZC current-monitor harness returned invalid JSON") from exc
+
+
+@app.post("/api/test/asw/rzc/safety/setup")
+def setup_rzc_safety(body: RzcSafetySetupBody):
+    """Store the RZC safety phase script for subsequent run calls that omit phases."""
+    global _stored_rzc_safety_phases
+    _stored_rzc_safety_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/rzc/safety")
+def run_rzc_safety(body: RzcSafetyRunBody):
+    """Execute the real RZC safety ASW chain in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context,
+    e.g. a healthy baseline). `body.phases` carries the stimulus phases — the
+    final fault / CAN-state profile under test. The harness runs the
+    concatenated precondition + stimulus script against the real
+    Swc_RzcSafety.c production code (watchdog feed with 4-condition gate,
+    fault aggregation, CAN bus-loss detection with silence / error-warning /
+    bus-off / latch, motor disable on CAN loss, safety status publication,
+    WATCHDOG_FAIL edge DTC report).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_rzc_safety_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_rzc_safety_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "rzc_safety_%p.profraw")
+        completed = subprocess.run(
+            [_RZC_SAFETY_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="RZC safety harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="RZC safety harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "RZC safety harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="RZC safety harness returned invalid JSON") from exc
 
 
 @app.post("/api/test/asw/rzc/motor/setup")

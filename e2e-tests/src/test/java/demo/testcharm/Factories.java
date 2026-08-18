@@ -18,6 +18,7 @@ import demo.testcharm.dto.FzcSafetySetup;
 import demo.testcharm.dto.FzcSchedulerSetup;
 import demo.testcharm.dto.RzcEncoderSetup;
 import demo.testcharm.dto.RzcHeartbeatSetup;
+import demo.testcharm.dto.RzcSafetySetup;
 import demo.testcharm.dto.RzcCurrentMonitorSetup;
 import demo.testcharm.dto.RzcMotorSetup;
 import demo.testcharm.dto.RzcBatterySetup;
@@ -69,6 +70,7 @@ public class Factories {
                 .registerByType(FzcSafetySetup.class, new FzcSafetySetupDataRepository(restfulStep))
                 .registerByType(FzcSchedulerSetup.class, new FzcSchedulerSetupDataRepository(restfulStep))
                 .registerByType(RzcEncoderSetup.class, new RzcEncoderSetupDataRepository(restfulStep))
+                .registerByType(RzcSafetySetup.class, new RzcSafetySetupDataRepository(restfulStep))
                 .registerByType(RzcHeartbeatSetup.class, new RzcHeartbeatSetupDataRepository(restfulStep))
                 .registerByType(RzcCurrentMonitorSetup.class, new RzcCurrentMonitorSetupDataRepository(restfulStep))
                 .registerByType(RzcMotorSetup.class, new RzcMotorSetupDataRepository(restfulStep))
@@ -419,6 +421,21 @@ public class Factories {
         public void save(Object object) {
             super.save(object);
             restfulStep.postObjectInJson("/api/test/asw/rzc/rzccom/setup", object);
+        }
+    }
+
+    public static class RzcSafetySetupDataRepository extends MemoryDataRepository {
+
+        private final RestfulStep restfulStep;
+
+        public RzcSafetySetupDataRepository(RestfulStep restfulStep) {
+            this.restfulStep = restfulStep;
+        }
+
+        @Override
+        public void save(Object object) {
+            super.save(object);
+            restfulStep.postObjectInJson("/api/test/asw/rzc/safety/setup", object);
         }
     }
 }
