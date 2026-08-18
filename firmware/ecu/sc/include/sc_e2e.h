@@ -71,4 +71,32 @@ boolean SC_E2E_IsAnyCriticalFailed(void);
  */
 uint8 SC_E2E_ComputeCRC8(const uint8* data, uint8 len);
 
+#ifdef UNIT_TEST
+/**
+ * @brief  Unit-test only observation hooks (never compiled into production
+ *         firmware — TMS570 build does not define UNIT_TEST).
+ *
+ * Expose the module-internal static state and the internal sc_crc8() so the
+ * native E2E harness can verify every branch and defensive guard.
+ */
+
+/** Get the last alive counter seen for a mailbox (out-of-range → 0). */
+uint8 SC_E2E_TestGetLastAlive(uint8 msgIndex);
+
+/** Get the first-message flag for a mailbox (out-of-range → TRUE). */
+boolean SC_E2E_TestGetFirstRx(uint8 msgIndex);
+
+/** Get the consecutive failure counter for a mailbox (out-of-range → 0xFF). */
+uint8 SC_E2E_TestGetFailCount(uint8 msgIndex);
+
+/** Get the persistent failure flag for a mailbox (out-of-range → TRUE). */
+boolean SC_E2E_TestGetFailed(uint8 msgIndex);
+
+/** Get the boot-grace counter remaining. */
+uint16 SC_E2E_TestGetGraceRemaining(void);
+
+/** Directly exercise the internal sc_crc8() (zero-length / known vectors). */
+uint8 SC_E2E_TestCrc8(const uint8* data, uint8 len);
+#endif /* UNIT_TEST */
+
 #endif /* SC_E2E_H */

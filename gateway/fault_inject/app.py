@@ -933,6 +933,41 @@ class ScHeartbeatRunBody(BaseModel):
     phases: list[ScHeartbeatPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScE2ePhase(BaseModel):
+    """One phase of the SC E2E harness script.
+
+    Drives SC_E2E_Init / SC_E2E_Check / SC_E2E_IsMsgFailed /
+    SC_E2E_IsAnyCriticalFailed / SC_E2E_ComputeCRC8 against the real
+    sc_e2e.c production code (SWR-SC-003: CRC-8 poly 0x1D validation over
+    DataId + payload, byte-0 alive counter monotonicity, per-mailbox
+    consecutive-failure latch SC_E2E_MAX_CONSEC_FAIL=3, boot grace window,
+    and GAP-SC-002 critical-mailbox E-Stop/heartbeat relay-kill gating),
+    with UNIT_TEST hooks observing every internal counter/flag and the
+    internal sc_crc8(). Harness compiles the production TMS570 logic (no
+    PLATFORM_POSIX / PLATFORM_HIL).
+    """
+    op: str = "init"                  # init|check|drainGrace|crc8|compute
+    skipInit: bool = False            # skip initial SC_E2E_Init on harness startup
+    dataId: int = 1                   # check: E2E Data ID
+    msgIndex: int = 0                 # check: mailbox index (0-based, < SC_MB_COUNT)
+    dlc: int = 8                      # check: data length code (2..8, >8 exercises cap)
+    alive: int = 0                    # check: alive counter (0-15)
+    crcCorrupt: int = 0               # check: flip CRC byte (byte 1)
+    dataIdCorrupt: int = 0            # check: force byte0 lower nibble != dataId
+    payloadCorrupt: int = 0           # check: flip payload byte data[4]
+    nullData: int = 0                 # check/crc8/compute: pass NULL_PTR
+    ticks: int = 1                    # drainGrace: SC_E2E_IsAnyCriticalFailed call count
+    len: int = 3                      # crc8/compute: input byte length
+
+
+class ScE2eSetupBody(BaseModel):
+    phases: list[ScE2ePhase] = []
+
+
+class ScE2eRunBody(BaseModel):
+    phases: list[ScE2ePhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
@@ -1038,6 +1073,9 @@ _stored_sc_state_phases: list[ScStatePhase] = []
 # Stored SC heartbeat phase script for Given/When separation.
 _stored_sc_heartbeat_phases: list[ScHeartbeatPhase] = []
 
+# Stored SC E2E phase script for Given/When separation.
+_stored_sc_e2e_phases: list[ScE2ePhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1073,6 +1111,7 @@ _RZC_SCHEDULER_HARNESS = "/app/bin/rzc_scheduler_harness"
 _RZC_NVM_HARNESS = "/app/bin/rzc_nvm_harness"
 _SC_STATE_HARNESS = "/app/bin/sc_state_harness"
 _SC_HEARTBEAT_HARNESS = "/app/bin/sc_heartbeat_harness"
+_SC_E2E_HARNESS = "/app/bin/sc_e2e_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1728,6 +1767,7 @@ def _generate_coverage_html():
         ("rzc_nvm", _RZC_NVM_HARNESS),
         ("sc_state", _SC_STATE_HARNESS),
         ("sc_heartbeat", _SC_HEARTBEAT_HARNESS),
+        ("sc_e2e", _SC_E2E_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -4010,6 +4050,83 @@ def run_sc_heartbeat(body: ScHeartbeatRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="SC heartbeat harness returned invalid JSON") from exc
+
+
+def _sc_e2e_phase_to_line(p: ScE2ePhase) -> str:
+    """Serialize one SC E2E phase to a single key=value script line."""
+    def _b(v: bool) -> int:
+        return 1 if v else 0
+    return " ".join([
+        f"op={p.op}",
+        f"skipInit={_b(p.skipInit)}",
+        f"dataId={p.dataId}",
+        f"msgIndex={p.msgIndex}",
+        f"dlc={p.dlc}",
+        f"alive={p.alive}",
+        f"crcCorrupt={p.crcCorrupt}",
+        f"dataIdCorrupt={p.dataIdCorrupt}",
+        f"payloadCorrupt={p.payloadCorrupt}",
+        f"nullData={p.nullData}",
+        f"ticks={p.ticks}",
+        f"len={p.len}",
+    ])
+
+
+@app.post("/api/test/asw/sc/e2e/setup")
+def setup_sc_e2e(body: ScE2eSetupBody):
+    """Store the SC E2E phase script for subsequent run calls that omit phases."""
+    global _stored_sc_e2e_phases
+    _stored_sc_e2e_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/e2e")
+def run_sc_e2e(body: ScE2eRunBody):
+    """Execute the real SC E2E CRC-8/alive validation in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real sc_e2e.c
+    production code (SC_E2E_Init / SC_E2E_Check / SC_E2E_IsMsgFailed /
+    SC_E2E_IsAnyCriticalFailed / SC_E2E_ComputeCRC8), exercising the
+    SWR-SC-003 CRC-8 (poly 0x1D) + DataId + alive-counter validation, the
+    3-consecutive-failure persistent latch, the boot-grace window with
+    failure-state reset, and the GAP-SC-002 critical-mailbox relay-kill
+    gating (E-Stop + CVC/FZC/RZC heartbeats), with UNIT_TEST hooks observing
+    every internal counter/flag and the internal sc_crc8(). The harness is
+    compiled with the production TMS570 logic (no PLATFORM_POSIX/HIL), so
+    the strict 3-failure threshold and 5-tick grace apply.
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_e2e_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_e2e_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_e2e_%p.profraw")
+        completed = subprocess.run(
+            [_SC_E2E_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC E2E harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC E2E harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC E2E harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC E2E harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

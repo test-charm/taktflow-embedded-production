@@ -428,7 +428,21 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/platform/posix/include \
       /app/fault_inject/native/sc_heartbeat_harness.c \
       /app/firmware/ecu/sc/src/sc_heartbeat.c \
-      -o /app/bin/sc_heartbeat_harness
+      -o /app/bin/sc_heartbeat_harness && \
+    # SC E2E harness (links sc_e2e.c only — SWR-SC-003 CRC-8 poly 0x1D +
+    # DataId + alive validation, 3-consecutive-failure persistent latch,
+    # boot-grace window, GAP-SC-002 critical-mailbox relay-kill gating, and
+    # SC_E2E_ComputeCRC8 TX CRC for SC_Status SWR-SC-030; UNIT_TEST hooks
+    # observe internal state and sc_crc8. Compiled with the production
+    # TMS570 logic — no PLATFORM_POSIX/HIL, so strict 3-failure threshold
+    # and 5-tick grace apply.)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_e2e_harness.c \
+      /app/firmware/ecu/sc/src/sc_e2e.c \
+      -o /app/bin/sc_e2e_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

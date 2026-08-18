@@ -240,3 +240,54 @@ uint8 SC_E2E_ComputeCRC8(const uint8* data, uint8 len)
     }
     return crc ^ 0xFFu;
 }
+
+/* ==================================================================
+ * UNIT_TEST observation hooks — only compiled for the native test
+ * harness (sc_e2e_harness.c); never part of the production TMS570
+ * firmware, which does not define UNIT_TEST.
+ * ================================================================== */
+#ifdef UNIT_TEST
+
+uint8 SC_E2E_TestGetLastAlive(uint8 msgIndex)
+{
+    if (msgIndex >= SC_MB_COUNT) {
+        return 0u;
+    }
+    return e2e_last_alive[msgIndex];
+}
+
+boolean SC_E2E_TestGetFirstRx(uint8 msgIndex)
+{
+    if (msgIndex >= SC_MB_COUNT) {
+        return TRUE;
+    }
+    return e2e_first_rx[msgIndex];
+}
+
+uint8 SC_E2E_TestGetFailCount(uint8 msgIndex)
+{
+    if (msgIndex >= SC_MB_COUNT) {
+        return 0xFFu;
+    }
+    return e2e_fail_count[msgIndex];
+}
+
+boolean SC_E2E_TestGetFailed(uint8 msgIndex)
+{
+    if (msgIndex >= SC_MB_COUNT) {
+        return TRUE;
+    }
+    return e2e_failed[msgIndex];
+}
+
+uint16 SC_E2E_TestGetGraceRemaining(void)
+{
+    return e2e_grace_remaining;
+}
+
+uint8 SC_E2E_TestCrc8(const uint8* data, uint8 len)
+{
+    return sc_crc8(data, len);
+}
+
+#endif /* UNIT_TEST */
