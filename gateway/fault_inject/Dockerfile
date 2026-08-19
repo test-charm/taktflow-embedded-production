@@ -485,7 +485,23 @@ RUN mkdir -p /app/bin /app/coverage && \
       -I/app/firmware/platform/posix/include \
       /app/fault_inject/native/sc_watchdog_harness.c \
       /app/firmware/ecu/sc/src/sc_watchdog.c \
-      -o /app/bin/sc_watchdog_harness
+      -o /app/bin/sc_watchdog_harness && \
+    # SC self-test harness (links sc_selftest.c only — SWR-SC-016..021
+    # startup/runtime self-test: 7-step startup BIST with per-step failure
+    # blocking and return code 1..7, 60s-period runtime incremental checks
+    # (flash CRC incremental / RAM 32-byte pattern / DCAN error status / GIO
+    # relay readback), stack canary, and the combined IsHealthy gate. The
+    # hardware checks and the GIO relay pin are mocked with per-call counters;
+    # UNIT_TEST hooks observe the internal tick / health flags and inject
+    # canary / RAM corruption. Compiled with the production TMS570 logic —
+    # no PLATFORM_POSIX/HIL.)
+    clang -std=c99 -Wall -Wextra -Werror -fprofile-instr-generate -fcoverage-mapping \
+      -DUNIT_TEST -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $COMMON_INC \
+      -I/app/firmware/ecu/sc/include -I/app/firmware/ecu/sc/cfg \
+      -I/app/firmware/platform/posix/include \
+      /app/fault_inject/native/sc_selftest_harness.c \
+      /app/firmware/ecu/sc/src/sc_selftest.c \
+      -o /app/bin/sc_selftest_harness
 
 RUN useradd -r -s /usr/sbin/nologin appuser && chown -R appuser /app
 

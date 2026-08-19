@@ -53,4 +53,16 @@ boolean SC_SelfTest_StackCanaryOk(void);
  */
 boolean SC_SelfTest_IsHealthy(void);
 
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+uint16 SC_SelfTest_TestGetRuntimeTick(void);
+boolean SC_SelfTest_TestGetStartupPassed(void);
+boolean SC_SelfTest_TestGetRuntimeHealthy(void);
+void SC_SelfTest_TestCorruptCanary(void);
+void SC_SelfTest_TestCorruptRam(void);
+#endif /* UNIT_TEST */
+
 #endif /* SC_SELFTEST_H */

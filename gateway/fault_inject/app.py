@@ -1029,6 +1029,45 @@ class ScWatchdogRunBody(BaseModel):
     phases: list[ScWatchdogPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class ScSelfTestPhase(BaseModel):
+    """One phase of the SC self-test harness script.
+
+    Drives SC_SelfTest_Init / SC_SelfTest_Startup / SC_SelfTest_Runtime /
+    SC_SelfTest_StackCanaryOk / SC_SelfTest_IsHealthy against the real
+    sc_selftest.c production code (SWR-SC-016..021: 7-step startup BIST —
+    lockstep, RAM PBIST, flash CRC-32, DCAN loopback, GPIO readback, lamp
+    test, watchdog test — and the 60s-period runtime incremental checks:
+    flash CRC, RAM 32-byte pattern, DCAN error status, GPIO readback), with
+    UNIT_TEST hooks observing the internal runtime tick and health flags and
+    injecting canary / RAM-pattern corruption to drive the failure branches.
+    The seven startup hardware diagnostics and two runtime hardware checks
+    are mocked; every mock counts its invocations so a failing startup step
+    provably blocks the later steps.
+    """
+    op: str = "startup"               # init|startup|runtime|canary
+    b1: int = 1                       # startup: hw_lockstep_bist (0|1)
+    b2: int = 1                       # startup: hw_ram_pbist (0|1)
+    b3: int = 1                       # startup: hw_flash_crc_check (0|1)
+    b4: int = 1                       # startup: hw_dcan_loopback_test (0|1)
+    b5: int = 1                       # startup: hw_gpio_readback_test (0|1)
+    b6: int = 1                       # startup: hw_lamp_test (0|1)
+    b7: int = 1                       # startup: hw_watchdog_test (0|1)
+    flashIncr: int = 1                # runtime: hw_flash_crc_incremental (0|1)
+    dcanErr: int = 1                  # runtime: hw_dcan_error_check (0|1)
+    readback: int = 0                 # runtime: GIO relay pin readback (0|1)
+    corruptCanary: int = 0            # canary: corrupt stack canary before check
+    corruptRam: int = 0               # runtime: corrupt RAM test area byte 0
+    repeats: int = 1                  # runtime: SC_SelfTest_Runtime call count
+
+
+class ScSelfTestSetupBody(BaseModel):
+    phases: list[ScSelfTestPhase] = []
+
+
+class ScSelfTestRunBody(BaseModel):
+    phases: list[ScSelfTestPhase] | None = None  # stimulus phases, appended after stored precondition
+
+
 class ScPlausibilityPhase(BaseModel):
     """One phase of the SC plausibility harness script.
 
@@ -1181,6 +1220,9 @@ _stored_sc_plausibility_phases: list[ScPlausibilityPhase] = []
 # Stored SC watchdog phase script for Given/When separation.
 _stored_sc_watchdog_phases: list[ScWatchdogPhase] = []
 
+# Stored SC self-test phase script for Given/When separation.
+_stored_sc_selftest_phases: list[ScSelfTestPhase] = []
+
 
 # Test runner instance (initialized on startup)
 _test_runner: DashboardTestRunner | None = None
@@ -1220,6 +1262,7 @@ _SC_E2E_HARNESS = "/app/bin/sc_e2e_harness"
 _SC_RELAY_HARNESS = "/app/bin/sc_relay_harness"
 _SC_PLAUSIBILITY_HARNESS = "/app/bin/sc_plausibility_harness"
 _SC_WATCHDOG_HARNESS = "/app/bin/sc_watchdog_harness"
+_SC_SELFTEST_HARNESS = "/app/bin/sc_selftest_harness"
 
 
 def _vehicle_state_value(name: str) -> int:
@@ -1879,6 +1922,7 @@ def _generate_coverage_html():
         ("sc_relay", _SC_RELAY_HARNESS),
         ("sc_plausibility", _SC_PLAUSIBILITY_HARNESS),
         ("sc_watchdog", _SC_WATCHDOG_HARNESS),
+        ("sc_selftest", _SC_SELFTEST_HARNESS),
     ]
 
     # Step 1: per-binary merge + export
@@ -4462,6 +4506,86 @@ def run_sc_watchdog(body: ScWatchdogRunBody):
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="SC watchdog harness returned invalid JSON") from exc
+
+
+def _sc_selftest_phase_to_line(p: ScSelfTestPhase) -> str:
+    """Serialize one SC self-test phase to a single key=value script line."""
+    return " ".join([
+        f"op={p.op}",
+        f"b1={p.b1}",
+        f"b2={p.b2}",
+        f"b3={p.b3}",
+        f"b4={p.b4}",
+        f"b5={p.b5}",
+        f"b6={p.b6}",
+        f"b7={p.b7}",
+        f"flashIncr={p.flashIncr}",
+        f"dcanErr={p.dcanErr}",
+        f"readback={p.readback}",
+        f"corruptCanary={p.corruptCanary}",
+        f"corruptRam={p.corruptRam}",
+        f"repeats={p.repeats}",
+    ])
+
+
+@app.post("/api/test/asw/sc/selftest/setup")
+def setup_sc_selftest(body: ScSelfTestSetupBody):
+    """Store the SC self-test phase script for subsequent run calls that omit phases."""
+    global _stored_sc_selftest_phases
+    _stored_sc_selftest_phases = body.phases
+    return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/sc/selftest")
+def run_sc_selftest(body: ScSelfTestRunBody):
+    """Execute the real SC startup/runtime self-test in a native test harness.
+
+    The `/setup` endpoint stores the precondition phase script (Given context).
+    `body.phases` carries the stimulus phases. The harness runs the
+    concatenated precondition + stimulus script against the real sc_selftest.c
+    production code (SC_SelfTest_Init / SC_SelfTest_Startup /
+    SC_SelfTest_Runtime / SC_SelfTest_StackCanaryOk / SC_SelfTest_IsHealthy),
+    exercising the SWR-SC-016..021 7-step startup BIST (lockstep, RAM PBIST,
+    flash CRC-32, DCAN loopback, GPIO readback, lamp test, watchdog test —
+    each failure returns its step number and blocks the remaining steps) and
+    the 60s-period runtime checks (flash CRC incremental at tick 1, RAM
+    32-byte pattern at tick 1500, DCAN error status at tick 3000, GIO relay
+    readback at tick 4500, wrap at tick 6000). The hardware checks are
+    mocked in-harness with per-call counters; UNIT_TEST hooks observe the
+    internal tick / health flags and inject canary / RAM corruption. The
+    harness is compiled with the production TMS570 logic (no
+    PLATFORM_POSIX/HIL).
+    """
+    stimulus = body.phases if body.phases is not None else []
+    phases = list(_stored_sc_selftest_phases) + list(stimulus)
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided (run /setup first)")
+
+    script = "\n".join(_sc_selftest_phase_to_line(p) for p in phases) + "\n"
+    try:
+        env = os.environ.copy()
+        env["LLVM_PROFILE_FILE"] = os.path.join(_COVERAGE_DIR, "sc_selftest_%p.profraw")
+        completed = subprocess.run(
+            [_SC_SELFTEST_HARNESS],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=_COVERAGE_DIR,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="SC self-test harness not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="SC self-test harness timed out") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() if completed.stderr else completed.stdout.strip()
+        raise HTTPException(status_code=500, detail=detail or "SC self-test harness failed")
+
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="SC self-test harness returned invalid JSON") from exc
 
 
 @app.get("/api/test/asw/cvc/pedal-torque/coverage")

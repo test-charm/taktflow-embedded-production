@@ -182,3 +182,34 @@ boolean SC_SelfTest_IsHealthy(void)
 {
     return (startup_passed == TRUE) && (runtime_healthy == TRUE) ? TRUE : FALSE;
 }
+
+/* ==================================================================
+ * UNIT_TEST-only hooks (never compiled into production firmware)
+ * ================================================================== */
+
+#ifdef UNIT_TEST
+uint16 SC_SelfTest_TestGetRuntimeTick(void)
+{
+    return runtime_tick;
+}
+
+boolean SC_SelfTest_TestGetStartupPassed(void)
+{
+    return startup_passed;
+}
+
+boolean SC_SelfTest_TestGetRuntimeHealthy(void)
+{
+    return runtime_healthy;
+}
+
+void SC_SelfTest_TestCorruptCanary(void)
+{
+    stack_canary = 0u;
+}
+
+void SC_SelfTest_TestCorruptRam(void)
+{
+    ram_test_area[0u] ^= 0xFFu;
+}
+#endif /* UNIT_TEST */
