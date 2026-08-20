@@ -56,6 +56,16 @@ BSW 层（约 10.4k 行 C，跨 MCAL / ECUAL / Services / RTE / OS 五层）已�
 - 最优先的候选是 **E2E、WdgM、BswM、Com、Dem、CanSM** 等安全关键且有状态机的
   服务模块；**不建议**对 MCAL 驱动、SchM、Det、OS bootstrap 做 E2E。
 
+**首条 BSW E2E 链已落地**（2026-08-20）：`bsw_comcfg_cvc.feature`（30 场景 / 180 步）
+直接读回 arxmlgen 生成的 `Com_Cfg_Cvc.c` 数据表（TX/RX PDU、信号位定义、结构不变量），
+验证 DBC 一致性。全量 `./gradlew cucumber` 实测 **788 场景 / 4757 步全部通过**（无回归）。
+
+**第二条 BSW E2E 链已落地**（2026-08-20）：`bsw_rtetaskbodies_cvc.feature`（6 场景 /
+36 步）驱动 arxmlgen 生成的 `Rte_TaskBodies_Cvc.c` 六个 OSEK 任务体，验证 S-OS-11
+runnable 分派顺序、WdgM checkpoint 位置与 TerminateTask 语义。**该生成文件是首个
+进入覆盖率报告并带真实逐行数据的生成配置**（行/函数/区域覆盖 100%）。全量
+`./gradlew cucumber` 实测 **794 场景 / 4793 步全部通过**（无回归）。
+
 ---
 
 ## 当前 BSW 测试清单
@@ -68,10 +78,12 @@ BSW 层（约 10.4k 行 C，跨 MCAL / ECUAL / Services / RTE / OS 五层）已�
 | POSIX 多 ECU 集成 | `test/integration/`（`bsw/` 等子目录） | 若干 | vcan0 上多 ECU 进程，验证 BSW 驱动的总线行为 |
 | SIL 场景 | `test/sil/scenarios/*.yaml` | 16 个 | E2E 拒绝、bus-off、看门狗超时、DTC 广播等系统级 BSW 行为 |
 | HIL 场景 | `test/hil/scenarios/*.yaml`、`test/hil/test_*.py` | 37 + 11 | 真实 CAN 上的 E2E 时序、UDS 诊断栈、调度器 |
-| BSW E2E（BDD） | `e2e-tests/src/test/resources/features/` | **0 个专属 feature** | 尚无直接驱动 `firmware/bsw/` 服务层的 BDD 测试 |
+| BSW E2E（BDD） | `e2e-tests/src/test/resources/features/` | **2 个 feature / 36 场景**（`bsw_comcfg_cvc`、`bsw_rtetaskbodies_cvc`） | 生成配置读回（DBC 一致性）+ 生成任务体分派（S-OS-11） |
 
-> 与 ASW 的对比：ASW 侧已有 37 条 E2E 链 / 758 场景；BSW 服务层这一「中间层」目前
-> 完全依赖单元测试 + SIL/HIL 黑盒测试，缺少 `panda/e2e-tests` 式的可读 BSW E2E 层。
+> 与 ASW 的对比：ASW 侧已有 37 条 E2E 链 / 758 场景；BSW 服务层这一「中间层」
+> 已有两条 BSW E2E 链（`Com_Cfg` 配置一致性、`Rte_TaskBodies` 任务体分派）
+> 落地，其余模块仍依赖单元测试 + SIL/HIL 黑盒测试，`panda/e2e-tests` 式的
+> 可读 BSW E2E 层正在逐步补齐。
 
 ---
 
@@ -200,9 +212,11 @@ Os_MemProt / Os_ServiceProt / Os_TimingProt / Os_Core / Os_Interrupt 等（SWR-B
 
 ## 主要 BSW E2E 覆盖缺口
 
-1. **BSW 服务层无专属 feature**：`Com.c`、`E2E.c`、`WdgM.c`、`BswM.c`、`Dem.c`、
+1. **BSW 服务层专属 feature 仍稀缺**：`Com.c`、`E2E.c`、`WdgM.c`、`BswM.c`、`Dem.c`、
    `CanSM.c`、`CanTp.c`、`FiM.c`、`Rte.c` 均无 `bsw_*.feature` 直接驱动；它们目前
-   只被「SWC E2E（BSW 作 mock）」与「SIL/HIL 黑盒」间接覆盖。
+   只被「SWC E2E（BSW 作 mock）」与「SIL/HIL 黑盒」间接覆盖。**已闭合的缺口**是
+   「生成配置数据表」：`bsw_comcfg_cvc.feature` 已直接读回 arxmlgen 生成的
+   `Com_Cfg_Cvc.c`（TX/RX PDU、信号位定义、结构不变量），验证 DBC 一致性。
 2. **状态机/时序语义未在 BDD 层固化**：`WdgM` 的 FAILED→EXPIRED 容差、`BswM` 的
    前向模式机、`CanSM` 的 L1/L2 升级、`E2E_SM` 的滑窗——这些纯状态迁移最适合用
    feature 的可读步骤固化，目前只存在于 Unity 测试中。
@@ -246,6 +260,29 @@ Os_MemProt / Os_ServiceProt / Os_TimingProt / Os_Core / Os_Interrupt 等（SWR-B
    链接 `firmware/bsw/.../<module>.c` + harness + 必要的 mock/stub 源；沿用
    `-fprofile-instr-generate -fcoverage-mapping` 与 `-DUNIT_TEST`。
 
+> **覆盖率导出正则注意**：`_generate_coverage_html` 已支持**按 harness 覆盖
+> ignore 正则**（harnesses 列表的 tuple 第三元素）。默认忽略
+> `/app/fault_inject/.*`（harness 测试代码）与 `/app/firmware/bsw/.*`（ASW
+> harness 链接的 BSW 依赖）；BSW E2E harness 应按需覆盖——链接真实 BSW 服务
+> 模块（有可执行代码）时去掉 `/app/firmware/bsw/.*`，使 BSW 生产模块进入报告。
+>
+> **纯数据配置（如 `Com_Cfg_<Ecu>.c`）无函数可插桩**：clang 覆盖率只对函数
+> 计数，生成的 `static const` 配置表是编译期常量、零可执行代码，`llvm-cov export`
+> 对该文件返回空轨迹 → 纯数据 harness **不注册进覆盖率 harnesses 列表**
+> （`app.py` 中注有 NOTE），避免空 lcov 轨迹；其数据表以「访问覆盖」口径衡量
+> （每条目是否被读回/遍历），由 feature 的读回场景与结构不变量共同保证。harness
+> 测试代码按约定一律不进 HTML 报告（`/app/fault_inject/.*` 统一忽略），其自身
+> 覆盖（`bsw_comcfg_harness.c` 行 90.23% / 函数 100%）仅经 `llvm-cov` 直接统计
+> 记录在设计文档中。
+>
+> **生成配置代码（如 `Rte_TaskBodies_<Ecu>.c`）有函数、可直接进报告**：该文件
+> 位于 `firmware/ecu/<ecu>/cfg/`，不在默认忽略正则范围内，harness 按默认忽略
+> 注册即可使生成文件进入报告（`bsw_rtetaskbodies_cvc` 实测
+> `Rte_TaskBodies_Cvc.c` 行/函数/区域覆盖 **100%**，见
+> `e2e-tests/build/coverage/firmware/ecu/cvc/cfg/Rte_TaskBodies_Cvc.c.gcov.html`）。
+> 因此生成文件需先判断「纯数据」还是「含函数」：前者走访问覆盖口径 + harness
+> 代码进报告，后者直接产生真实逐行覆盖率。
+
 > 与 ASW harness 的区别：BSW harness 通常需要链接 **Det.c**（或提供 `Det_ReportError`
 > 计数 stub）与 **SchM.c**（UNIT_TEST 变体），并 mock 数量更少的底层依赖，因为 BSW
 > 模块自身就是「底层」。部分模块（Com）在 `UNIT_TEST` 下已将内部 PDU 缓冲非静态化
@@ -254,6 +291,14 @@ Os_MemProt / Os_ServiceProt / Os_TimingProt / Os_Core / Os_Interrupt 等（SWR-B
 ---
 
 ## 扩展优先级与建议顺序
+
+> **已完成**：
+> - `Com_Cfg` 生成配置一致性（`bsw_comcfg_cvc.feature`，30 场景，2026-08-20）。
+>   纯数据表读回，沉淀了「BSW harness + feature + Java + app.py + Dockerfile」
+>   全链路模板。
+> - `Rte_TaskBodies` 生成任务体分派（`bsw_rtetaskbodies_cvc.feature`，6 场景，
+>   2026-08-20）。首个**带真实逐行覆盖率的生成文件**（`Rte_TaskBodies_Cvc.c`
+>   行/函数/区域 100%），证明「生成配置代码」与「纯数据配置」需区分覆盖口径。
 
 ### 高优先级（ASIL D 安全关键、有状态机、与 SWC E2E 互补）
 
@@ -320,6 +365,19 @@ DTO/spec/Factory、`app.py` 端点与 `Dockerfile` 编译段。
   HIL 目标验证。
 - **`SchM`**：UNIT_TEST 变体用布尔跟踪 IRQ 状态，非 UNIT_TEST 才调 `__disable_irq`；
   E2E harness 应编译 UNIT_TEST 变体（无硬件指令）。
+- **纯数据配置（`Com_Cfg_<Ecu>.c`）无函数可插桩**（首条 BSW E2E 实测结论）：
+  clang 覆盖率只对函数计数，生成的 `static const` 配置表是编译期常量、零可执行
+  代码，对该文件 `llvm-cov export` 返回空轨迹 → 纯数据 harness **不注册进
+  覆盖率 harnesses 列表**（加入只会产生空 lcov 轨迹）；数据表本身以「数据表
+  访问覆盖」口径衡量（每条目是否被读回/遍历）。harness 测试代码（含
+  `bsw_comcfg_harness.c`，实测行 90.23% / 分支 75.96% / 函数 100%）一律不进
+  HTML 报告，其覆盖仅经 `llvm-cov` 直接统计记录在设计文档。未覆盖行均为
+  「合法输入下不可达」的枚举分支（CVC 配置无 MIXED/SINT16/BOOL）、结构不变量
+  失败分支（配置正确时恒假，正是测试要防护的 codegen bug）与无效输入错误路径。
+- **生成配置代码（`Rte_TaskBodies_<Ecu>.c`）可直接进报告**（第二条 BSW E2E
+  实测结论）：有函数的生成文件按默认忽略注册即可，报告显示真实逐行覆盖
+  （`Rte_TaskBodies_Cvc.c` 行/函数/区域 100%）。Idle 任务的死循环在 harness 用
+  `setjmp`/`longjmp` 限定迭代次数覆盖，属测试专用机制（生产代码不变）。
 
 ---
 
@@ -327,8 +385,10 @@ DTO/spec/Factory、`app.py` 端点与 `Dockerfile` 编译段。
 
 BSW 层的单元与集成测试覆盖扎实，但缺少与 ASW 对等的**可读 BDD 端到端测试层**。
 现有 ASW E2E 框架（native harness + feature + 覆盖率）可直接复用，最大缺口集中在
-**Services 层的有状态安全关键模块**（E2E、WdgM、BswM、Com、Dem、CanSM）。按
-`E2E → WdgM → BswM → Com → Dem → CanSM →（CanTp/FiM/Rte/CanIf+PduR）` 的顺序扩展，
+**Services 层的有状态安全关键模块**（E2E、WdgM、BswM、Com、Dem、CanSM）。已落地
+两条 BSW E2E 链（`bsw_comcfg_cvc` 配置一致性、`bsw_rtetaskbodies_cvc` 任务体分派）
+并验证全量无回归，后者更让**生成配置代码**首次以 100% 真实逐行覆盖率进入报告。
+按 `E2E → WdgM → BswM → Com → Dem → CanSM →（CanTp/FiM/Rte/CanIf+PduR）` 的顺序扩展，
 可在保持「DBC 为真、生成不手改、平台抽象、fail-closed」原则的同时，把 BSW 服务层
 的关键行为以业务可读的 feature 固化下来，补足当前 SIL/HIL 黑盒测试与 Unity 单元测试
 之间的中间层。
