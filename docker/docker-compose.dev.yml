@@ -79,8 +79,10 @@ services:
       - ECU_NAME=cvc
       - SPI_PEDAL_UDP_PORT=9100
       - SIL_TIME_SCALE=${SIL_TIME_SCALE:-1}
+      - LLVM_PROFILE_FILE=/cov/cvc_%p.profraw
     volumes:
       - nvm_cvc:/tmp
+      - cov:/cov
     healthcheck:
       test: ["CMD-SHELL", "ip link show vcan0 2>/dev/null | grep -q UP || ip link show can0 2>/dev/null | grep -q UP"]
       interval: 30s
@@ -507,6 +509,8 @@ services:
       - SIL_TIME_SCALE=${SIL_TIME_SCALE:-1}
       - DOCKER_HOST=tcp://127.0.0.1:2375
       - FAULT_API_KEY=${FAULT_API_KEY:-}
+    volumes:
+      - cov:/cov
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/api/fault/health')\""]
       interval: 30s
@@ -551,3 +555,4 @@ volumes:
   nvm_cvc:
   nvm_fzc:
   nvm_rzc:
+  cov:

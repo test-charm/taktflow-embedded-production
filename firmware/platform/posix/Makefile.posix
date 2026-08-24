@@ -20,6 +20,18 @@ COV_CFLAGS  =
 COV_LDFLAGS =
 CFLAGS += -Og -g3 -DDEBUG
 
+# LLVM runtime coverage for SIL true-E2E: instrument the real ECU binary so
+# the vcan0 bus tests naturally produce .profraw for the gateway collector.
+# SIL-only (not for the physical STM32/TMS570 builds).
+ifdef LLVM_COV
+  CC = clang
+  CFLAGS += -fprofile-instr-generate -fcoverage-mapping -DSIL_COVERAGE
+  LDFLAGS += -fprofile-instr-generate
+  BSW_SRCS_COV = $(PLAT)/src/Sil_Coverage.c
+else
+  BSW_SRCS_COV =
+endif
+
 ifdef DIAG
   CFLAGS += -DSIL_DIAG
 endif
@@ -152,7 +164,7 @@ endif
 ECU_SRCS_ALL = $(wildcard $(ECU)/$(TARGET)/src/*.c) $(wildcard $(ECU)/$(TARGET)/cfg/*.c)
 ECU_HW_POSIX = $(wildcard $(PLAT)/src/$(TARGET)_hw_posix.c)
 ECU_SRCS = $(filter-out %_stm32.c %_tms570.c,$(ECU_SRCS_ALL)) $(ECU_HW_POSIX)
-APP_SRCS = $(BSW_SRCS) $(ECU_SRCS)
+APP_SRCS = $(BSW_SRCS) $(BSW_SRCS_COV) $(ECU_SRCS)
 endif
 
 # --- Object files and output ---

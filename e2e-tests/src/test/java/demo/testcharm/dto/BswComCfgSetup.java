@@ -6,9 +6,8 @@ import lombok.Setter;
 import java.util.List;
 
 /**
- * BSW Com config readback phase script. Each phase drives one segment of the
- * {@code bsw_comcfg_<ecu>_harness} native harness (reads the generated
- * Com_Cfg_<Ecu>.c data tables back).
+ * BSW Com config phase script. Each phase is a bus-probe op consumed by
+ * /api/test/bsw/comcfg/cvc (true end-to-end over vcan0).
  */
 @Getter
 @Setter

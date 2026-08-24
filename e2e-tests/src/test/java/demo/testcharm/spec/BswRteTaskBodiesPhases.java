@@ -8,8 +8,12 @@ public class BswRteTaskBodiesPhases {
         @Override
         public void main() {
             property("op").defaultValue(null);
-            property("task").defaultValue(null);
-            property("idleIters").defaultValue(null);
+            property("targets").defaultValue(null);
+            property("windowMs").defaultValue(null);
+            property("minFrames").defaultValue(null);
+            property("periodTolerancePct").defaultValue(null);
+            property("budgetMs").defaultValue(null);
+            property("restartCvc").defaultValue(null);
         }
     }
 }

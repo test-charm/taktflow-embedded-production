@@ -8,8 +8,10 @@ public class BswComCfgPhases {
         @Override
         public void main() {
             property("op").defaultValue(null);
-            property("id").defaultValue(null);
-            property("table").defaultValue(null);
+            property("targets").defaultValue(null);
+            property("windowMs").defaultValue(null);
+            property("minFrames").defaultValue(null);
+            property("periodTolerancePct").defaultValue(null);
         }
     }
 }

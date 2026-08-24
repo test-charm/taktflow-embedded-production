@@ -7,38 +7,55 @@
 #
 # Build:  docker build -f Dockerfile.vecu -t taktflow/vecu .
 # Run:    docker run --network host --cap-add NET_ADMIN -e ECU_NAME=bcm taktflow/vecu
+#
+# The CVC binary is additionally built with LLVM_COV=1 (clang
+# -fprofile-instr-generate): the true-E2E vcan0 tests then naturally produce
+# .profraw for the gateway coverage collector. The runtime image uses a
+# shared /cov directory (mounted volume) owned by the runtime user, and
+# LLVM_PROFILE_FILE defaults to /tmp so non-coverage runs stay benign.
+# Silicon coverage is SIL-simulation infrastructure only.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
 # Build stage — compile all 7 ECU binaries with POSIX/SocketCAN backend
+# Debian trixie: matches the fault-inject gateway's clang (19) so the ECU
+# .profraw (raw profile version 10) merges in the gateway coverage step.
 # ---------------------------------------------------------------------------
-FROM ubuntu:22.04 AS builder
+FROM debian:trixie-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    clang \
+    libclang-rt-dev \
     can-utils \
     libsocketcan-dev \
     iproute2 \
     libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY firmware/ /build/firmware/
-WORKDIR /build
+COPY firmware/ /app/firmware/
+WORKDIR /app
 
 # Build all 7 simulated ECU binaries.
-# CRITICAL: clean between each ECU — shared BSW .o files in build/ are compiled
-# with per-ECU config includes (Com_Cfg, Rte_Cfg, etc.). Without cleaning,
-# later ECUs link against the first ECU's config objects → silent malfunction.
+# Build in /app not /build so clang records source paths as /app/firmware/...,
+# matching the fault-inject gateway's firmware copy (where lcov merges the
+# coverage traces).
+# CVC carries LLVM coverage instrumentation (LLVM_COV=1) so the true-E2E
+# bus tests produce coverage for the gateway collector; the remaining ECUs
+# build with the default gcc flags.
 # DIAG=1 enables SIL diagnostic printf for state machine tracing.
-RUN set -e && for ecu in bcm icu tcu cvc fzc rzc sc; do \
+RUN set -e && for ecu in bcm icu tcu fzc rzc sc; do \
         echo "=== Building $ecu ===" && \
         make -f firmware/platform/posix/Makefile.posix TARGET=$ecu DIAG=1; \
-    done
+    done && \
+    echo "=== Building cvc (LLVM_COV, instrumented) ===" && \
+    make -f firmware/platform/posix/Makefile.posix TARGET=cvc LLVM_COV=1 DIAG=1
 
 # ---------------------------------------------------------------------------
-# Runtime stage — minimal image with CAN utilities
+# Runtime stage — minimal image with CAN utilities (Debian trixie, matches
+# the builder's glibc and the fault-inject gateway's clang version).
 # ---------------------------------------------------------------------------
-FROM ubuntu:22.04
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     can-utils \
@@ -47,19 +64,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy compiled binaries from builder
-COPY --from=builder /build/build/bcm/bcm_posix /usr/local/bin/bcm
-COPY --from=builder /build/build/icu/icu_posix /usr/local/bin/icu
-COPY --from=builder /build/build/tcu/tcu_posix /usr/local/bin/tcu
-COPY --from=builder /build/build/cvc/cvc_posix /usr/local/bin/cvc
-COPY --from=builder /build/build/fzc/fzc_posix /usr/local/bin/fzc
-COPY --from=builder /build/build/rzc/rzc_posix /usr/local/bin/rzc
-COPY --from=builder /build/build/sc/sc_posix   /usr/local/bin/sc
+COPY --from=builder /app/build/bcm/bcm_posix /usr/local/bin/bcm
+COPY --from=builder /app/build/icu/icu_posix /usr/local/bin/icu
+COPY --from=builder /app/build/tcu/tcu_posix /usr/local/bin/tcu
+COPY --from=builder /app/build/cvc/cvc_posix /usr/local/bin/cvc
+COPY --from=builder /app/build/fzc/fzc_posix /usr/local/bin/fzc
+COPY --from=builder /app/build/rzc/rzc_posix /usr/local/bin/rzc
+COPY --from=builder /app/build/sc/sc_posix   /usr/local/bin/sc
 
 # Default CAN interface (host vcan0 via network_mode: host)
 ENV CAN_INTERFACE=vcan0
 
-# Run as non-root
-RUN useradd -r -s /usr/sbin/nologin vecu
+# LLVM profile runtime write target; a shared /cov volume overrides this in
+# docker-compose.dev.yml so the gateway collector can read the .profraw.
+ENV LLVM_PROFILE_FILE=/tmp/cvc_%p.profraw
+
+# Run as non-root. /cov is the shared coverage volume (see compose).
+RUN useradd -r -s /usr/sbin/nologin vecu \
+    && mkdir -p /cov && chown vecu:vecu /cov
 USER vecu
 
 # ECU_NAME selects which binary to run (bcm|icu|tcu|cvc|fzc|rzc|sc)

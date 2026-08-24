@@ -68,6 +68,10 @@ void Main_Hw_Wfi(void)
 {
 #ifndef PLATFORM_POSIX_TEST
     Sil_Time_Sleep(1000u); /* 1ms virtual — actual duration = 1ms / SIL_TIME_SCALE */
+#ifdef SIL_COVERAGE
+    extern void Sil_Coverage_Periodic(void);
+    Sil_Coverage_Periodic();
+#endif
 #endif
 }
 
