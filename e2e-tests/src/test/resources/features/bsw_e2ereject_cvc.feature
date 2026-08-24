@@ -181,6 +181,34 @@
       body.json.results[0].state.injectedOnBus >= 1 = true
       """
 
+    场景: Lidar_Distance（0x220, dataId=13, SM 窗口 invalid=10）损坏被拒，行为不变
+      与 Motor_Current 不同，Lidar_Distance 的 `E2eSmWindowInvalid=10`（DBC
+      30ms 周期），需连续 ≥10 坏帧才锁存 INVALID——补充覆盖不同 SM 窗口
+      配置下的拒帧（对应 `test_SM_*` 状态机的真实运行）。
+      当POST "/api/test/bsw/e2ereject/cvc":
+      """
+      {
+        "phases": [
+          { "op": "corrupt", "target": "Lidar_Distance", "mode": "dataid",
+            "count": 12, "intervalMs": 10 }
+        ]
+      }
+      """
+      那么response should be:
+      """
+      body.json.results[0].state: {
+        found: true
+        busUp: true
+        behaviourUnchanged: true
+        cvCheartbeatValid: true
+        vehicleStateValid: true
+      }
+      """
+      那么response should be:
+      """
+      body.json.results[0].state.injectedOnBus >= 1 = true
+      """
+
   规则: 真端到端 — fail-closed（目标消息无 E2E 保护 → 拒绝并说明）
 
     场景: 对无 E2E 保护的消息请求损坏（fail-closed，不崩溃）

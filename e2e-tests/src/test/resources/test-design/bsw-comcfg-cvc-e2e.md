@@ -117,6 +117,19 @@ Alive/CRC）。配置一旦与 DBC 脱节（DLC 错、周期错、E2E DataId 错
 |---|---|---|
 | `probe_body_control_cmd` | P0: bus-probe targets=["Body_Control_Cmd"] | found=true, dlc=4, dlcOk=true, cycleMs=100, cycleOk=true, e2e=false |
 
+### 规则: 真端到端 — UDS 诊断链路（PduR→CanTp→Dcm 真实路由）
+
+> 与 HIL `test_hil_uds.py` 同族：向 CVC 0x7E0 发 UDS ReadDataByIdentifier 并观测
+> 0x7E8 响应。驱动 RX 链（CanIf→PduR→CanTp→Dcm）与 TX 链（Dcm→CanTp→CanIf→
+> Can_Write）——把单元测试 `test_PduR_RxIndication_routes_to_can*/to_dcm`、
+> `test_CanTp_*` 与 HIL UDS 的路径转为真实总线行为；实测 PduR `case CANTP`
+> 分支（L63-66）命中 12 次、CanTp.c 处理行命中 16 行。
+
+| 用例 | 阶段序列 | 关键断言 |
+|---|---|---|
+| `uds_read_did_f190` | P0: uds did=61840(=0xF190) | found=true, requestSent=true, responseSeen=true, responseSid=98(=0x62), hasData=true（正响应，Dcm 读 DID 真实返回 "CVC1"） |
+| `uds_unknown_did_nrc` | P0: uds did=65535(=0xFFFF) | found=true, responseSeen=true, responseSid=127(=0x7F), hasData=false, nrc=49(=0x31)（负响应——无 DID 时 NRC，路由仍正确） |
+
 ### 规则: 真端到端 — fail-closed
 
 | 用例 | 阶段序列 | 关键断言 |
@@ -159,16 +172,120 @@ BSW 生产模块（节选）：
 
 | 文件 | 行（命中/总） | 说明 |
 |---|---:|---|
-| `bsw/services/Com/src/Com.c` | 374 / 570 | 真实信号打包、周期 TX、E2E 集成执行 |
-| `bsw/services/E2E/src/E2E.c` | 98 / 155 | 真实 Protect/Check（bus-probe 每帧校验） |
+| `bsw/services/Com/src/Com.c` | 410 / 570 | 真实信号打包、周期 TX、E2E 集成执行 |
+| `bsw/services/E2E/src/E2E.c` | 109 / 155 | 真实 Protect/Check（bus-probe 每帧校验） |
 | `bsw/services/E2E/src/E2E_Sm.c` | 13 / 76 | RX 监督（帧持续有效） |
 | `bsw/ecual/PduR/src/PduR.c` | 26 / 60 | 路由真实执行 |
 | `bsw/ecual/CanIf/src/CanIf.c` | 37 / 67 | 收发路径 |
 | `bsw/mcal/Can/src/Can.c` | 67 / 179 | MCAL 真实驱动 |
 | `bsw/rte/src/Rte.c` | 88 / 120 | 分派 |
-| `platform/posix/src/Can_Posix.c` | 104 / 159 | SocketCAN 真实收发 |
+| `platform/posix/src/Can_Posix.c` | 106 / 159 | SocketCAN 真实收发 |
 
 > 报告源码文件合计约 178 个（含 `.c` 与 `.h`）。**覆盖 = 总线测试自身执行**。
+
+### 覆盖率实测：逐行覆盖映射
+
+> 口径说明：数据来自**全量 e2e 回归后的最终报告**（`e2e-tests/build/coverage/`，真实 CVC SIL ECU 插桩 `.profraw` 经网关合并、对 `/app/firmware/bsw` **不 ignore**）。"命中"为该行/行段的实测调用次数（`llvm-cov export` 计数值）；"覆盖来源"把行段归属到驱动它的**主场景**——真实运行时被所有 feature 共享，bus-probe/cadence 是 TX 链路径主来源，E2E 拒帧/RX 收帧链路与 `bsw_e2ereject_cvc` 共享。行号对应所附报告源文件。
+
+#### 1. `firmware/bsw/services/Com/src/Com.c`（可执行 570 行，命中 **410**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 97-104 | `com_get_byte_offset`（信号位偏移查找） | 逐行 | 常态：每条 TX 信号打包 |
+| 107-133 | `com_pack_signal_to_pdu`（位域写入共享缓冲） | 逐行 | 常态：Com_MainFunction_Tx 打包 |
+| 140-208 | `Com_Init`（配置指针/DUB buffer 清零/E2E 初始化） | 118-133/136-195/200-206 等 | ECU 启动（main.c `Com_Init`） |
+| 212-256 | `Com_SendSignal`（TX 信号写共享缓冲 + E2E 封包） | 216-226/233-256 | ASW 写信号（EStop/Pedal/VehicleState 等 SWC 周期写） |
+| 264-311 | `Com_ReceiveSignal`（RX 信号读共享缓冲） | 271-282 等 | 常态：SWC 读 RX 信号 |
+| **360-404** | `Com_RxIndication` 入口：拷贝 PDU、清超时、查 `rxPduConfig` | 逐行 | 常态：每条 E2E 保护 RX 帧（含损坏帧） |
+| **408-522** | E2E 检查 + 拒帧（影子清零/RTE 写 0）+ Dem FAILED/PASSED | 413-522（拒帧 424-432 命中 4422 次） | RX 常态 + `bsw_e2ereject_cvc` 损坏帧 |
+| 537-604 | `Com_TriggerIPDUSend`（DIRECT 直发） | 539-545 等**未命中 586-604** | 生成配置全 PERIODIC，无 DIRECT TX；DTC 广播由 Dem 内部直发 |
+| **606-754** | `Com_MainFunction_Tx`（周期 TX：启动延时、E2E Protect、CanIf_Transmit、TX 卡死检测） | 608-754 主路径 | bus-probe/cadence 常态 10ms 周期发送（VS/Torque/Steer/Heartbeat/EStop） |
+| 756-839 | `Com_MainFunction_Rx`（超时监视 + CommStatus 写） | 758-836 | 常态；`COMM_TIMEOUT` 分支（821-824）未触发（Bounded bandwidth ok） |
+
+> 未命中主面：**DET/`NULL_PTR` 防御守卫**（240-248、283、291-296、307-308、318-330、342-353、512、532-536 等——真实 CAN 链路不可能传入非法参数，由 Det 报告 + 单元负向测试固化）、**TX 周期未到/未 pending 跳过分支**（613-615、632-633、648、659、661-666、683-685、737、740-744、762-763、803-807——正常周期 TX 每帧必发）、**TX 卡死超时**（821-824，无 stuck）、**启动延时静默分支**（527，非启动期）。
+
+#### 2. `firmware/bsw/services/E2E/src/E2E.c`（可执行 155 行，命中 **109**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 67-80 | `E2E_ComputePduCrc`（CRC-8 SAE-J1850） | 逐行 | 常态：TX Protect/RX Check 每帧 |
+| 84-100 | `E2E_Init` | 逐行 | ECU 启动清零 |
+| 102-150 | `E2E_Protect`（DataId/Alive/CRC 写入） | 101-151 主路径 | 常态：每条 TX E2E 帧（bus-probe 断言 dataId/crcValid） |
+| 152-237 | `E2E_Check`（DATAID/CRC/SEQ/REPEATED/LENGTH 判定） | 157-221 主判定路径 | 常态 RX + 损坏帧（dataid/crc/replay/seq 各模式） |
+| **255-332** | `E2E_SMInit` / `E2E_SMCheck`（滑窗监督——Com 收路径实际调用） | 260-324 主状态机 | 常态 RX 帧 + `bsw_e2ereject_cvc` INVALID 锁存/恢复 |
+
+> 未命中主面：`E2E_Check` 各错误返回的 **Det 防御/NULL 守卫**（89-98、111-134、165-191——真实 PDU 非 NULL）、**长度变异分支**（L185-188 结构性不可达：Com.c 把 `DataLength` 设为收到帧实际长度）、`E2E_Protect` 的 NULL `Config` 防御（L258-259 语义）、SM 的 `Config==NULL`/`windowSize==0/default` 防御（270-271、308、325-328）。
+
+#### 3. `firmware/bsw/services/E2E/src/E2E_Sm.c`（可执行 76 行，命中 **13**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 27-42 | `E2E_Sm_Init`（窗口清零） | 逐行 | ECU 启动（Com_Init 关联状态复位） |
+| 44-124 | `E2E_Sm_Check`（滑窗评估/状态跃迁） | **未命中** | 真实收路径调用的是 **E2E.c 的 `E2E_SMCheck`**；此文件为**另一独立滑窗实现**，仅单元测试 `test_E2E_Sm_asild.c` 链接，属单元固化面 |
+
+#### 4. `firmware/bsw/ecual/PduR/src/PduR.c`（可执行 60 行，命中 **26**；含 `uds` 场景驱动的 CANTP 分支 +3 行 → **29**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 22-33 | `PduR_Init` | 30-34（NULL 守卫 25-29 未命中） | ECU 启动 |
+| 35-80 | `PduR_CanIfRxIndication`（按 RxPduId 查路由表 → COM/CANTP/XCP 分支） | 48-57（COM 分支）+ **63-66（CANTP 分支，命中 12）** 逐行 | 常态 RX → COM；**`uds` 场景**：0x7E0 路由表 `PDUR_DEST_CANTP` → CanTp（UDS 诊断） |
+| 82-96 | `PduR_Transmit`（Com→CanIf） | 74-96 主路径 | 常态：每条 TX 帧（Com_MainFunction_Tx） |
+| 98-108 | `PduR_DcmTransmit` / `PduR_CanTpTransmit` | **未命中** | UDS 单帧（SF ≤7 字节）由 CanTp 直接透发 CanIf，不经过这两个聚合入口；长 ISO-TP 多帧/FD 场景由 HIL UDS 覆盖 |
+
+> 未命中主面：**DET/NULL 守卫**（40-47、85-92）、未使用的路由目标分支 **DCM/XCP**（59-62、67-70——CVC 生成配置无 DCM 直接 RX；XCP 通道未在 BSW 场景请求）、未知 PDU ID 静默丢弃（72——RX 路由表已覆盖全部总线上帧）。
+
+#### 4b. `firmware/bsw/services/CanTp/src/CanTp.c`（新——`uds` 场景驱动）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 55+ | `CanTp_RxIndication`（UDS 单帧接收/重组） | 处理行命中 16 | **`uds` 场景**：0x7E0 单帧请求 → CanTp 解析 → Dcm；（原本 e2e 报告中该文件几乎无覆盖） |
+
+#### 5. `firmware/bsw/ecual/CanIf/src/CanIf.c`（可执行 67 行，命中 **37**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 23-34 | `CanIf_Init` | 31-35（NULL 守卫 26-30 未命中） | ECU 启动 |
+| 36-71 | `CanIf_Transmit`（PduId→CAN ID 映射 + `Can_Write`） | 54-71 主路径 | 常态：每条 TX 帧（bus-probe 断言帧属性来源） |
+| 73-111 | `CanIf_RxIndication`（CAN ID→PduId 查表 → PduR） | 87-109 查表/路由逐行 | 常态：每条 RX 帧；未知 ID 静默丢弃（110——总线上确实存在 XCP/UDS 回应等未路由 ID） |
+| 113-118 | `CanIf_ControllerBusOff` | **未命中** | SIL 栈 vcan0 无总线关闭；bus-off 处理由 Can.c 侧同名前缀在 HIL 覆盖 |
+
+> 未命中主面：**DET/NULL 守卫**（41-53、79-86）、**`e2eRxCheck` 回调**（92-98——CVC 生成配置该回调为 NULL，E2E 检查在 Com 层做）。
+
+#### 6. `firmware/bsw/mcal/Can/src/Can.c`（可执行 179 行，命中 **67**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 54-71 | `Can_Init` | 62-70 主路径（NULL 守卫 57-60 未命中） | ECU 启动 |
+| 83-119 | `Can_SetControllerMode` | 95-101（`STARTED`：SIL 控制器正常启动） | ECU 启动；`STOPPED` 回转分支（104-111）无场景 |
+| 127-189 | `Can_Write` | 132-157（状态/参数校验通过 + `Can_Hw_Transmit`） | 常态：每条 TX 帧 |
+| 191-212 | `Can_MainFunction_Write`（软件 TX 队列 drain） | 193-196（队列空直接返回） | 常态每 tick；**入队/drain 路径（159-211）未走**——Can_Posix `sendto` 从不忙，SW 队列永不填充 |
+| 214-241 | `Can_MainFunction_Read`（RX 循环 → `CanIf_RxIndication`） | 216-242 逐行 | 常态：总线每帧 RX（0x011/0x012 计数跟踪命中） |
+| 243-266 | `Can_MainFunction_BusOff` | 245-248、258-266（非 bus-off 路径） | 常态每 tick；**bus-off 上报/恢复分支（249-257）未走**（vcan0 无错误帧） |
+| 268-293 | `Can_GetErrorCounters` / `Can_GetControllerErrorState` | **未命中** | 诊断 API，CVC 总线场景未调用（单元/ASW 诊断场景覆盖） |
+
+#### 7. `firmware/platform/posix/src/Can_Posix.c`（可执行 159 行，命中 **106**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 70-145 | `Can_Hw_Init`（socket→bind→setsockopt≤→drain→fd） | 72-146 主路径 | ECU 启动（真实 vcan0 绑定） |
+| 176-212 | `Can_Hw_Transmit` + `Can_Posix_TrackTx` | 178-205 主路径 | 常态：每条 TX 帧上 vcan0 |
+| 227-245 | `can_posix_is_own_tx`（loopback 过滤） | 229-246 | 常态：RX 时跳过自身回环帧 |
+| 247-289 | `Can_Hw_Receive`（非阻塞收帧删 own-TX） | 255-298 主路径 | 常态：总线每帧 RX |
+| 295-298 | `Can_Hw_IsBusOff` / `Can_Hw_GetErrorCounters` | 297-298（IsBusOff 命中；GetErrorCounters 未命中） | 常态每 tick；错误计数诊断未调用 |
+
+> 未命中主面：**socket/ioctl/bind 失败错误路径**（82-100、109-114），以及 `fd<0`/`NULL` 守卫、`dlc>8` clamp（188-195，发送的帧 DLC 均合规）、`sendto` 失败 → bus_off（207-209，vcan0 不丢帧）。
+
+#### 8. `firmware/bsw/rte/src/Rte.c`（可执行 120 行，命中 **88**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 40-105 | `Rte_DispatchRunnables`（优先级选择 → 执行 → WdgM checkpoint） | 42-102 主路径 | 常态：1ms/10ms/50ms 任务链分派（cadence 及其它周期 feature） |
+| 116-159 | `Rte_Init` | 142-158（正常配置路径） | ECU 启动 |
+| 167-186 | `Rte_Write` | 169-185（含 bounds check 通过） | 常态：SWC/Com 写信号（含拒帧写 0 分支命中） |
+| 194-218 | `Rte_Read` | 196-217（含 bounds check 通过） | 常态：SWC 读信号 |
+| 225-235 | `Rte_MainFunction` | 231-235（tick 递增 + 分派） | 常态：1ms 主循环调用 |
+
+> 未命中主面：`Rte_DispatchRunnables` 的 **NULL 函数指针防御**（67-69）、`Rte_Init` 越界拒绝（129-133、136-140——真实配置合法）、`Rte_Read/Write` 的 **DET 越界/NULL 路径**（177-179、197-204、209-211——运行时信号 ID 全部在配置内）。
 
 ---
 
@@ -176,8 +293,8 @@ BSW 生产模块（节选）：
 
 | 命令 | 结果 |
 |---|---|
-| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber -Pfile=src/test/resources/features/bsw_comcfg_cvc.feature` | **6 scenarios / 36 steps passed**（bus-probe 真端到端；需 SIL 栈运行） |
-| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber` | **768 scenarios / 4637 steps passed**（含本 feature，无回归） |
+| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber -Pfile=src/test/resources/features/bsw_comcfg_cvc.feature` | **8 scenarios / 49 steps passed**（bus-probe×6 + UDS 诊断链路×2；需 SIL 栈运行） |
+| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber` | **781 scenarios / 4719 steps passed**（含本 feature，无回归） |
 
 ## 无法覆盖的代码说明
 

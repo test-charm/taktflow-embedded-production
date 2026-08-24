@@ -251,6 +251,93 @@ def probe_live_messages(encoder: CanEncoder, targets,
 
 
 # ---------------------------------------------------------------------------
+# UDS diagnostic request probe (PduR->Dcm->CanTp chain, HIL-UDS family)
+# ---------------------------------------------------------------------------
+
+def uds_read_did_probe(did: int = 0xF190,
+                       req_id: int = 0x7E0, resp_id: int = 0x7E8,
+                       observe_ms: float = 1500.0) -> dict:
+    """Send a UDS ReadDataByIdentifier (0x22) request to CVC over vcan0.
+
+    Drives the real diagnostic RX chain (CanIf -> PduR -> Dcm -> CanTp) and
+    the Dcm TX response (PduR_DcmTransmit -> CanIf -> Can_Write). Returns a
+    fail-closed state (found=false) when the bus is unavailable. The request
+    is deliberately sent without a session switch (0x10) so the probe has no
+    side effects on the running Dcm session.
+    """
+    import socket as _socket
+    import struct as _struct
+    import time as _time
+
+    try:
+        sock = _socket.socket(_socket.PF_CAN, _socket.SOCK_RAW, _socket.CAN_RAW)
+        sock.bind(("vcan0",))
+        sock.settimeout(0.05)
+    except OSError as exc:
+        log.warning("UDS probe: cannot open vcan0: %s", exc)
+        return {"found": False, "busUp": False, "requestSent": False,
+                "responseSeen": False, "did": did}
+
+    def _send(payload: bytes) -> None:
+        data = bytes([len(payload)]) + payload          # ISO-TP single frame
+        sock.send(_struct.pack("=IB3x8s", req_id, len(data),
+                               data + b"\x00" * max(0, 8 - len(data))))
+
+    resp_payload = b""
+    response_seen = False
+    try:
+        _send(bytes([0x22, (did >> 8) & 0xFF, did & 0xFF]))
+        deadline = _time.time() + observe_ms / 1000.0
+        while _time.time() < deadline:
+            try:
+                frame = sock.recv(24)
+            except _socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(frame) < 16:
+                continue
+            can_id = _struct.unpack("=I", frame[:4])[0] & 0x7FF
+            dlc = frame[4] & 0x0F
+            data = frame[8:8 + dlc]
+            if can_id != resp_id or not data:
+                continue
+            pci = data[0]
+            if (pci >> 4) != 0:          # only handle ISO-TP single frame
+                continue
+            sf_len = pci & 0x0F
+            resp_payload = data[1:1 + sf_len]
+            response_seen = True
+            break
+    finally:
+        try:
+            sock.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    state = {"found": response_seen, "busUp": True, "requestSent": True,
+             "responseSeen": response_seen, "did": did}
+    if not response_seen:
+        state["responseSid"] = None
+        state["hasData"] = False
+        return state
+    resp_sid = resp_payload[0] if resp_payload else None
+    state["responseSid"] = int(resp_sid) if resp_sid is not None else None
+    state["responseLength"] = len(resp_payload)
+    # 0x62 = positive response to 0x22; 0x7F = negative (request correctly
+    # routed and processed — NRC in the payload)
+    if resp_sid == 0x62 and len(resp_payload) >= 3:
+        state["hasData"] = True
+        state["payloadHex"] = resp_payload[3:].hex()
+    elif resp_sid == 0x7F and len(resp_payload) >= 3:
+        state["hasData"] = False
+        state["nrc"] = int(resp_payload[2])
+    else:
+        state["hasData"] = False
+    return state
+
+
+# ---------------------------------------------------------------------------
 # E-stop FTTI probe (task-body cadence consequence, SIL-003-style)
 # ---------------------------------------------------------------------------
 

@@ -172,6 +172,62 @@
       }
       """
 
+  规则: 真端到端 — UDS 诊断链路（PduR→Dcm→CanTp 真实路由）
+    与 HIL `test_hil_uds.py` 同族：向 CVC 0x7E0 发 UDS 请求，观测 0x7E8 响应。
+    驱动 RX 链（CanIf→PduR→Dcm→CanTp）与 TX 链（PduR_DcmTransmit→CanIf→
+    Can_Write）——单元测试 `test_PduR_RxIndication_routes_to_dcm` 与
+    `test_PduR_DcmTransmit_delegates_to_pdur_transmit` 覆盖的路径在此转为
+    真实总线行为。
+
+    场景: UDS 读取 DID 0xF190 → 0x62 正响应（诊断链路端到端）
+      当POST "/api/test/bsw/comcfg/cvc":
+      """
+      {
+        "phases": [
+          { "op": "uds", "did": 61840 }
+        ]
+      }
+      """
+      那么response should be:
+      """
+      body.json.results[0].state: {
+        found: true
+        busUp: true
+        ecu: "cvc"
+        requestSent: true
+        responseSeen: true
+        responseSid: 98
+        did: 61840
+        hasData: true
+      }
+      """
+
+    场景: UDS 未知 DID → 0x7F 负响应（路由仍正确处理，NRC 31）
+      当POST "/api/test/bsw/comcfg/cvc":
+      """
+      {
+        "phases": [
+          { "op": "uds", "did": 65535 }
+        ]
+      }
+      """
+      那么response should be:
+      """
+      body.json.results[0].state: {
+        found: true
+        busUp: true
+        ecu: "cvc"
+        requestSent: true
+        responseSeen: true
+        responseSid: 127
+        hasData: false
+      }
+      """
+      那么response should be:
+      """
+      body.json.results[0].state.nrc = 49
+      """
+
   规则: 真端到端 — fail-closed（查找失败不崩溃）
 
     场景: 未知消息探测 fail-closed（查不到 → found=false，bus 仍可用）

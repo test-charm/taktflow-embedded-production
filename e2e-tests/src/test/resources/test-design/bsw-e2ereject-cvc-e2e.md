@@ -125,6 +125,7 @@ alive 半字节即可单独命中对应分支。
 | `e2e_reject_cvc_replay` | corrupt: mode=`replay`, count=12, intervalMs=10 | behaviourUnchanged=true（REPEATED 分支；静态不可检故不断言 injectedOnBus） |
 | `e2e_reject_cvc_seq` | corrupt: mode=`seq`, count=12, intervalMs=10 | behaviourUnchanged=true（WRONG_SEQ 分支） |
 | `e2e_reject_cvc_fzc_heartbeat_dem` | corrupt: target=`FZC_Heartbeat` + `RZC_Heartbeat`, mode=`dataid`, 各 count=120, intervalMs=5（两路双 600ms 窗口，覆盖 ≥4 个心跳周期） | behaviourUnchanged=true（损坏被拒；**Dem 上报/恢复分支**：demEvt=3/4 → Com 的 Dem FAILED/PASSED + Dem 事件去抖/确认/广播；双心跳并行注入提高与合法帧周期的相遇概率，实测最终报告 Com L427=4422 次 FAILED、L461=35 次恢复 PASSED，L426-430/L460-464 全部命中） |
+| `e2e_reject_cvc_lidar_sm10` | corrupt: target=`Lidar_Distance`(0x220, dataId=13), mode=`dataid`, count=12, intervalMs=10 | behaviourUnchanged=true（**不同 SM 窗口配置**：`E2eSmWindowInvalid=10`（DBC 30ms 周期）需连续 ≥10 坏帧才锁存 INVALID——补充 `test_E2E_*`/`test_E2E_Sm_*` 状态机语义的真实运行面；实测注入 11 帧稳定拒绝、CVC 心跳/VS 有效） |
 
 ### 规则: 真端到端 — RZC 收路径持续损坏升级（SIL-009 同族）
 
@@ -321,8 +322,8 @@ alive 半字节即可单独命中对应分支。
 
 | 命令 | 结果 |
 |---|---|
-| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber -Pfile=src/test/resources/features/bsw_e2ereject_cvc.feature` | **7 scenarios / 46 steps passed**（escalate + 4 种损坏模式 + FZC/RZC Dem 上报恢复 + fail-closed；真实总线） |
-| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber` | **777 scenarios / 4693 steps passed**（含本 feature，无回归） |
+| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber -Pfile=src/test/resources/features/bsw_e2ereject_cvc.feature` | **8 scenarios / 53 steps passed**（escalate + 4 种损坏模式 + FZC/RZC Dem 上报恢复 + Lidar SM10 拒帧 + fail-closed；真实总线） |
+| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber` | **781 scenarios / 4719 steps passed**（含本 feature，无回归） |
 
 ## 无法覆盖的代码说明
 

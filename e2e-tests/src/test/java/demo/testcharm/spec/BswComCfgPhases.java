@@ -12,6 +12,9 @@ public class BswComCfgPhases {
             property("windowMs").defaultValue(null);
             property("minFrames").defaultValue(null);
             property("periodTolerancePct").defaultValue(null);
+            property("did").defaultValue(null);
+            property("reqId").defaultValue(null);
+            property("respId").defaultValue(null);
         }
     }
 }

@@ -141,6 +141,7 @@
 | `cadence_vehicle_state` | P0: cadence targets=["Vehicle_State"] | found=true, cycleMs=10, cycleOk=true, crcValid=true（10ms 任务驱动 Com TX 真实达标） |
 | `cadence_torque_request` | P0: cadence targets=["Torque_Request"] | found=true, cycleMs=10, cycleOk=true, crcValid=true |
 | `cadence_heartbeat` | P0: cadence targets=["CVC_Heartbeat"] | found=true, cycleMs=50, cycleOk=true, crcValid=true（50ms 任务驱动心跳） |
+| `cadence_body_control_cmd` | P0: cadence targets=["Body_Control_Cmd"] | found=true, cycleMs=100, cycleOk=true（100ms 周期信号路径真实上总线，无 E2E） |
 
 ### 规则: 真端到端 — E-Stop FTTI（10ms 任务分派的时延后果）
 
@@ -160,7 +161,7 @@
   出现逐行覆盖。
 - 生成配置骨架 `Rte_TaskBodies_Cvc.c`：POSIX SIL 走 legacy 主循环
   （`Rte_MainFunction` 直接分派），**OS OSEK 任务体在 posix 镜像中不执行**，因此
-  该文件在 e2e 报告中仅少量命中（实测 6/41 行）。其结构覆盖由 OSEK 目标 /
+  该文件在 e2e 报告中仅少量命中（实测 0/41 行）。其结构覆盖由 OSEK 目标 /
   单元层负责，属真实执行事实（不为凑数事后驱动）。
 
 | 层次 | 报告中的覆盖来源 | 口径 |
@@ -181,15 +182,72 @@
   `PduR`/`CanIf`/`Can_Posix`、`Rte.c`、`Swc_EStop.c`、`IoHwAb_Posix.c` 等）。
 - 生成 OSEK 骨架 `Rte_TaskBodies_Cvc.c`：POSIX SIL 走 legacy 主循环，真实的
   cadence/ftti 测试**不执行该文件的 OSEK 任务体**，报告中仅少量命中
-  （实测 6/41 行）。因此该文件的**逐行满覆盖由 OSEK 目标/单元层负责**（见下节「生成代码行级结构」），这正是"覆盖=真实执行"口径的
+  （实测 0/41 行）。因此该文件的**逐行满覆盖由 OSEK 目标/单元层负责**（见下节「生成代码行级结构」），这正是"覆盖=真实执行"口径的
   如实反映。
 
 关联测试结果：
 
 | 命令 | 结果 |
 |---|---|
-| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber -Pfile=src/test/resources/features/bsw_rtetaskbodies_cvc.feature` | **4 scenarios / 24 steps passed**（cadence×3 + ftti；需 SIL 栈运行） |
-| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber` | **768 scenarios / 4637 steps passed**（含本 feature，无回归） |
+| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber -Pfile=src/test/resources/features/bsw_rtetaskbodies_cvc.feature` | **5 scenarios / 30 steps passed**（cadence×4 + ftti；需 SIL 栈运行） |
+| `TESTCHARM_DAL_DUMPINPUT=false ./gradlew cucumber` | **781 scenarios / 4719 steps passed**（含本 feature，无回归） |
+
+### 覆盖率实测：逐行覆盖映射
+
+> 口径说明：数据来自**全量 e2e 回归后的最终报告**（`e2e-tests/build/coverage/`，真实 CVC SIL ECU 插桩 `.profraw` 合并）。cadence/ftti 驱动的是与 `bsw_comcfg_cvc` 相同的**真实运行时收发链**（Com → PduR → CanIf → Can → Can_Posix），共享文件的逐行映射见 `bsw-comcfg-cvc-e2e.md` 同名小节；本节重点做**调度/注入侧特有文件**的逐行映射（Rte.c 分派主路径、cvc_hw_posix.c 主循环、Swc_EStop.c、IoHwAb_Posix.c E-Stop 链），并如实给出生成骨架 `Rte_TaskBodies_Cvc.c` 的覆盖事实。行号对应所附报告源文件。
+
+#### 1. `firmware/bsw/rte/src/Rte.c`（可执行 120 行，命中 **88**）——cadence/ftti 的分派主线
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 40-105 | `Rte_DispatchRunnables`（优先级选择 → 执行 → WdgM checkpoint） | 42-102 主路径 | cadence/ftti：10ms 任务链（Com_Rx→EStop(cp:2)→Pedal(cp:0)→VSM(cp:1)→Dashboard(cp:4)→Com_Tx→BusOff）、50ms 心跳（cp:3） |
+| 116-159 | `Rte_Init` | 142-158 | ECU 启动 |
+| 167-186 / 194-218 | `Rte_Write` / `Rte_Read` | 主路径 | EStop 活性写 `CVC_SIG_ESTOP_ACTIVE` + 各 SWC 读写 |
+| 225-235 | `Rte_MainFunction`（tick 递增 + 分派） | 231-235 | 1ms 主循环每 tick |
+
+> 未命中主面：分派中的 **NULL 函数指针防御**（67-69）、`Rte_Init/Write/Read` 的越界与 NULL DET 守卫（121-133、136-140、177-179、197-204、209-211）——真实配置合法、运行时信号 ID 全在配置内。
+
+#### 2. `firmware/platform/posix/src/cvc_hw_posix.c`（可执行 70 行，命中 **46**）——SIL 主循环节拍
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 39-42 / 47-50 | `Main_Hw_SystemClockInit` / `Main_Hw_MpuConfig`（空桩） | 41 / 49 | ECU 启动 |
+| 56-62 | `Main_Hw_SysTickInit`（记录 tick 周期 + `Sil_Time_Init`） | 58-63 | ECU 启动（1ms 虚拟节拍） |
+| 67-77 | `Main_Hw_Wfi`（1ms 睡眠 + `Sil_Coverage_Periodic` flush） | 69-77 | 主循环每 tick（覆盖的**周期性数据来源**） |
+| 82-89 | `Main_Hw_GetTick`（虚拟时钟） | 84-86 | 主循环每 tick |
+| 99-137 | 启动自检桩（SpiLoopback/CanLoopback/OledAck/RamPattern/PlantStackCanary） | 101-136 | ECU 启动自检链 |
+| 217-223 | `Ssd1306_Hw_I2cWrite`（OLED no-op） | 219-223 | 显示刷新周期 |
+| 248-251 | `Main_Hw_DebugPrintStatus`（no-op） | 250-251 | 周期打印调用 |
+
+> 未命中主面：`SelfTest_Hw_*` 复数桩（149-204 大部分）由 `bsw_selftest` 场景驱动（启动一次性 BIST），cadence/ftti 主循环不触发；`Main_Hw_Wfi` 的 `PLATFORM_POSIX_TEST` 分支（70/76）为测试宏态。
+
+#### 3. `firmware/ecu/cvc/src/Swc_EStop.c`（可执行 38 行，命中 **38 —— 全命中**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 53-58 | `Swc_EStop_Init`（安全默认） | 55-57 | ECU 启动 |
+| 72-120 | `Swc_EStop_MainFunction`：读 `IoHwAb_ReadEStop` → fail-safe(ret≠OK→HIGH) → 1-cycle debounce → 首次锁存（`Dem_ReportErrorStatus` FAILED + `Rte_Write`）→ 锁存期每周期广播写 + 重复上报 | 74-121 | **ftti**：UDP 注 E-Stop → 常态 HIGH 路径 + LOW 重置路径均走；锁存后每 10ms 触发 `Rte_Write(1)` + Dem FAILED |
+| 126-129 | `Swc_EStop_IsActive` | 128-129 | 周期性查询 |
+
+#### 4. `firmware/bsw/ecual/IoHwAb/src/IoHwAb_Posix.c`（可执行 229 行，命中 **54**）——E-Stop 注入链
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 220-235 | `IoHwAb_ReadEStop`（读注入 pin 状态） | 222/226/231/234-235 | ftti + 常态 10ms（EStop SWC） |
+| 337-362 | `IoHwAb_Inject_SetDigitalPin`（Dio_WriteChannel(5) + 本地 pin 数组） | 340-362 | ftti：注入 E-Stop HIGH（`IOHWAB_PIN_ESTOP`）→ 驱动 `Swc_EStop` 锁存 |
+| 43-48 / 58-63 / 67-95 | 注入/初始化设施（SetSensorValue/SetDigitalPin/IoHwAb_Init） | 45-96 | 全量运行时常态（ASW 注入共用） |
+
+> 未命中主面：传感器读/执行器写接口的 **DET/NULL 守卫**（49、100-107、125-133、139-215 之守卫段）与未注入通道（MotorCurrent/Temp/Battery 等主用走 RZC/ASW 场景——非 CVC cadence/ftti 路径）。
+
+#### 5. `firmware/ecu/cvc/cfg/Rte_TaskBodies_Cvc.c`（生成 OSEK 骨架，可执行 41 行，命中 **0/41**）
+
+| 行段 | 代码 | 命中 | 覆盖来源 |
+|---|---|---|---|
+| 54-61 / 68-84 / 91-98 / 105-110 / 117-122 / 135-142 | 六个 `Os_Task_*` 任务体（map 桥 → 顺序调用 runnable → WdgM cp → `TerminateTask`） | **0（全未命中）** | POSIX SIL 走 legacy 主循环（`Rte_MainFunction` 直接分派），**该 OSEK 任务体不执行**；行级结构覆盖由 OSEK 目标/单元层负责（见下节「生成代码行级结构」） |
+
+#### 6. 共享收发链（cadence/ftti 与 bus-probe 同一真实链路）
+
+`Com.c`（Com_MainFunction_Tx **606-754** 周期发送 / Com_RxIndication **360-527** E2E 收帧）、`E2E.c`、`PduR.c`、`CanIf.c`、`Can.c`、`Can_Posix.c` 的逐行映射见 `bsw-comcfg-cvc-e2e.md`「覆盖率实测：逐行覆盖映射」1-7 节——cadence 的 Vehicle_State/Torque_Request/Heartbeat 与 bus-probe 走同一 TX 与帧属性路径，E-Stop 广播（0x001，DLC=4/E2E dataId=1）在 ftti 期间通过该链实时产出并被断言。
 
 ---
 
@@ -210,7 +268,7 @@
 | `Os_Task_Cvc_Idle` | L135-142 | 8 | StartScheduleTables → `for(;;)` 循环 map 钩子 |
 
 > 合计 41 行 / 6 函数。行级满覆盖由 OSEK 目标/单元层验证；POSIX SIL 的真实
-> cadence/ftti 测试只命中与该执行相关的少量行（实测 6/41）。
+> cadence/ftti 测试只命中与该执行相关的少量行（实测 0/41）。
 
 ## 无法覆盖的代码说明
 
@@ -218,7 +276,7 @@
 
 - **POSIX SIL 不执行 OSEK 任务体骨架**：真实 CVC 走 legacy 主循环
   （`Rte_MainFunction` 直接分派），`Rte_TaskBodies_Cvc.c` 在 posix 镜像中只少量
-  命中（实测 6/41 行）——该文件是 OSEK 目标代码，其**逐行结构覆盖由 OSEK 目标
+  命中（实测 0/41 行）——该文件是 OSEK 目标代码，其**逐行结构覆盖由 OSEK 目标
   / 单元层负责**。这是"覆盖=真实执行"口径的如实反映，**不**为凑数而事后驱动。
 - **节拍非实时**：真实帧 cadence 约为 DBC 名义的 3x（Docker），`cycleOk` 用
   有界带宽 + 稳定周期性判定。

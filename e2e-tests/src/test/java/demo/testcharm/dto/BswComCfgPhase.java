@@ -13,9 +13,12 @@ import lombok.Setter;
 @Setter
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class BswComCfgPhase {
-    private String op;          // bus-probe
+    private String op;          // bus-probe | uds
     private java.util.List<String> targets;   // DBC message names to observe
     private Integer windowMs;                 // observation window
     private Integer minFrames;                // minimum frames per message
     private Integer periodTolerancePct;       // allowed cycle-time deviation
+    private Integer did;                      // uds: Data Identifier to read
+    private Integer reqId;                    // uds: request arbitration ID
+    private Integer respId;                   // uds: response arbitration ID
 }

@@ -41,6 +41,7 @@ from .bsw_bus_probe import (
     e2e_reject_observe,
     ftti_estop,
     probe_live_messages,
+    uds_read_did_probe,
 )
 
 try:
@@ -1047,14 +1048,19 @@ class BswComCfgPhase(BaseModel):
 
     bus-probe observes *real* CVC frames on the CAN bus (vcan0) and verifies
     DLC, period, E2E dataId/alive/CRC and decoded signal values against the
-    DBC single source of truth. Requires the SIL Docker stack (instrumented
-    CVC ECU on vcan0) to be running.
+    DBC single source of truth. uds sends a UDS ReadDataByIdentifier request
+    to CVC (0x7E0) and observes the Dcm response (0x7E8) — the real
+    CanIf->PduR->Dcm->CanTp diagnostic chain. Requires the SIL Docker stack
+    (instrumented CVC ECU on vcan0) to be running.
     """
-    op: str = "bus-probe"            # bus-probe
+    op: str = "bus-probe"            # bus-probe|uds
     targets: list[str] | None = None # DBC message names to observe
     windowMs: int = 2000             # observation window
     minFrames: int = 5               # minimum frames per message
     periodTolerancePct: int = 30     # allowed cycle-time deviation
+    did: int = 0xF190                # uds: Data Identifier to read
+    reqId: int = 0x7E0               # uds: request arbitration ID
+    respId: int = 0x7E8              # uds: response arbitration ID
 
 
 class BswComCfgRunBody(BaseModel):
@@ -4753,7 +4759,7 @@ def run_bsw_comcfg_cvc(body: BswComCfgRunBody):
     phases = list(body.phases or [])
     if not phases:
         raise HTTPException(status_code=400, detail="No phases provided")
-    invalid = sorted({p.op for p in phases if p.op not in ("bus-probe",)})
+    invalid = sorted({p.op for p in phases if p.op not in ("bus-probe", "uds")})
     if invalid:
         raise HTTPException(status_code=400,
                             detail=f"Unsupported op(s): {invalid}")
@@ -4761,11 +4767,13 @@ def run_bsw_comcfg_cvc(body: BswComCfgRunBody):
 
 
 def _run_bsw_comcfg_bus_probe(phases: list[BswComCfgPhase]):
-    """Observe the real CVC TX frames on vcan0.
+    """Observe the real CVC TX frames on vcan0 (op=bus-probe), or drive the
+    real UDS diagnostic request/response chain (op=uds).
 
     Reports per-message DLC / period / E2E dataId+alive+CRC / decoded signals
-    vs the DBC. Fail-closed: unknown messages or a down bus degrade to
-    found=false rather than crashing.
+    vs the DBC (bus-probe), or the Dcm response SID/payload (uds).
+    Fail-closed: unknown messages or a down bus degrade to found=false rather
+    than crashing.
     """
     try:
         encoder = CanEncoder()
@@ -4775,6 +4783,14 @@ def _run_bsw_comcfg_bus_probe(phases: list[BswComCfgPhase]):
 
     results = []
     for p in phases:
+        if p.op == "uds":
+            state = uds_read_did_probe(did=p.did, req_id=p.reqId,
+                                       resp_id=p.respId,
+                                       observe_ms=float(p.windowMs))
+            item = dict(state)
+            item["ecu"] = "cvc"
+            results.append({"op": "uds", "state": item})
+            continue
         targets = p.targets or list(DEFAULT_TX_TARGETS)
         states = probe_live_messages(
             encoder, targets, p.windowMs, p.minFrames, p.periodTolerancePct,

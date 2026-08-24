@@ -99,6 +99,26 @@
       }
       """
 
+    场景: Body_Control_Cmd 以 100ms cadence 真实上总线（100ms 周期信号路径）
+      当POST "/api/test/bsw/rtetaskbodies/cvc":
+      """
+      {
+        "phases": [
+          { "op": "cadence", "targets": ["Body_Control_Cmd"] }
+        ]
+      }
+      """
+      那么response should be:
+      """
+      body.json.results[0].state: {
+        found: true
+        busUp: true
+        ecu: "cvc"
+        cycleMs: 100
+        cycleOk: true
+      }
+      """
+
   规则: 真端到端 — E-Stop FTTI（10ms 任务分派的时延后果）
 
     场景: E-Stop 注入后 200ms 内广播上总线且锁存流 E2E 有效
