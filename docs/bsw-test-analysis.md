@@ -298,8 +298,9 @@ max−min≤2×avg，兼容 Docker 非实时节拍） / `e2e` / `dataId`+`dataId
 
 > **已完成 / 标准落地（2026-08-24）**：
 > - 「BSW 端到端=真端到端」标准确立（插桩 ECU + 总线 feature + 自然覆盖回收）。
-> - `bsw_comcfg_cvc.feature`（6 场景）与 `bsw_rtetaskbodies_cvc.feature`（4 场景）
->   已转换为纯总线真端到端，全量 768 场景通过。
+> - `bsw_comcfg_cvc.feature`（6 场景）、`bsw_rtetaskbodies_cvc.feature`（4 场景）
+>   已转换为纯总线真端到端；新增 `bsw_e2ereject_cvc.feature`（6 场景）落地
+>   **优先级 3**，全量 776 场景回归通过（无回归）。
 
 ### 高优先级（总线后果可直接断言，且有安全价值）
 
@@ -307,7 +308,7 @@ max−min≤2×avg，兼容 Docker 非实时节拍） / `e2e` / `dataId`+`dataId
 |---|---|---|---|
 | 1 | Com 周期调度 + E2E 保护 | `bsw_comcfg_cvc`（已落地） | 各安全 TX 帧 DLC/周期/dataId/alive/CRC；Body_Control_Cmd 无 E2E |
 | 2 | 任务驱动 cadence + E-Stop FTTI | `bsw_rtetaskbodies_cvc`（已落地） | VS/Torque 10ms、心跳 50ms；EStop 广播 200ms 预算内 + 锁存流 E2E |
-| 3 | E2E 拒帧行为后果 | 扩展 `bsw_comcfg_cvc` 或新增 | 总线损坏帧 → 帧不被采信（`sil_009` 同族，feature 层断言帧属性/行为不变） |
+| 3 | E2E 拒帧行为后果 | `bsw_e2ereject_cvc`（**2026-08-24 已落地**，`test-design/bsw-e2ereject-cvc-e2e.md`） | corrupt：损坏帧不被采信、CVC 帧属性/行为不变，覆盖 E2E_Check 四分支 + SM INVALID 拒帧/恢复；escalate：持续损坏升级 DTC 0xE601（sil_009 同族） |
 | 4 | RX 心跳超时级联 | 新增 | 停发 peer 心跳 → CVC 行为后果（配合 docker 控制，参照 ftti 模式） |
 | 5 | bus-off / CanSM 后果 | 新增（或直接依赖 `sil_004`） | bus-off 后总线静默 → 恢复时限 |
 

@@ -23,6 +23,8 @@ per-message result to found=false rather than crashing the endpoint.
 
 import logging
 import os
+import socket
+import struct
 import time
 
 try:
@@ -440,3 +442,312 @@ def ftti_estop(encoder: CanEncoder,
                 bus.shutdown()
             except Exception:  # pragma: no cover - defensive
                 pass
+
+# ======================================================================
+# E2E rejection behaviour — true end-to-end (bsw-test-analysis priority 3)
+#
+# The equipped CVC receives a corrupted E2E-protected RX stream and must
+# NOT adopt the corrupted payload ("frames not believed"); the receiver's
+# own traffic / attributes must stay unchanged ("behaviour unchanged").
+# `e2e_reject_observe` drives the *receiving* CVC (instrumented ECU) with
+# corrupted frames of one of its protected RX messages and reports the
+# observable consequences. `e2e_escalate_rzc` reproduces the SIL-009 family
+# on the live stack: isolate the CVC, corrupt Vehicle_State (0x100), and
+# verify the RZC escalates rejection to a confirmed DTC 0xE601 broadcast on
+# 0x500 while RZC behaviour stays unchanged; then restore the CVC.
+# ======================================================================
+
+# CVC messages whose E2E header must stay valid after a corruption attack.
+_REJECT_UNCHANGED_PROBES = ("CVC_Heartbeat", "Vehicle_State")
+
+
+def _raw_frames(duration_s: float):
+    """Yield (arbitration_id, data) frames from a raw vcan0 socket.
+
+    python-can socketcan readers drop frames on a busy bus during sparse
+    events (injected corrupt frames / Dem DTC broadcasts) — a single raw
+    CAN_RAW socket with a tight timeout catches everything for the observer.
+    """
+    sock = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+    sock.bind((_CAN_CHANNEL,))
+    sock.settimeout(0.05)
+    try:
+        end = time.monotonic() + duration_s
+        while time.monotonic() < end:
+            try:
+                frame = sock.recv(16)
+            except socket.timeout:
+                continue
+            except Exception:  # pragma: no cover - defensive
+                break
+            if len(frame) < 8:
+                continue
+            fid = struct.unpack("=I", frame[:4])[0] & 0x1FFFFFFF
+            dlen = min(frame[4], 8)
+            yield fid, frame[8:8 + dlen]
+    finally:
+        try:
+            sock.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+def _default_encode_signals(encoder: CanEncoder, msg_name: str) -> dict:
+    """Zero-valued signal dict for every non-E2E signal of a DBC message."""
+    msg = encoder.db.get_message_by_name(msg_name)
+    return {sig.name: 0 for sig in msg.signals if "E2E" not in sig.name}
+
+
+def corrupt_e2e_frame(encoder: CanEncoder, msg_name: str,
+                      mode: str = "dataid", sender_alive: int | None = None) -> bytes:
+    """Encode one DBC frame with its E2E protection deliberately corrupted.
+
+    mode:
+      dataid  — wrong DataId nibble in byte0 and flipped CRC byte
+                (E2E_Check dataId-mismatch branch).
+      crc     — correct DataId, CRC byte corrupted (E2E_Check CRC branch).
+      replay  — alive counter repeated instead of advanced
+                (E2E_STATUS_REPEATED branch): alive is pinned to the last
+                value the sender put on the bus so the receiver sees delta=0.
+      seq     — alive counter forced at least 13 steps ahead of the last
+                sender value, so delta > MaxDeltaCounter
+                (E2E_STATUS_WRONG_SEQ branch).
+      dlc     — wrong frame length (Length != Config->DataLength, the E2E_Check
+                length guard — the only E2E_Check failure branch that is not
+                observable via byte content): the encoded frame is truncated
+                by E2E_PAYLOAD_OFFSET bytes so the receiver computes
+                delta/length against a length-mismatched PDU.
+
+    Note: the CRC-8 input is payload[2:] + DataId only (byte0 is not part of
+    the CRC), so replay/seq frames patch byte0's alive nibble *after* a
+    normal encode and keep a valid CRC — that forces the alive-branch only.
+    """
+    signals = _default_encode_signals(encoder, msg_name)
+    can_id = encoder.get_id(msg_name)
+    if mode == "crc":
+        return bytes(encoder.encode(msg_name, signals, corrupt_crc=True))
+    if mode == "replay":
+        data = bytearray(encoder.encode(msg_name, signals))
+        if sender_alive is not None and sender_alive >= 0:
+            data[0] = (data[0] & 0x0F) | ((sender_alive & 0x0F) << 4)
+        return bytes(data)
+    if mode == "seq":
+        data = bytearray(encoder.encode(msg_name, signals))
+        if sender_alive is not None and sender_alive >= 0:
+            data[0] = (data[0] & 0x0F) | (((sender_alive + 13) & 0x0F) << 4)
+        else:
+            data[0] = (data[0] & 0x0F) | 13 << 4
+        return bytes(data)
+    if mode == "dlc":
+        data = bytearray(encoder.encode(msg_name, signals))
+        # Truncate below the configured DLC so Length != DataLength in
+        # E2E_Check (>= E2E_PAYLOAD_OFFSET so the length guard is hit, not
+        # the too-short guard).
+        if len(data) > 2:
+            return bytes(data[:-2])
+        return bytes(data)
+    # default dataid: wrong dataId nibble + wrong CRC
+    data = bytearray(encoder.encode(msg_name, signals))
+    expected = encoder._e2e_data_ids.get(can_id)
+    data[0] = (data[0] & 0xF0) | (((expected & 0x0F) + 1) & 0x0F)
+    data[1] ^= 0xFF
+    return bytes(data)
+
+
+def _now_alive(encoder: CanEncoder, bus, can_id: int, timeout_s: float = 0.3) -> int:
+    """Return the most recent E2E alive counter observed for `can_id`."""
+    deadline = time.monotonic() + timeout_s
+    last_alive: int | None = None
+    while time.monotonic() < deadline:
+        try:
+            msg = bus.recv(timeout=0.1)
+        except Exception:
+            break
+        if msg is not None and msg.arbitration_id == can_id:
+            last_alive = (bytes(msg.data)[0] >> 4) & 0x0F
+    return -1 if last_alive is None else last_alive
+
+
+def _probe_reject_state(bus, encoder: CanEncoder,
+                        targets=_REJECT_UNCHANGED_PROBES) -> dict:
+    """Probe the CVC origin traffic right after a corruption attack."""
+    probes = {}
+    for t in targets:
+        st = observe_message(bus, encoder, t, window_ms=1800, min_frames=3)
+        probes[t] = {
+            "found": st.get("found"),
+            "busUp": st.get("busUp"),
+            "dlc": st.get("dlc"),
+            "dlcOk": st.get("dlcOk"),
+            "e2e": st.get("e2e"),
+            "dataId": st.get("dataId"),
+            "dataIdOk": st.get("dataIdOk"),
+            "crcValid": st.get("crcValid"),
+        }
+        if st.get("decoded") is not None:
+            probes[t]["decoded"] = st["decoded"]
+    unchanged = all(
+        p.get("found") and p.get("busUp") and p.get("e2e") and
+        p.get("dataIdOk") and p.get("crcValid")
+        for p in probes.values()
+    )
+    return {"probes": probes, "behaviourUnchanged": bool(unchanged)}
+
+
+def e2e_reject_observe(encoder: CanEncoder,
+                       target: str = "Motor_Status",
+                       mode: str = "dataid",
+                       count: int = 12,
+                       interval_ms: int = 10,
+                       settle_ms: int = 1500,
+                       bus=None) -> dict:
+    """Inject corrupted E2E frames of the target CVC-protected RX message and
+    report whether the corrupted frames reached the bus and whether the CVC's
+    own traffic stayed unchanged afterwards (frames not believed).
+
+    The target message is one the *equipped CVC* receives with E2E
+    protection (default Motor_Status / CAN 0x300 from RZC). The real sender
+    keeps emitting valid frames, so this exercises the single-frame
+    rejection path on every injected frame and, when injected as a fast
+    burst, the E2E sliding-window escalation (VALID→INVALID) if the window
+    is reached.
+    """
+    try:
+        msg = encoder.db.get_message_by_name(target)
+    except KeyError:
+        return {"found": False, "busUp": True,
+                "reason": f"unknown message name: {target}"}
+    can_id = msg.frame_id
+    if encoder._e2e_data_ids.get(can_id) is None:
+        return {"found": False, "busUp": True,
+                "reason": f"{target} is not E2E-protected in the DBC"}
+
+    own_bus = False
+    if bus is None:
+        try:
+            bus = open_bus()
+            own_bus = True
+        except Exception as exc:
+            return {"found": False, "busUp": False,
+                    "reason": f"cannot open CAN bus: {exc}"}
+
+    try:
+        _flush(bus)
+        # baseline: sender alive counter for the seq corruption mode
+        sender_alive = _now_alive(encoder, bus, can_id)
+        observe_message(bus, encoder, "CVC_Heartbeat", window_ms=1200,
+                        min_frames=2)
+
+        # monitor thread counts corrupted frames of the target on the bus
+        seen_corrupt = {"n": 0}
+        import threading
+
+        def _monitor():
+            try:
+                mb = open_bus()
+            except Exception:
+                return
+            try:
+                end = time.monotonic() + max(settle_ms / 1000.0, 1.0)
+                while time.monotonic() < end:
+                    m = mb.recv(timeout=0.15)
+                    if m is None:
+                        continue
+                    if m.arbitration_id == can_id and \
+                            not encoder.verify_e2e(can_id, bytes(m.data)):
+                        seen_corrupt["n"] += 1
+            finally:
+                try:
+                    mb.shutdown()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+        mon = threading.Thread(target=_monitor, daemon=True)
+        mon.start()
+
+        for _ in range(count):
+            frame = corrupt_e2e_frame(encoder, target, mode,
+                                      sender_alive=sender_alive)
+            bus.send(can.Message(arbitration_id=can_id, data=frame,
+                                 is_extended_id=False))
+            time.sleep(interval_ms / 1000.0)
+
+        time.sleep(max(0.0, settle_ms / 1000.0))
+        mon.join(timeout=2.0)
+
+        probe = _probe_reject_state(bus, encoder)
+        return {
+            "found": True,
+            "busUp": True,
+            "target": target,
+            "canId": can_id,
+            "mode": mode,
+            "count": count,
+            "injectedOnBus": seen_corrupt["n"],
+            "cvCheartbeatValid": bool(
+                probe["probes"]["CVC_Heartbeat"].get("crcValid")),
+            "vehicleStateValid": bool(
+                probe["probes"]["Vehicle_State"].get("crcValid")),
+            "behaviourUnchanged": probe["behaviourUnchanged"],
+            "probes": probe["probes"],
+        }
+    finally:
+        if own_bus:
+            try:
+                bus.shutdown()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+
+def e2e_escalate_rzc(encoder: CanEncoder,
+                     count: int = 16,
+                     interval_ms: int = 100,
+                     observe_ms: int = 5000,
+                     restart_cvc: bool = True,
+                     bus=None) -> dict:
+    """SIL-009 family: sustained E2E corruption escalates to a confirmed DTC.
+
+    The CVC is stopped (so no valid 0x100 interleaves), `count` corrupted
+    Vehicle_State frames are injected on 0x100, and the RZC — which E2E
+    protects 0x100 with Dem event 5 / DTC 0xE601 — must reject every
+    corrupted frame, latch E2E_SM_INVALID, and escalate via Dem to a
+    confirmed DTC broadcast on 0x500. RZC own behaviour (heartbeat + motor
+    status) must stay unchanged: corrupted torque is never believed. The CVC
+    is restored afterwards.
+
+    The observation runs in a fresh subprocess: CAN sockets inside the
+    long-lived FastAPI process drop the sparse injected / DTC frames under
+    the busy-bus load (a raw-socket reader in a separate process captures
+    them reliably — same pattern as the SC / CVC harness subprocesses).
+    """
+    import json as _json
+    import os
+    import subprocess
+    import sys
+    try:
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "bsw_escalate_script.py")
+        cmd = [sys.executable, script, "--count", str(count),
+               "--interval-ms", str(interval_ms),
+               "--observe-ms", str(observe_ms)]
+        if not restart_cvc:
+            cmd.append("--no-restart")
+        completed = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=int(30 + observe_ms / 1000.0
+                                               + count * interval_ms / 1000.0
+                                               + 20))
+    except Exception as exc:  # fail closed: never crash the endpoint
+        return {"found": False, "busUp": True,
+                "reason": f"escalate subprocess failed: {exc}"}
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        return {"found": False, "busUp": True,
+                "reason": detail or "escalate subprocess failed"}
+    try:
+        result = _json.loads(completed.stdout)
+    except _json.JSONDecodeError as exc:
+        return {"found": False, "busUp": True,
+                "reason": f"escalate subprocess output invalid: {exc}"}
+    result.pop("reason", None)
+    return result

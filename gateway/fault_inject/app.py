@@ -37,6 +37,8 @@ from .scenarios import (
 
 from .bsw_bus_probe import (
     DEFAULT_TX_TARGETS,
+    e2e_escalate_rzc,
+    e2e_reject_observe,
     ftti_estop,
     probe_live_messages,
 )
@@ -1080,6 +1082,31 @@ class BswRteTaskBodiesPhase(BaseModel):
 
 class BswRteTaskBodiesRunBody(BaseModel):
     phases: list[BswRteTaskBodiesPhase] | None = None
+
+
+class BswE2ERejectPhase(BaseModel):
+    """One phase of the BSW E2E-rejection endpoint (true end-to-end).
+
+    corrupt injects corrupted E2E frames of an E2E-protected *RX* message of
+    the equipped CVC and reports whether the corrupted frames were rejected
+    (the CVC's own traffic / frame attributes must stay unchanged).
+    escalate reproduces the SIL-009 family on the live stack: it isolates
+    the CVC, corrupts Vehicle_State (0x100), and verifies the RZC escalates
+    sustained rejection into a confirmed DTC 0xE601 broadcast on 0x500 while
+    RZC behaviour stays unchanged (corrupted torque is never believed).
+    """
+    op: str = "corrupt"              # corrupt|escalate
+    target: str = "Motor_Status"     # corrupt: CVC E2E-protected RX msg
+    mode: str = "dataid"             # corrupt: dataid|crc|replay|seq
+    count: int = 12                  # corrupt/escalate: corrupted frames
+    intervalMs: int = 10             # corrupt: injection spacing (ms)
+    settleMs: int = 1500             # corrupt: post-injection settle (ms)
+    observeMs: int = 5000            # escalate: DTC observation window (ms)
+    restartCvc: bool = True          # escalate: restore the CVC afterwards
+
+
+class BswE2ERejectRunBody(BaseModel):
+    phases: list[BswE2ERejectPhase] | None = None
 
 
 class ScSelfTestPhase(BaseModel):
@@ -4814,6 +4841,54 @@ def _run_bsw_rtetaskbodies_bus(phases: list[BswRteTaskBodiesPhase]):
             item = dict(state)
             item["ecu"] = "cvc"
             results.append({"op": "ftti", "state": item})
+    return {"results": results, "state": {"phaseCount": len(phases)}}
+
+
+@app.post("/api/test/bsw/e2ereject/cvc")
+def run_bsw_e2ereject_cvc(body: BswE2ERejectRunBody):
+    """True end-to-end verification of E2E frame-rejection behaviour.
+
+    corrupt feeds corrupted E2E frames of an E2E-protected RX message to the
+    equipped CVC and reports whether the corrupted frames were rejected
+    (the CVC's own traffic and frame attributes must stay unchanged —
+    "frames not believed"). escalate reproduces the SIL-009 family on the
+    live stack: isolate the CVC, corrupt Vehicle_State (0x100), and verify
+    the RZC escalates sustained rejection into a confirmed DTC 0xE601
+    broadcast while RZC behaviour stays unchanged. Requires the SIL Docker
+    stack (instrumented ECUs on vcan0).
+    """
+    phases = list(body.phases or [])
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided")
+    invalid = sorted({p.op for p in phases if p.op not in ("corrupt", "escalate")})
+    if invalid:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported op(s): {invalid}")
+    try:
+        encoder = CanEncoder()
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Cannot load DBC encoder: {exc}") from exc
+
+    results = []
+    for p in phases:
+        if p.op == "corrupt":
+            state = e2e_reject_observe(
+                encoder, target=p.target, mode=p.mode,
+                count=p.count, interval_ms=p.intervalMs,
+                settle_ms=p.settleMs,
+            )
+            item = dict(state)
+            item["ecu"] = "cvc"
+            results.append({"op": "corrupt", "state": item})
+        elif p.op == "escalate":
+            state = e2e_escalate_rzc(
+                encoder, count=p.count, interval_ms=p.intervalMs,
+                observe_ms=p.observeMs, restart_cvc=p.restartCvc,
+            )
+            item = dict(state)
+            item["ecu"] = "rzc"
+            results.append({"op": "escalate", "state": item})
     return {"results": results, "state": {"phaseCount": len(phases)}}
 
 
