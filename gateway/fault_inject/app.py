@@ -1160,6 +1160,28 @@ class CvcEStopRunBody(BaseModel):
     phases: list[CvcEStopPhase] | None = None  # stimulus phases, appended after stored precondition
 
 
+class CvcEstopBusPhase(BaseModel):
+    """One phase of the CVC E-stop **bus** chain (true ASW end-to-end).
+
+    estop injects the E-stop button through the real CVC UDP DIO pin
+    (user-visible event) and measures the latency until EStop_Broadcast
+    (0x001, Active=1) appears on the vcan0 bus — the observable consequence
+    of the real chain [IoHwAb -> Swc_EStop -> Rte -> Com -> PduR -> CanIf
+    -> Can_Posix -> vcan0]. Validates the latch-stream frame (DLC=4 / E2E
+    dataId=1 / alive / CRC / cadence) and restarts the CVC container to
+    clear the power-cycle-only E-stop latch. Requires the SIL Docker stack
+    (instrumented CVC on vcan0).
+    """
+    op: str = "estop"                # estop
+    budgetMs: int = 200              # E-stop FTTI budget
+    minFrames: int = 5               # latch-stream minimum frames
+    restartCvc: bool = True          # restart CVC to clear the latch
+
+
+class CvcEstopBusRunBody(BaseModel):
+    phases: list[CvcEstopBusPhase] | None = None
+
+
 # Server-side state store for Given/When separation.
 # Mutated by /pedal-torque/setup, read by /pedal-torque when fields are absent.
 _stored_vehicle_state: int = 1          # default: RUN
@@ -2308,6 +2330,43 @@ def setup_estop(body: CvcEStopSetupBody):
     global _stored_estop_phases
     _stored_estop_phases = body.phases
     return {"phaseCount": len(body.phases)}
+
+
+@app.post("/api/test/asw/cvc/estop-bus")
+def run_cvc_estop_bus(body: CvcEstopBusRunBody):
+    """True ASW end-to-end E-stop chain over the live CAN bus.
+
+    One end = the user-visible button event (injected into the real CVC DIO
+    pin via UDP), the other end = the real BSW/CAN output: EStop_Broadcast
+    (0x001, Active=1) must appear on vcan0 within the FTTI budget with a
+    valid E2E header (dataId=1 / alive monotonic / CRC) and cadence. The
+    full chain IoHwAb -> Swc_EStop -> Rte -> Com -> PduR -> CanIf ->
+    Can_Posix runs as production code (no mocks). Requires the SIL Docker
+    stack (instrumented CVC on vcan0).
+    """
+    phases = list(body.phases or [])
+    if not phases:
+        raise HTTPException(status_code=400, detail="No phases provided")
+    invalid = sorted({p.op for p in phases if p.op not in ("estop",)})
+    if invalid:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported op(s): {invalid}")
+
+    try:
+        encoder = CanEncoder()
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Cannot load DBC encoder: {exc}") from exc
+
+    results = []
+    for p in phases:
+        state = ftti_estop(encoder, budget_ms=p.budgetMs,
+                           restart_cvc=p.restartCvc,
+                           min_frames=p.minFrames)
+        item = dict(state)
+        item["ecu"] = "cvc"
+        results.append({"op": "estop", "state": item})
+    return {"results": results, "state": {"phaseCount": len(phases)}}
 
 
 @app.post("/api/test/asw/cvc/estop")
